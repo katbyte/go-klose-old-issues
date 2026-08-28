@@ -1,4 +1,4 @@
-# koi — close old issues
+# koi — keeper of issues
 
 [![GitHub release](https://img.shields.io/github/v/release/katbyte/go-klose-old-issues?color=blueviolet)](https://github.com/katbyte/go-klose-old-issues/releases/latest)
 ![build](https://github.com/katbyte/go-klose-old-issues/actions/workflows/build.yaml/badge.svg)
@@ -9,9 +9,12 @@
 [![Go Version](https://img.shields.io/github/go-mod/go-version/katbyte/go-klose-old-issues?color=00ADD8)](https://github.com/katbyte/go-klose-old-issues/blob/main/go.mod)
 [![License](https://img.shields.io/github/license/katbyte/go-klose-old-issues?color=blue)](https://github.com/katbyte/go-klose-old-issues/blob/main/LICENSE)
 
-`koi` assists with triaging and closing old GitHub issues in bulk, built for
+`koi` is a keeper of issues: assisted bulk triage of a GitHub repository's
+issues, milestones, and changelog bookkeeping. Built for
 `hashicorp/terraform-provider-azurerm` (~3,500 open issues, provider now on v5.x,
-hundreds of issues reported against long-unsupported majors).
+hundreds of issues reported against long-unsupported majors) — it started as a
+tool to **k**lose **o**ld **i**ssues and kept the name when it became the keeper
+of them.
 
 It fetches every open issue — **including all comments, which is where the gold
 is on old issues** — into a local SQLite database, runs deterministic triage

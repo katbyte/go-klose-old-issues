@@ -31,7 +31,7 @@ func ValidateParams(params []string) func(cmd *cobra.Command, args []string) err
 func Make() (*cobra.Command, error) {
 	root := &cobra.Command{
 		Use:   "koi [command]",
-		Short: "koi assists with closing old github issues in bulk",
+		Short: "koi — keeper of issues: assisted bulk triage of issues, milestones, and changelog bookkeeping",
 		Long: `koi (close old issues) fetches every open issue on a repository into a local
 sqlite database, runs deterministic triage rules (with optional AI passes for
 the ambiguous remainder), and then walks a human through approving and applying
