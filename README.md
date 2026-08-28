@@ -27,7 +27,8 @@ See [PLAN.md](PLAN.md) for the full design.
 ```sh
 export GITHUB_TOKEN=$(gh auth token)
 
-koi fetch              # all open issues + comments + changelogs -> issues.db, rules run automatically
+koi fetch              # everything non-AI in one step: open issues + comments + changelogs +
+                       # the all-issues milestone scan -> issues.db, rules run automatically
                        # (resumable; later runs sync incrementally — the only required setup step)
 koi review             # interactive card-by-card decisions (y/n/s/e/c/b/t/o/u)
 koi stats              # the funnel: what can close, what keeps, what needs AI
@@ -73,7 +74,8 @@ close with comment activity as a second safety net.
 ## Config
 
 Flags, env vars, or a `.koi` file (env format) in `$HOME` or `.`:
-`GITHUB_TOKEN`, `KOI_REPO`, `KOI_DB`, `KOI_CURRENT_MAJOR`, `KOI_AI_CMD`,
+`GITHUB_TOKEN`, `KOI_REPO`, `KOI_DB`, `KOI_CURRENT_MAJOR`, `KOI_NO_AUTO_FETCH`
+(never touch the network for freshness — audit the local db as-is), `KOI_AI_CMD`,
 `KOI_AI_MODEL`, `KOI_AS`, `KOI_LOG` (debug/trace HTTP dumps). AI calls shell out
 to an already-authenticated CLI — no API key management. `claude` (default),
 `gemini`, antigravity's `agy`, and IBM's `bob` are recognised by binary name;

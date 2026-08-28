@@ -27,6 +27,7 @@ type FlagData struct {
 	As            string `mapstructure:"as"`
 	DryRun        bool   `mapstructure:"dry-run"`
 	Yes           bool   `mapstructure:"yes"`
+	NoAutoFetch   bool   `mapstructure:"no-auto-fetch"`
 }
 
 type FlagsGitHub struct {
@@ -61,6 +62,7 @@ func configureFlags(root *cobra.Command) error {
 	pflags.String("as", "", "who is making decisions (defaults to $USER); recorded on approvals")
 	pflags.Bool("dry-run", false, "show what would happen without changing anything on GitHub")
 	pflags.BoolP("yes", "y", false, "skip confirmation prompts")
+	pflags.Bool("no-auto-fetch", false, "never touch the network for freshness — run against the local db as-is")
 
 	// Output Flags
 	pflags.Bool("quiet", false, "minimal machine-readable output")
@@ -81,6 +83,7 @@ func configureFlags(root *cobra.Command) error {
 		"as":             {"KOI_AS"},
 		"dry-run":        {},
 		"yes":            {},
+		"no-auto-fetch":  {"KOI_NO_AUTO_FETCH"},
 		"quiet":          {"KOI_OUTPUT_QUIET"},
 		"silent":         {"KOI_OUTPUT_SILENT"},
 		"verbose":        {},

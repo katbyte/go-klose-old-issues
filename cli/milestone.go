@@ -42,7 +42,7 @@ func (f *FlagData) Milestone(o MilestoneOpts) error {
 	}
 	defer func() { _ = d.Close() }()
 
-	if !o.SkipScan {
+	if !o.SkipScan && !f.NoAutoFetch {
 		if err := f.milestoneScan(d, o.Rescan); err != nil {
 			return err
 		}

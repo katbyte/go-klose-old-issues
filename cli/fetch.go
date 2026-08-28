@@ -83,6 +83,12 @@ func (f *FlagData) Fetch(full bool) error {
 		return err
 	}
 
+	// front-load the milestone scan too: fetch does everything non-AI so every
+	// other command can run offline afterwards (incremental, so cheap when fresh)
+	if err := f.milestoneScan(d, false); err != nil {
+		return err
+	}
+
 	total, open, err := d.CountIssues()
 	if err != nil {
 		return err
