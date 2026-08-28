@@ -309,7 +309,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
 			var o LegacyOpts
-			o.Major, _ = cmd.Flags().GetInt("major")
+			o.Majors, _ = cmd.Flags().GetIntSlice("major")
 			o.Apply, _ = cmd.Flags().GetBool("apply")
 			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
 			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
@@ -318,7 +318,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			return GetFlags().Legacy(o)
 		},
 	}
-	legacyCmd.Flags().Int("major", 0, "only bugs reported against this major, e.g. 1 (0 = every legacy major)")
+	legacyCmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
 	legacyCmd.Flags().Bool("apply", false, "comment and close every rules-cleared candidate as not planned")
 	legacyCmd.Flags().Bool("apply-with-ai", false, "the AI scores each candidate from issue + comments, you confirm each close")
 	legacyCmd.Flags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")

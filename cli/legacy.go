@@ -20,7 +20,7 @@ const (
 
 // LegacyOpts configures the legacy audit and its apply modes.
 type LegacyOpts struct {
-	Major           int     // only bugs reported against this major (0 = every legacy major)
+	Majors          []int   // only bugs reported against these majors (empty = every legacy major)
 	Apply           bool    // close the candidates the rules cleared, no AI
 	ApplyWithAI     bool    // AI reads issue + comments and scores, the human confirms each close
 	ApplyWithAIAuto bool    // AI scores and likely-stale ones (>= Threshold) close without asking
@@ -93,7 +93,7 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 		case a.Reason != triage.ReasonLegacyBug:
 			continue
 		}
-		if o.Major != 0 && s.VersionMajor != o.Major {
+		if len(o.Majors) > 0 && !slices.Contains(o.Majors, s.VersionMajor) {
 			continue
 		}
 		findings = append(findings, legacyFinding{issue: i, signals: s, action: a})
