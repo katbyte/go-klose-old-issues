@@ -337,16 +337,33 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	return nil
 }
 
-// judgeItem is one prepared block for the sequential judge.
+// judgeItem is one prepared block for the shared judge.
 type judgeItem struct {
 	number int
 	block  string
 }
 
-// judgeBlocks scores prepared issue↔evidence blocks with the AI CLI in
-// sequential batches — the report-side judge shared by shipped and fixes.
-// Verdicts cache in ai_verdicts under pass, model-aware like the apply's judge.
-func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeItem) (map[int]*msMatchVerdict, error) {
+// judgedTarget is one judged item handed to the caller's onBatch hook.
+type judgedTarget struct {
+	number  int
+	verdict *msMatchVerdict // nil when the batch failed or omitted it
+}
+
+// judgeBlocks scores prepared issue↔evidence blocks with the AI CLI, pipelined
+// one batch ahead exactly like the milestone apply: the batch line prints
+// before blocking on the result, and while a batch's verdicts are handled the
+// next batch is already off being judged in the background. Verdicts cache in
+// ai_verdicts under pass, model-aware.
+//
+// The hooks make it serve both reports and applies: onReady runs once after
+// the first batch lands (the natural place for an auto-mode confirm, so answer
+// time overlaps batch two; return false to abort), and onBatch receives each
+// slice of judged items as it becomes ready — cached verdicts first, then
+// batch by batch — for interleaved review/apply (return true to stop). Both
+// may be nil.
+func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeItem,
+	onReady func() (bool, error), onBatch func([]judgedTarget) (bool, error),
+) (map[int]*msMatchVerdict, error) {
 	a := f.NewAI()
 	switch resolved, rerr := a.ResolveModel(); {
 	case rerr != nil:
@@ -359,10 +376,12 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 
 	verdicts := map[int]*msMatchVerdict{}
 	type target struct {
-		item judgeItem
-		hash string
+		item    judgeItem
+		hash    string
+		verdict *msMatchVerdict
 	}
-	var uncached []target
+	var cached []judgedTarget
+	var uncached []*target
 	for _, it := range items {
 		hash := msMatchHash(promptText, it.block)
 		if v, err := d.GetVerdict(it.number, pass); err != nil {
@@ -371,48 +390,62 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 			var mv msMatchVerdict
 			if json.Unmarshal([]byte(v.Verdict), &mv) == nil {
 				verdicts[it.number] = &mv
+				cached = append(cached, judgedTarget{number: it.number, verdict: &mv})
 				continue
 			}
 		}
-		uncached = append(uncached, target{item: it, hash: hash})
+		uncached = append(uncached, &target{item: it, hash: hash})
 	}
 
 	cout.Printf("AI %s check: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
-		pass, len(uncached), len(verdicts), f.AI.Cmd, f.AI.Model)
+		pass, len(uncached), len(cached), f.AI.Cmd, f.AI.Model)
 
-	consecFails := 0
-	for start := 0; start < len(uncached); start += msMatchBatchSize {
+	launch := func(start int) <-chan msJudgedBatch {
 		batch := uncached[start:min(start+msMatchBatchSize, len(uncached))]
-
 		var prompt strings.Builder
 		prompt.WriteString(promptText)
 		for _, t := range batch {
 			prompt.WriteString("\n")
 			prompt.WriteString(t.item.block)
 		}
+		ch := make(chan msJudgedBatch, 1)
+		go func() {
+			raw, respModel, err := a.PromptWithModel(prompt.String())
+			ch <- msJudgedBatch{raw: raw, model: respModel, err: err}
+		}()
+		return ch
+	}
 
-		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, start+len(batch), len(uncached))
-		raw, _, err := a.PromptWithModel(prompt.String())
+	consecFails := 0
+	harvest := func(start int, ch <-chan msJudgedBatch) error {
+		end := min(start+msMatchBatchSize, len(uncached))
+		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
+		res := <-ch
+
 		var batchVerdicts []msMatchVerdict
+		err := res.err
 		if err == nil {
-			err = ai.ExtractJSON(raw, &batchVerdicts)
+			err = ai.ExtractJSON(res.raw, &batchVerdicts)
 		}
 		if err != nil {
 			cout.Errorf(" <red>failed:</> %v\n", err)
 			consecFails++
 			if consecFails >= maxConsecFails {
-				return nil, fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
+				return fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
 			}
-			continue
+			return nil // targets stay verdict-less
 		}
 		consecFails = 0
 		cout.Printf(" <green>ok</>\n")
+		if res.model != "" && res.model != f.AI.Model {
+			cout.Printf("  <yellow>note: this batch was answered by %s, not %s</>\n", res.model, f.AI.Model)
+		}
 
 		byNumber := map[int]*msMatchVerdict{}
 		for i := range batchVerdicts {
 			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
 		}
-		for _, t := range batch {
+		for _, t := range uncached[start:end] {
 			v := byNumber[t.item.number]
 			if v == nil {
 				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.item.number)
@@ -420,15 +453,82 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 			}
 			raw, merr := json.Marshal(v)
 			if merr != nil {
-				return nil, fmt.Errorf("marshalling verdict for #%d: %w", t.item.number, merr)
+				return fmt.Errorf("marshalling verdict for #%d: %w", t.item.number, merr)
 			}
 			if err := d.SaveVerdict(&db.Verdict{
 				IssueNumber: t.item.number, Pass: pass, PromptHash: t.hash,
 				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
 			}); err != nil {
-				return nil, err
+				return err
 			}
+			t.verdict = v
 			verdicts[t.item.number] = v
+		}
+		return nil
+	}
+
+	stopped := false
+	emit := func(ts []judgedTarget) error {
+		if onBatch == nil || stopped || len(ts) == 0 {
+			return nil
+		}
+		stop, err := onBatch(ts)
+		stopped = stopped || stop
+		return err
+	}
+	ready := func() (bool, error) {
+		if onReady == nil {
+			return true, nil
+		}
+		return onReady()
+	}
+	slice := func(start int) []judgedTarget {
+		end := min(start+msMatchBatchSize, len(uncached))
+		out := make([]judgedTarget, 0, end-start)
+		for _, t := range uncached[start:end] {
+			out = append(out, judgedTarget{number: t.item.number, verdict: t.verdict})
+		}
+		return out
+	}
+
+	if len(uncached) == 0 {
+		if ok, err := ready(); err != nil || !ok {
+			return verdicts, err
+		}
+		return verdicts, emit(cached)
+	}
+
+	// batch 1 in the foreground, then the confirm (auto mode's answer time
+	// overlaps batch 2), then cached + batch 1 + the pipeline
+	inflight := launch(0)
+	if err := harvest(0, inflight); err != nil {
+		return verdicts, err
+	}
+	if len(uncached) > msMatchBatchSize {
+		inflight = launch(msMatchBatchSize)
+		cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
+			msMatchBatchSize+1, min(2*msMatchBatchSize, len(uncached)))
+	}
+	if ok, err := ready(); err != nil || !ok {
+		return verdicts, err
+	}
+	if err := emit(cached); err != nil {
+		return verdicts, err
+	}
+	if err := emit(slice(0)); err != nil {
+		return verdicts, err
+	}
+	for start := msMatchBatchSize; start < len(uncached) && !stopped; start += msMatchBatchSize {
+		if err := harvest(start, inflight); err != nil {
+			return verdicts, err
+		}
+		if next := start + msMatchBatchSize; next < len(uncached) && !stopped {
+			inflight = launch(next)
+			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
+				next+1, min(next+msMatchBatchSize, len(uncached)))
+		}
+		if err := emit(slice(start)); err != nil {
+			return verdicts, err
 		}
 	}
 	return verdicts, nil

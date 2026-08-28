@@ -27,12 +27,15 @@ const (
 	classMentionedBy = "mentioned-by"
 
 	templateFixedShipped = "fixed-shipped"
+
+	// prLabelMerged is shared between the state labels and the fixed subcommand.
+	prLabelMerged = "merged"
 )
 
 // FixedOpts configures the fixed audit and its apply modes.
 type FixedOpts struct {
 	Link            string  // fixed-by | mentioned-by ("" = both)
-	Apply           bool    // close the listed issues (comment + close as completed)
+	Apply           bool    // close the listed issues (comment + close as completed), no AI
 	ApplyWithAI     bool    // AI scores each pairing, the human confirms each close
 	ApplyWithAIAuto bool    // AI scores and likely matches (>= Threshold) close without asking
 	Threshold       float64 // auto-close confidence floor (0 = the default)
@@ -136,15 +139,25 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 		return nil
 	}
 
-	// plain --apply closes what's listed with no AI involved; the report and
-	// the -with-ai modes score every pairing first
-	judge := o.ApplyWithAI || o.ApplyWithAIAuto || (!o.Apply && f.AI.Enabled)
-	var verdicts map[int]*msMatchVerdict
-	if judge {
+	switch {
+	case o.ApplyWithAI || o.ApplyWithAIAuto:
 		if !f.AI.Enabled {
 			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
 		}
-		if verdicts, err = f.judgeFixed(d, findings, prVersions); err != nil {
+		return f.applyFixedAI(d, findings, prVersions, o)
+	case o.Apply:
+		// plain --apply closes what's listed with no AI involved
+		return f.applyFixed(d, findings, prVersions, o)
+	}
+
+	// report: score everything (pipelined, cached) and list best matches first
+	var verdicts map[int]*msMatchVerdict
+	if f.AI.Enabled {
+		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
+		if jerr != nil {
+			return jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b fixedFinding) int {
@@ -164,12 +177,8 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 				return 0
 			}
 		})
-	} else if !o.Apply {
+	} else {
 		cout.Printf("<gray>--ai=false: listing without match scores</>\n")
-	}
-
-	if o.Apply || o.ApplyWithAI || o.ApplyWithAIAuto {
-		return f.applyFixed(d, findings, verdicts, prVersions, o)
 	}
 
 	for n := range findings {
@@ -180,52 +189,15 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 	return nil
 }
 
-// printFixedCard is one finding: the open issue, its merged PR references, and
-// the AI's score when judged.
-func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *msMatchVerdict) {
-	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
-		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
-	for i := range fdg.prs {
-		cout.Printf("      %s\n", fixedPRLine(&fdg.prs[i], prVersions))
-	}
-	if fdg.reopenedBy != 0 {
-		cout.Printf("      <red>closed by PR #%d and then reopened</>\n", fdg.reopenedBy)
-	}
-	printMSVerdict(v)
-}
-
-// applyFixed closes the listed issues: comment citing the fix PR and shipped
-// version, close as completed, and an applied action row for the audit trail
-// and koi reopen. Mirrors the milestone apply modes: --apply closes what's
-// listed, --apply-with-ai asks per issue with the score advising, and
-// --apply-with-ai-auto closes at or above the threshold unattended.
-func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, verdicts map[int]*msMatchVerdict, prVersions map[int][]string, o FixedOpts) error {
-	threshold := o.Threshold
-	if threshold <= 0 {
-		threshold = msMatchThreshold
-	}
-	auto := o.ApplyWithAIAuto
-	gated := auto || o.ApplyWithAI // AI-gated modes skip below-threshold in auto/dry-run
-	interactive := o.ApplyWithAI && !auto && !f.DryRun
-	if gated && !f.AI.Enabled {
-		return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
-	}
-
-	mode := "<gray>you confirm each close</>"
-	switch {
-	case f.DryRun && gated:
-		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
-	case f.DryRun:
+// applyFixed is plain --apply: close everything listed, no AI involved.
+func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
+	mode := "<gray>closing everything listed</>"
+	if f.DryRun {
 		mode = "<gray>previewing every close</>"
-	case auto:
-		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
-	case !gated:
-		mode = "<gray>closing everything listed</>"
 	}
 	cout.Printf("closing <yellow>%d</> candidates as fixed <gray>·</> %s%s\n", len(findings), mode, dryRunTag(f.DryRun))
 
-	if !interactive && !f.DryRun && !f.Yes {
+	if !f.DryRun && !f.Yes {
 		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
@@ -242,78 +214,200 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, verdicts map[in
 	}
 	throttle := newThrottle()
 
-	closed, failed, previewed, skipped, below := 0, 0, 0, 0, 0
+	closed, failed, previewed, skipped := 0, 0, 0, 0
 	for n := range findings {
-		fdg := &findings[n]
-		v := verdicts[fdg.issue.Number]
-
-		if gated && !interactive && (v == nil || v.Confidence < threshold) {
-			below++
-			score := "<yellow>no verdict</>"
-			if v != nil {
-				score = fmt.Sprintf("<%s>%.2f</>", scoreTag(v.Confidence), v.Confidence)
-			}
-			cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> %s %s <darkGray>%s</>\n",
-				n+1, len(findings), fdg.issue.Number, score,
-				text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
-			if v != nil {
-				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
-			}
-			continue
-		}
-
-		f.printFixedCard(fdg, n+1, len(findings), prVersions, v)
-
-		comment, err := f.renderFixedComment(fdg)
+		res, err := f.closeOneFixed(d, repo, &findings[n], nil, n+1, len(findings), prVersions, throttle, false)
 		if err != nil {
 			return err
 		}
-
-		if f.DryRun {
-			cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
-				len(comment), templateFixedShipped, triage.StateCompleted)
-			previewed++
-			continue
-		}
-
-		if interactive {
-			res, perr := promptFixedClose(fdg)
-			if perr != nil {
-				return perr
-			}
-			switch res {
-			case msApplySkipped:
-				skipped++
-				continue
-			case msApplyQuit:
-				cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-n-1)
-				cout.Printf("\n<green>%d closed</> · %d skipped by you · %d failed\n", closed, skipped, failed)
-				return nil
-			}
-		}
-
-		switch cerr := f.closeFixed(d, repo, fdg, v, comment, throttle); {
-		case cerr != nil:
-			return cerr
-		case fdg.issue.State == db.IssueClosed: // closeFixed marks already-closed
-			skipped++
-		default:
+		switch res {
+		case msApplySet:
 			closed++
+		case msApplyFailed:
+			failed++
+		case msApplyPreviewed:
+			previewed++
+		case msApplySkipped:
+			skipped++
 		}
-
-		if o.Max > 0 && closed >= o.Max {
+		if !f.DryRun && o.Max > 0 && closed >= o.Max {
 			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
 			break
 		}
 	}
+	return f.fixedSummary(closed, skipped, 0, failed, previewed)
+}
 
+// applyFixedAI is --apply-with-ai[-auto]: judging and closing are pipelined
+// like the milestone apply — batch N's candidates are reviewed and closed while
+// batch N+1 is already off being scored, and auto mode's confirm comes right
+// after batch 1 so answer time overlaps judging.
+func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
+	threshold := o.Threshold
+	if threshold <= 0 {
+		threshold = msMatchThreshold
+	}
+	auto := o.ApplyWithAIAuto
+	interactive := !auto && !f.DryRun
+
+	mode := "<gray>you confirm each close</>"
+	switch {
+	case f.DryRun:
+		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
+	case auto:
+		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
+	}
+	cout.Printf("closing up to <yellow>%d</> candidates as fixed <gray>·</> %s%s\n", len(findings), mode, dryRunTag(f.DryRun))
+
+	promptText, items, err := f.fixedJudgeItems(d, findings, prVersions)
+	if err != nil {
+		return err
+	}
+	byNumber := map[int]*fixedFinding{}
+	for i := range findings {
+		byNumber[findings[i].issue.Number] = &findings[i]
+	}
+
+	repo, err := f.NewRepo()
+	if err != nil {
+		return err
+	}
+	throttle := newThrottle()
+
+	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
+	process := func(ts []judgedTarget) (bool, error) {
+		for _, t := range ts {
+			pos++
+			fdg, v := byNumber[t.number], t.verdict
+			switch {
+			case v == nil:
+				unanswered++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <yellow>no verdict</> %s\n",
+					pos, len(findings), fdg.issue.Number, text.TruncateRunes(text.OneLine(fdg.issue.Title), 70))
+			case !interactive && v.Confidence < threshold:
+				below++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <%s>%.2f</> %s <darkGray>%s</>\n",
+					pos, len(findings), fdg.issue.Number, scoreTag(v.Confidence), v.Confidence,
+					text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
+				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+			default:
+				res, cerr := f.closeOneFixed(d, repo, fdg, v, pos, len(findings), prVersions, throttle, interactive)
+				if cerr != nil {
+					return true, cerr
+				}
+				switch res {
+				case msApplySet:
+					closed++
+				case msApplyFailed:
+					failed++
+				case msApplyPreviewed:
+					previewed++
+				case msApplySkipped:
+					if interactive {
+						humanSkipped++
+					} else {
+						skipped++
+					}
+				case msApplyQuit:
+					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
+					return true, nil
+				}
+				if !f.DryRun && o.Max > 0 && closed >= o.Max {
+					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	}
+	onReady := func() (bool, error) {
+		if !auto || f.DryRun || f.Yes {
+			return true, nil
+		}
+		ok, err := confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		if err == nil && !ok {
+			cout.Printf("aborted\n")
+		}
+		return ok, err
+	}
+
+	if _, err := f.judgeBlocks(d, passFixed, promptText, items, onReady, process); err != nil {
+		return err
+	}
+	if below+unanswered > 0 {
+		cout.Printf("\nAI match gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", below, threshold, unanswered)
+	}
+	return f.fixedSummary(closed, skipped, humanSkipped, failed, previewed)
+}
+
+// fixedSummary is the closing tally for both apply modes.
+func (f *FlagData) fixedSummary(closed, skipped, humanSkipped, failed, previewed int) error {
 	if f.DryRun {
-		cout.Printf("\n<yellow>dry-run:</> %d closes previewed · %d below the gate, nothing changed\n", previewed, below)
+		cout.Printf("\n<yellow>dry-run:</> %d closes previewed, nothing changed\n", previewed)
 		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to close these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n")
 		return nil
 	}
-	cout.Printf("\n<green>%d closed</> · %d skipped · %d below the gate · %d failed\n", closed, skipped, below, failed)
+	line := fmt.Sprintf("\n<green>%d closed</> · %d already closed", closed, skipped)
+	if humanSkipped > 0 {
+		line += fmt.Sprintf(" · %d skipped by you", humanSkipped)
+	}
+	cout.Printf("%s · %d failed\n", line, failed)
+	if failed > 0 {
+		return fmt.Errorf("%d closes failed", failed)
+	}
 	return nil
+}
+
+// closeOneFixed handles one candidate: card, comment, and the close itself (or
+// a preview under dry-run, or the a/s ask when interactive).
+func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *msMatchVerdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
+	f.printFixedCard(fdg, pos, total, prVersions, v)
+
+	comment, err := f.renderFixedComment(fdg)
+	if err != nil {
+		return msApplyFailed, err
+	}
+	if f.DryRun {
+		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
+			len(comment), templateFixedShipped, triage.StateCompleted)
+		return msApplyPreviewed, nil
+	}
+
+	if ask {
+		res, perr := promptFixedClose(fdg)
+		if perr != nil {
+			return msApplyFailed, perr
+		}
+		if res != msApplySet {
+			return res, nil
+		}
+	}
+
+	throttle()
+	live, err := repo.GetIssue(fdg.issue.Number)
+	if err != nil {
+		cout.Errorf("      <red>fetching live state: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	if live.State != restStateOpen {
+		cout.Printf("      <gray>already closed on github — skipped</>\n")
+		return msApplySkipped, nil
+	}
+
+	throttle()
+	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
+		cout.Errorf("      <red>comment failed: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	throttle()
+	if err := repo.CloseIssue(fdg.issue.Number, triage.StateCompleted); err != nil {
+		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
+		return msApplyFailed, nil
+	}
+
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
+	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, triage.ReasonFixedMergedPR)
+	return msApplySet, f.recordFixedClose(d, fdg, v)
 }
 
 // promptFixedClose asks the human about one candidate close.
@@ -336,36 +430,19 @@ func promptFixedClose(fdg *fixedFinding) (int, error) {
 	}
 }
 
-// closeFixed performs one close: live-state guard, comment, close as completed,
-// and an applied action row so stats and koi reopen see it. Already-closed
-// issues are marked on the finding so the caller counts them as skipped.
-func (f *FlagData) closeFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *msMatchVerdict, comment string, throttle func()) error {
-	throttle()
-	live, err := repo.GetIssue(fdg.issue.Number)
-	if err != nil {
-		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return nil
+// printFixedCard is one finding: the open issue, its merged PR references, the
+// reopen callout when the scan saw one, and the AI's score when judged.
+func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *msMatchVerdict) {
+	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
+		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+	for i := range fdg.prs {
+		cout.Printf("      %s\n", fixedPRLine(&fdg.prs[i], prVersions))
 	}
-	if live.State != restStateOpen {
-		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		fdg.issue.State = db.IssueClosed
-		return nil
+	if fdg.reopenedBy != 0 {
+		cout.Printf("      <red>closed by PR #%d and then reopened</>\n", fdg.reopenedBy)
 	}
-
-	throttle()
-	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
-		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return nil
-	}
-	throttle()
-	if err := repo.CloseIssue(fdg.issue.Number, triage.StateCompleted); err != nil {
-		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return nil
-	}
-
-	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
-	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, triage.ReasonFixedMergedPR)
-	return f.recordFixedClose(d, fdg, v)
+	printMSVerdict(v)
 }
 
 // recordFixedClose writes the applied action row for one close.
@@ -431,19 +508,19 @@ func fixedPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 	if vs := prVersions[pr.RefNumber]; len(vs) > 0 {
 		fmt.Fprintf(&b, " <gray>— shipped in</> <lightMagenta>v%s</>", vs[0])
 	} else {
-		fmt.Fprintf(&b, " <gray>— merged, not yet in a release</>")
+		fmt.Fprintf(&b, " <gray>— %s, not yet in a release</>", prLabelMerged)
 	}
 	fmt.Fprintf(&b, " <gray>·</> %s", text.TruncateRunes(text.OneLine(pr.Title), 70))
 	return b.String()
 }
 
-// judgeFixed scores every issue↔referenced-PR pairing with the AI — the shared
-// sequential judge under pass "fixed". Issue bodies come from the fetch; PR
-// bodies from the texts cache.
-func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (map[int]*msMatchVerdict, error) {
+// fixedJudgeItems fetches the PR texts and renders one judge block per finding:
+// the issue's title and body, every merged reference with its shipping release
+// and body, and the reopen note when the scan saw one.
+func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (string, []judgeItem, error) {
 	promptText, err := assets.Prompt(promptFixed)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	prNumbers := map[int]bool{}
@@ -453,11 +530,11 @@ func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[
 		}
 	}
 	if err := f.fetchTexts(d, text.SortedKeys(prNumbers)); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	texts, err := d.Texts()
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	items := make([]judgeItem, 0, len(findings))
@@ -468,7 +545,7 @@ func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[
 		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		b.WriteString("REFERENCED PRS:\n")
 		for _, pr := range fdg.prs {
-			state := "merged"
+			state := prLabelMerged
 			if vs := prVersions[pr.RefNumber]; len(vs) > 0 {
 				state = "merged, shipped in v" + vs[0]
 			}
@@ -486,7 +563,7 @@ func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[
 		}
 		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
 	}
-	return f.judgeBlocks(d, passFixed, promptText, items)
+	return promptText, items, nil
 }
 
 // openIssueInBrowser opens the url, reporting rather than failing on error.
