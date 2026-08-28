@@ -12,8 +12,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/chttp"
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
+	"github.com/katbyte/koi/lib/chttp"
+	"github.com/katbyte/koi/lib/clog"
 )
 
 type Repo struct {

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
-	"github.com/katbyte/go-klose-old-issues/lib/version"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/version"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

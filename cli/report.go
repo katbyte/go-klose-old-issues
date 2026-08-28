@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/assets"
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/assets"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
 )
 
 type reportEvidence struct {

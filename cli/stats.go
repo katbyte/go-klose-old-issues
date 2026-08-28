@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
 )
 
 // Stats prints the triage funnel: what's fetched, what the signals say, and where

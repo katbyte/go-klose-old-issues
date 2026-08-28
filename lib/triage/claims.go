@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/lib/db"
 )
 
 // Claim is a provider-major mention found in a comment. The sweep is deliberately

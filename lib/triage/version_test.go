@@ -3,7 +3,7 @@ package triage_test
 import (
 	"testing"
 
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/triage"
 )
 
 func TestExtractProviderVersion(t *testing.T) {

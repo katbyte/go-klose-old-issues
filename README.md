@@ -1,13 +1,13 @@
 # koi — keeper of issues
 
-[![GitHub release](https://img.shields.io/github/v/release/katbyte/go-klose-old-issues?color=blueviolet)](https://github.com/katbyte/go-klose-old-issues/releases/latest)
-![build](https://github.com/katbyte/go-klose-old-issues/actions/workflows/build.yaml/badge.svg)
-![test](https://github.com/katbyte/go-klose-old-issues/actions/workflows/test.yaml/badge.svg)
-![lint](https://github.com/katbyte/go-klose-old-issues/actions/workflows/lint.yaml/badge.svg)
-![govulncheck](https://github.com/katbyte/go-klose-old-issues/actions/workflows/govulncheck.yaml/badge.svg)
-![CodeQL](https://github.com/katbyte/go-klose-old-issues/actions/workflows/codeql-analysis.yml/badge.svg)
-[![Go Version](https://img.shields.io/github/go-mod/go-version/katbyte/go-klose-old-issues?color=00ADD8)](https://github.com/katbyte/go-klose-old-issues/blob/main/go.mod)
-[![License](https://img.shields.io/github/license/katbyte/go-klose-old-issues?color=blue)](https://github.com/katbyte/go-klose-old-issues/blob/main/LICENSE)
+[![GitHub release](https://img.shields.io/github/v/release/katbyte/koi?color=blueviolet)](https://github.com/katbyte/koi/releases/latest)
+![build](https://github.com/katbyte/koi/actions/workflows/build.yaml/badge.svg)
+![test](https://github.com/katbyte/koi/actions/workflows/test.yaml/badge.svg)
+![lint](https://github.com/katbyte/koi/actions/workflows/lint.yaml/badge.svg)
+![govulncheck](https://github.com/katbyte/koi/actions/workflows/govulncheck.yaml/badge.svg)
+![CodeQL](https://github.com/katbyte/koi/actions/workflows/codeql-analysis.yml/badge.svg)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/katbyte/koi?color=00ADD8)](https://github.com/katbyte/koi/blob/main/go.mod)
+[![License](https://img.shields.io/github/license/katbyte/koi?color=blue)](https://github.com/katbyte/koi/blob/main/LICENSE)
 
 `koi` is a keeper of issues: assisted bulk triage of a GitHub repository's
 issues, milestones, and changelog bookkeeping. Built for

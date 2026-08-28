@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
+	"github.com/katbyte/koi/lib/clog"
 )
 
 // Signals is the per-issue output of the analyse pass: everything the rules

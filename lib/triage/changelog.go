@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/lib/db"
 )
 
 var (

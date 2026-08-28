@@ -5,8 +5,8 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/katbyte/go-klose-old-issues/assets"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/assets"
+	"github.com/katbyte/koi/lib/db"
 )
 
 // commentData is what close-comment templates render with.

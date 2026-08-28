@@ -4,8 +4,8 @@ import (
 	"os"
 
 	c "github.com/gookit/color"
-	"github.com/katbyte/go-klose-old-issues/cli"
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
+	"github.com/katbyte/koi/cli"
+	"github.com/katbyte/koi/lib/clog"
 )
 
 func main() {

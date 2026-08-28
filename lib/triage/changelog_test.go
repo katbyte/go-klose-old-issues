@@ -3,7 +3,7 @@ package triage_test
 import (
 	"testing"
 
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/triage"
 )
 
 const changelogSample = `## 4.81.0 (July 14, 2026)

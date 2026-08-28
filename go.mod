@@ -1,4 +1,4 @@
-module github.com/katbyte/go-klose-old-issues
+module github.com/katbyte/koi
 
 go 1.26.5
 

@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/ai"
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
-	"github.com/katbyte/go-klose-old-issues/lib/gh"
-	"github.com/katbyte/go-klose-old-issues/lib/ghql"
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/ai"
+	"github.com/katbyte/koi/lib/clog"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/triage"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )

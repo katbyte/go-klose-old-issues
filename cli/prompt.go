@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
+	"github.com/katbyte/koi/lib/cout"
 )
 
 // stdinReader is shared so successive prompts don't lose buffered input.

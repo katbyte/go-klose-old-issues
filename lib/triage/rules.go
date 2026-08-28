@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/koi/lib/db"
 )
 
 // Reason codes. Close reasons each map to a comment template of the same name.

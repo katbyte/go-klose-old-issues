@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/triage"
 )
 
 // cardContext bundles everything the review card needs for one proposal. The

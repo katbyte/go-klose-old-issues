@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
-	"github.com/katbyte/go-klose-old-issues/lib/cout"
-	"github.com/katbyte/go-klose-old-issues/lib/db"
-	"github.com/katbyte/go-klose-old-issues/lib/ghql"
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/clog"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/triage"
 )
 
 const (

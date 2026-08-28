@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/db"
-	"github.com/katbyte/go-klose-old-issues/lib/triage"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/triage"
 )
 
 func comment(author, body string, daysAgo int) db.Comment {

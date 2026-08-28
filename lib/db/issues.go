@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/katbyte/go-klose-old-issues/lib/clog"
+	"github.com/katbyte/koi/lib/clog"
 )
 
 // Issue states as GitHub's GraphQL API reports them.
