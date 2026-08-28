@@ -71,15 +71,15 @@ func (f *FlagData) Review(o ReviewOpts) error {
 
 	prompt:
 		for {
-			ans, err := promptInput(fmt.Sprintf(
-				"  <gray>[a:%d r:%d s:%d]</> <green>(y)</>approve <red>(n)</>reject (s)kip (e)dit (c)omments (b)ody (t)emplate (o)pen (u)ndo (?)help (q)uit <gray>></> ",
+			ans, err := promptKey(fmt.Sprintf(
+				"  <gray>[a:%d r:%d s:%d]</> <green>(a)</>pprove <red>(n)</>reject (s)kip (e)dit (c)omments (b)ody (t)emplate (o)pen (u)ndo (?)help (q)uit <gray>></> ",
 				approved, rejected, skipped))
 			if err != nil {
 				return err
 			}
 
 			switch strings.ToLower(ans) {
-			case "y":
+			case "a", "y":
 				if err := d.DecideAction(a.ID, db.StatusApproved, decider); err != nil {
 					return err
 				}
@@ -169,7 +169,7 @@ func printSession(approved, rejected, skipped int) {
 
 func printReviewHelp() {
 	cout.Printf(`
-  <green>y</>  approve the proposal (apply executes it later)
+  <green>a</>  approve the proposal (apply executes it later; y works too)
   <red>n</>  reject it (won't be proposed again)
   s  skip for now (stays proposed, shows up next session)
   e  change the action/reason before deciding
