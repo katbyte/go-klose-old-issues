@@ -46,7 +46,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 	printCounts(counts)
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("close %d issues on %s?", len(actions), f.GH.Repo))
+		ok, err := confirm(fmt.Sprintf("close <yellow>%d</> issues on %s?", len(actions), f.repoTag()))
 		if err != nil {
 			return err
 		}

@@ -180,6 +180,14 @@ func (f *FlagData) Decider() string {
 	return "unknown"
 }
 
+// repoTag is the triaged repo coloured for display: white owner / cyan name.
+func (f *FlagData) repoTag() string {
+	if owner, name, err := f.RepoOwnerName(); err == nil {
+		return fmt.Sprintf("<white>%s</>/<cyan>%s</>", owner, name)
+	}
+	return f.GH.Repo
+}
+
 // issueURL builds the web url for an issue in the triaged repo.
 func (f *FlagData) issueURL(number int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, number)

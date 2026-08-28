@@ -370,7 +370,7 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 		}
 		cout.Printf("wrote <cyan>%s</> (%d findings)\n", o.CSV, len(findings))
 	} else if o.Bucket == "" && len(findings) > 10 {
-		cout.Printf("<gray>(showing up to 10 per bucket — use --csv audit.csv for the full list, --bucket <name> for one bucket)</>\n")
+		cout.Printf("<gray>(showing up to 10 per bucket — use</> <cyan>--csv audit.csv</> <gray>for the full list,</> <cyan>--bucket <name></> <gray>for one bucket)</>\n")
 	}
 
 	wants := map[string]bool{}
@@ -737,7 +737,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 
 	cout.Printf("setting milestones on <yellow>%d</> issues%s\n", len(todo), dryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("set milestones on %d issues in %s?", len(todo), f.GH.Repo))
+		ok, err := confirm(fmt.Sprintf("set milestones on <yellow>%d</> issues in %s?", len(todo), f.repoTag()))
 		if err != nil {
 			return err
 		}

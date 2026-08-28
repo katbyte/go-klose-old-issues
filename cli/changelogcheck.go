@@ -104,7 +104,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 			text.TruncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
 	}
 	if o.Bucket == "" && len(findings) > 10 {
-		cout.Printf("<gray>(showing up to 10 per bucket — use --csv for the full list, --bucket <name> for one bucket)</>\n")
+		cout.Printf("<gray>(showing up to 10 per bucket — use</> <cyan>--csv</> <gray>for the full list,</> <cyan>--bucket <name></> <gray>for one bucket)</>\n")
 	}
 
 	if o.CSV != "" {
@@ -267,7 +267,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 
 	cout.Printf("setting milestones on <yellow>%d</> PRs%s\n", len(todo), dryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("set milestones on %d PRs in %s?", len(todo), f.GH.Repo))
+		ok, err := confirm(fmt.Sprintf("set milestones on <yellow>%d</> PRs in %s?", len(todo), f.repoTag()))
 		if err != nil {
 			return err
 		}

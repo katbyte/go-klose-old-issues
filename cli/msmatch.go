@@ -277,14 +277,14 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		}
 		if len(uncached) > msMatchBatchSize {
 			inflight = launch(msMatchBatchSize)
-			cout.Printf("<gray>starting batch %d-%d in the background...</>\n",
+			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
 				msMatchBatchSize+1, min(2*msMatchBatchSize, len(uncached)))
 		}
 	}
 
 	// interactive mode asks per item; the up-front confirm is auto mode's gate
 	if auto && !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("auto-apply milestone sets the AI scores ≥ %.2f (up to %d candidates) in %s?", threshold, len(todo), f.GH.Repo))
+		ok, err := confirm(fmt.Sprintf("auto-apply milestone sets the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(todo), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -309,7 +309,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		}
 		if next := start + msMatchBatchSize; next < len(uncached) {
 			inflight = launch(next)
-			cout.Printf("<gray>starting batch %d-%d in the background...</>\n",
+			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
 				next+1, min(next+msMatchBatchSize, len(uncached)))
 		}
 		if err := process(uncached[start:min(start+msMatchBatchSize, len(uncached))]); err != nil {
