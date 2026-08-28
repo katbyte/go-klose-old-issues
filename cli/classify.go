@@ -44,6 +44,10 @@ func (f *FlagData) Classify(pass string, limit int) error {
 	}
 	defer func() { _ = d.Close() }()
 
+	if err := f.ensureAnalysed(d); err != nil {
+		return err
+	}
+
 	a := f.NewAI()
 
 	if pass == passClassify || pass == passAll {

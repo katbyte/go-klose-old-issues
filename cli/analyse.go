@@ -19,23 +19,49 @@ func (f *FlagData) Analyse() error {
 	}
 	defer func() { _ = d.Close() }()
 
+	counts, err := f.analyseAll(d, true)
+	if err != nil || counts == nil {
+		return err
+	}
+
+	cout.Printf("\n<green>proposals:</>\n")
+	printCounts(counts)
+	cout.Printf("\nnext: <cyan>koi classify</> for the undetermined, <cyan>koi review</> to start deciding\n")
+	return nil
+}
+
+// ensureAnalysed refreshes signals and rule proposals before a consumer command
+// runs. Analyse is deterministic, takes seconds, and never overwrites human
+// decisions or AI enrichment — so commands re-run it themselves rather than
+// making the user remember to.
+func (f *FlagData) ensureAnalysed(d *db.DB) error {
+	_, err := f.analyseAll(d, false)
+	return err
+}
+
+// analyseAll computes signals + rule proposals for every open issue. Verbose
+// prints progress and per-proposal detail; quiet prints a single line. Returns
+// nil counts when the db has no open issues (a message is printed either way).
+func (f *FlagData) analyseAll(d *db.DB, verbose bool) (map[string]int, error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if len(issues) == 0 {
 		cout.Printf("no open issues in db — run <cyan>koi fetch</> first\n")
-		return nil
+		return nil, nil
 	}
 
 	cfg := f.RuleConfig()
-	cout.Printf("analysing <yellow>%d</> open issues...\n", len(issues))
+	if verbose {
+		cout.Printf("analysing <yellow>%d</> open issues...\n", len(issues))
+	}
 
 	counts := map[string]int{}
 	for n, i := range issues {
 		s, err := computeSignals(d, i, f.GH.Repo)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		// the classify pass enriches signals the deterministic parse can't derive;
@@ -43,7 +69,7 @@ func (f *FlagData) Analyse() error {
 		// wouldn't re-derive it for an unchanged issue)
 		prev, err := d.GetSignals(i.Number)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if prev != nil && prev.VersionSource == "ai" && s.VersionMajor == 0 {
 			s.VersionMajor, s.VersionFull, s.VersionSource, s.VersionQuote = prev.VersionMajor, prev.VersionFull, prev.VersionSource, prev.VersionQuote
@@ -53,7 +79,7 @@ func (f *FlagData) Analyse() error {
 		}
 
 		if err := d.SaveSignals(s); err != nil {
-			return err
+			return nil, err
 		}
 
 		if a := triage.Propose(i, s, cfg); a != nil {
@@ -62,27 +88,33 @@ func (f *FlagData) Analyse() error {
 			// verdict cache means classify wouldn't re-derive it either
 			existing, err := d.GetAction(i.Number)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if existing != nil && existing.Status == db.StatusProposed && existing.Source != "rules" {
 				counts[existing.Action+"/"+existing.Reason]++
 			} else {
 				if _, err := d.ProposeAction(a); err != nil {
-					return err
+					return nil, err
 				}
 				counts[a.Action+"/"+a.Reason]++
 			}
 		}
 
-		if (n+1)%500 == 0 {
+		if verbose && (n+1)%500 == 0 {
 			cout.Printf("  <yellow>%d</>/<yellow>%d</>\n", n+1, len(issues))
 		}
 	}
 
-	cout.Printf("\n<green>proposals:</>\n")
-	printCounts(counts)
-	cout.Printf("\nnext: <cyan>koi classify</> for the undetermined, <cyan>koi review</> to start deciding\n")
-	return nil
+	if !verbose {
+		closes := 0
+		for k, n := range counts {
+			if strings.HasPrefix(k, db.ActionClose+"/") {
+				closes += n
+			}
+		}
+		cout.Printf("<gray>analysed %d open issues — %d close proposals up to date</>\n", len(issues), closes)
+	}
+	return counts, nil
 }
 
 // computeSignals derives everything the rules and the review card need for one issue.

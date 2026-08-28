@@ -28,6 +28,10 @@ func (f *FlagData) Review(o ReviewOpts) error {
 	}
 	defer func() { _ = d.Close() }()
 
+	if err := f.ensureAnalysed(d); err != nil {
+		return err
+	}
+
 	filter := db.ActionFilter{
 		Status:        db.StatusProposed,
 		Action:        o.Action,

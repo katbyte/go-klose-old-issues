@@ -87,12 +87,16 @@ func (f *FlagData) Report(outDir string) error {
 	}
 	defer func() { _ = d.Close() }()
 
+	if err := f.ensureAnalysed(d); err != nil {
+		return err
+	}
+
 	actions, err := d.Actions(db.ActionFilter{Status: db.StatusProposed})
 	if err != nil {
 		return err
 	}
 	if len(actions) == 0 {
-		cout.Printf("no proposed actions to report — run <cyan>koi analyse</> first\n")
+		cout.Printf("no proposed actions to report — is the db fetched? (<cyan>koi fetch</>)\n")
 		return nil
 	}
 

@@ -18,6 +18,10 @@ func (f *FlagData) Stats() error {
 	}
 	defer func() { _ = d.Close() }()
 
+	if err := f.ensureAnalysed(d); err != nil {
+		return err
+	}
+
 	total, open, err := d.CountIssues()
 	if err != nil {
 		return err

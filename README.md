@@ -27,17 +27,18 @@ See [PLAN.md](PLAN.md) for the full design.
 ```sh
 export GITHUB_TOKEN=$(gh auth token)
 
-koi fetch              # all open issues + comments + changelogs -> issues.db (resumable; later runs sync incrementally)
-koi analyze            # deterministic signals + rules -> proposed actions
+koi fetch              # all open issues + comments + changelogs -> issues.db, rules run automatically
+                       # (resumable; later runs sync incrementally — the only required setup step)
+koi review             # interactive card-by-card decisions (y/n/s/e/c/b/t/o/u)
 koi stats              # the funnel: what can close, what keeps, what needs AI
 koi classify           # AI passes: classify the undetermined, double-check closes for "still an issue on 4.x/5.x" claims
-koi review             # interactive card-by-card decisions (y/n/s/e/c/b/t/o/u)
 koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking
 koi report             # report.html + decisions.csv for async (community manager) review
 koi import report/decisions.csv --as manager
 koi apply --max 100 --dry-run   # preview a wave
 koi apply --max 100             # comment + close, throttled, staleness-guarded
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
+koi analyse            # (optional) re-run the rules verbosely — review/report/stats/classify do it automatically
 
 koi milestone                    # scan ALL issues (open+closed, light fields) + audit release milestones
 koi milestone --skip-scan --csv audit.csv   # re-audit offline, full findings to csv
