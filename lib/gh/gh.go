@@ -114,7 +114,7 @@ func (r Repo) CreateComment(number int, text string) error {
 	return nil
 }
 
-// CloseIssue closes an issue with a state reason ("not_planned" or "completed").
+// CloseIssue closes an issue with a state reason ("not_planned", "completed", or "duplicate").
 func (r Repo) CloseIssue(number int, stateReason string) error {
 	status, body, err := r.do(http.MethodPatch, fmt.Sprintf("/issues/%d", number), map[string]string{"state": "closed", "state_reason": stateReason})
 	if err != nil {

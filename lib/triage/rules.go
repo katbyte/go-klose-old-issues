@@ -30,6 +30,7 @@ const (
 const (
 	StateNotPlanned = "not_planned"
 	StateCompleted  = "completed"
+	StateDuplicate  = "duplicate"
 )
 
 // RuleConfig tunes the rules engine.

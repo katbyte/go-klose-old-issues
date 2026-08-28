@@ -392,10 +392,9 @@ func (f *FlagData) applyResolvedAI(d *db.DB, findings []resolvedFinding, o Resol
 func (f *FlagData) closeOneResolved(d *db.DB, repo gh.Repo, fdg *resolvedFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printResolvedCard(fdg, pos, total, v)
 
-	stateReason := triage.StateNotPlanned
-	if resolvedClass(fdg.best.stateReason) == classCompleted {
-		stateReason = triage.StateCompleted
-	}
+	// every close here says "this duplicates the linked issue" — github's
+	// duplicate state is exactly that, and the comment carries the resolution
+	stateReason := triage.StateDuplicate
 	comment, err := f.renderResolvedComment(fdg)
 	if err != nil {
 		return msApplyFailed, err
