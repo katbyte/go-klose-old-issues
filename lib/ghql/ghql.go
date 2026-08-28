@@ -79,14 +79,16 @@ func (c *Client) Do(query string, variables map[string]any, out any) error {
 	return c.do(query, variables, out, false)
 }
 
-// DoTolerant is Do for queries whose aliased fields may individually fail —
-// e.g. pullRequest lookups where the number is actually an issue. NOT_FOUND
-// errors are ignored and the partial data is decoded; anything else still fails.
+// DoTolerant is Do for queries whose individual nodes may legitimately fail —
+// pullRequest lookups where the number is actually an issue (NOT_FOUND), or
+// timeline cross-references into repos the token can't read (FORBIDDEN, e.g. a
+// private fork referencing an issue). Those errors are ignored and the partial
+// data decoded — the affected nodes come back null; anything else still fails.
 func (c *Client) DoTolerant(query string, variables map[string]any, out any) error {
 	return c.do(query, variables, out, true)
 }
 
-func (c *Client) do(query string, variables map[string]any, out any, tolerateNotFound bool) error {
+func (c *Client) do(query string, variables map[string]any, out any, tolerant bool) error {
 	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return fmt.Errorf("marshalling graphql request: %w", err)
@@ -131,12 +133,14 @@ func (c *Client) do(query string, variables map[string]any, out any, tolerateNot
 				continue
 			}
 			fatal := envelope.Errors
-			if tolerateNotFound && envelope.Data != nil {
+			if tolerant && envelope.Data != nil {
 				fatal = nil
 				for _, e := range envelope.Errors {
-					if e.Type != "NOT_FOUND" {
-						fatal = append(fatal, e)
+					if e.Type == "NOT_FOUND" || e.Type == "FORBIDDEN" {
+						clog.Log.Debugf("graphql: ignoring %s node error: %s", e.Type, e.Message)
+						continue
 					}
+					fatal = append(fatal, e)
 				}
 			}
 			if len(fatal) > 0 {
@@ -326,7 +330,7 @@ func (c *Client) OpenIssues(owner, name, cursor string) (*OpenIssuesPage, error)
 			} `json:"issues"`
 		} `json:"repository"`
 	}
-	if err := c.Do(openIssuesQuery, vars, &resp); err != nil {
+	if err := c.DoTolerant(openIssuesQuery, vars, &resp); err != nil {
 		return nil, fmt.Errorf("fetching issues page: %w", err)
 	}
 
@@ -370,7 +374,7 @@ func (c *Client) UpdatedIssues(owner, name string, since time.Time, cursor strin
 			Nodes      []IssueNode `json:"nodes"`
 		} `json:"search"`
 	}
-	if err := c.Do(updatedIssuesQuery, vars, &resp); err != nil {
+	if err := c.DoTolerant(updatedIssuesQuery, vars, &resp); err != nil {
 		return nil, fmt.Errorf("fetching updated issues page: %w", err)
 	}
 

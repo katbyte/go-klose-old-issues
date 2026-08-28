@@ -150,7 +150,7 @@ func (c *Client) ScanIssues(owner, name, cursor string) (*ScanIssuesPage, error)
 			} `json:"issues"`
 		} `json:"repository"`
 	}
-	if err := c.Do(scanIssuesQuery, vars, &resp); err != nil {
+	if err := c.DoTolerant(scanIssuesQuery, vars, &resp); err != nil {
 		return nil, fmt.Errorf("fetching scan page: %w", err)
 	}
 
@@ -175,7 +175,7 @@ func (c *Client) ScanUpdatedIssues(owner, name string, since time.Time, cursor s
 			Nodes      []ScanIssueNode `json:"nodes"`
 		} `json:"search"`
 	}
-	if err := c.Do(scanUpdatedQuery, vars, &resp); err != nil {
+	if err := c.DoTolerant(scanUpdatedQuery, vars, &resp); err != nil {
 		return nil, fmt.Errorf("fetching updated scan page: %w", err)
 	}
 
