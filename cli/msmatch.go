@@ -140,8 +140,8 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	case auto:
 		mode = fmt.Sprintf("<gray>auto-applying ≥</> <green>%.2f</>", threshold)
 	}
-	cout.Printf("AI match check on <yellow>%d</> candidates: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</> <gray>·</> %s\n",
-		len(todo), len(uncached), len(cachedTargets), f.AI.Cmd, model, mode)
+	cout.Printf("AI match check on <yellow>%d</> candidates in %s: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</> <gray>·</> %s\n",
+		len(todo), f.repoTag(), len(uncached), len(cachedTargets), f.AI.Cmd, model, mode)
 
 	repo, err := f.NewRepo()
 	if err != nil {

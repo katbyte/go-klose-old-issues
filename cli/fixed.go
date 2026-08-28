@@ -195,7 +195,7 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 	if f.DryRun {
 		mode = "<gray>previewing every close</>"
 	}
-	cout.Printf("closing <yellow>%d</> candidates as fixed <gray>·</> %s%s\n", len(findings), mode, dryRunTag(f.DryRun))
+	cout.Printf("closing <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
 		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag()))
@@ -257,7 +257,7 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 	case auto:
 		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
 	}
-	cout.Printf("closing up to <yellow>%d</> candidates as fixed <gray>·</> %s%s\n", len(findings), mode, dryRunTag(f.DryRun))
+	cout.Printf("closing up to <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	promptText, items, err := f.fixedJudgeItems(d, findings, prVersions)
 	if err != nil {
