@@ -267,11 +267,13 @@ func (d *DB) ChangelogVersionsByPR() (map[int][]string, error) {
 
 // Text is the cached full text of an issue or PR, for the AI match check.
 type Text struct {
-	Number int
-	IsPR   bool
-	State  string
-	Title  string
-	Body   string
+	Number  int
+	IsPR    bool
+	State   string
+	Title   string
+	Body    string
+	Tail    string // the last few comments, rendered
+	HasTail bool   // fetched since the tail column existed
 }
 
 // SaveTexts upserts a batch of fetched issue/PR texts.
@@ -284,11 +286,11 @@ func (d *DB) SaveTexts(texts []Text) error {
 
 	for _, t := range texts {
 		if _, err := tx.Exec(`
-			INSERT INTO texts (number, is_pr, state, title, body, fetched_at) VALUES (?, ?, ?, ?, ?, ?)
+			INSERT INTO texts (number, is_pr, state, title, body, tail, has_tail, fetched_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
 			ON CONFLICT(number) DO UPDATE SET
 				is_pr = excluded.is_pr, state = excluded.state, title = excluded.title,
-				body = excluded.body, fetched_at = excluded.fetched_at`,
-			t.Number, boolToInt(t.IsPR), t.State, t.Title, t.Body, toDBTime(Now())); err != nil {
+				body = excluded.body, tail = excluded.tail, has_tail = 1, fetched_at = excluded.fetched_at`,
+			t.Number, boolToInt(t.IsPR), t.State, t.Title, t.Body, t.Tail, toDBTime(Now())); err != nil {
 			return fmt.Errorf("upserting text #%d: %w", t.Number, err)
 		}
 	}
@@ -300,7 +302,7 @@ func (d *DB) SaveTexts(texts []Text) error {
 
 // Texts returns every cached issue/PR text by number.
 func (d *DB) Texts() (map[int]Text, error) {
-	rows, err := d.Query("SELECT number, is_pr, state, title, body FROM texts")
+	rows, err := d.Query("SELECT number, is_pr, state, title, body, tail, has_tail FROM texts")
 	if err != nil {
 		return nil, fmt.Errorf("querying texts: %w", err)
 	}
@@ -309,11 +311,11 @@ func (d *DB) Texts() (map[int]Text, error) {
 	texts := map[int]Text{}
 	for rows.Next() {
 		var t Text
-		var isPR int
-		if err := rows.Scan(&t.Number, &isPR, &t.State, &t.Title, &t.Body); err != nil {
+		var isPR, hasTail int
+		if err := rows.Scan(&t.Number, &isPR, &t.State, &t.Title, &t.Body, &t.Tail, &hasTail); err != nil {
 			return nil, fmt.Errorf("scanning text: %w", err)
 		}
-		t.IsPR = isPR != 0
+		t.IsPR, t.HasTail = isPR != 0, hasTail != 0
 		texts[t.Number] = t
 	}
 	return texts, rows.Err()

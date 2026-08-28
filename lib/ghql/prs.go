@@ -56,6 +56,17 @@ type TextNode struct {
 	State    string `json:"state"`
 	Title    string `json:"title"`
 	Body     string `json:"body"`
+	Comments struct {
+		TotalCount int           `json:"totalCount"`
+		Nodes      []TextComment `json:"nodes"`
+	} `json:"comments"`
+}
+
+// TextComment is one of the last comments on a fetched issue/PR.
+type TextComment struct {
+	Author    struct{ Login string } `json:"author"`
+	CreatedAt string                 `json:"createdAt"`
+	Body      string                 `json:"body"`
 }
 
 // Texts fetches title + body + state for up to 25 issue-or-PR numbers in one
@@ -70,8 +81,8 @@ func (c *Client) Texts(owner, name string, numbers []int) (map[int]*TextNode, Ra
 	for _, n := range numbers {
 		fmt.Fprintf(&fields, `t%d: issueOrPullRequest(number: %d) {
   __typename
-  ... on Issue { number state title body }
-  ... on PullRequest { number state title body }
+  ... on Issue { number state title body comments(last: 15) { totalCount nodes { author { login } createdAt body } } }
+  ... on PullRequest { number state title body comments(last: 15) { totalCount nodes { author { login } createdAt body } } }
 }
 `, n, n)
 	}

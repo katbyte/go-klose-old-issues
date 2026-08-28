@@ -16,6 +16,14 @@ import (
 const (
 	passLegacy   = "legacy"
 	promptLegacy = "legacy-bug-close"
+
+	// signal kinds the legacy lens cares about (crash colours differently).
+	signalKindBug   = "bug"
+	signalKindCrash = "crash"
+
+	// versionSourceLabel marks a version derived from a v/N.x label — the quote
+	// for those is just "labelled v/N.x", which adds nothing over the source tag.
+	versionSourceLabel = "label"
 )
 
 // LegacyOpts configures the legacy audit and its apply modes.
@@ -55,68 +63,33 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 	}
 	defer func() { _ = d.Close() }()
 
-	issues, err := d.OpenIssues()
+	col, err := f.collectLegacy(d, o.Majors)
 	if err != nil {
 		return err
 	}
-	if len(issues) == 0 {
+	if col.open == 0 {
 		cout.Printf("no fetched issues — run <cyan>koi fetch</> first\n")
 		return nil
 	}
+	findings := col.findings
 
-	cfg := f.RuleConfig()
-	var findings []legacyFinding
-	byMajor := map[int]int{}
-	protected := map[string]int{}
-	diverted := 0
-	legacyBugs := 0
-	for _, i := range issues {
-		s, serr := d.GetSignals(i.Number)
-		if serr != nil {
-			return serr
-		}
-		if s == nil || (s.Kind != "bug" && s.Kind != "crash") || s.VersionMajor < 1 || s.VersionMajor > cfg.CurrentMajor-2 {
-			continue
-		}
-		legacyBugs++
-
-		a := triage.Propose(i, s, cfg)
-		switch {
-		case a == nil:
-			continue
-		case a.Action == db.ActionKeep:
-			protected[a.Reason]++
-			continue
-		case a.Reason == triage.ReasonFixedMergedPR:
-			diverted++ // koi fixed territory: a merged PR references it
-			continue
-		case a.Reason != triage.ReasonLegacyBug:
-			continue
-		}
-		if len(o.Majors) > 0 && !slices.Contains(o.Majors, s.VersionMajor) {
-			continue
-		}
-		findings = append(findings, legacyFinding{issue: i, signals: s, action: a})
-		byMajor[s.VersionMajor]++
-	}
-
-	cout.Printf("\n<bold>%d open bugs/crashes report a legacy major (v1–v%d):</>\n", legacyBugs, cfg.CurrentMajor-2)
+	cout.Printf("\n<bold>%d open bugs/crashes report a legacy major (v1–v%d):</>\n", col.legacyBugs, col.maxMajor)
 	var majors []string
-	for m := 1; m <= cfg.CurrentMajor-2; m++ {
-		if byMajor[m] > 0 {
-			majors = append(majors, fmt.Sprintf("<lightMagenta>v%d</> <yellow>%d</>", m, byMajor[m]))
+	for m := 1; m <= col.maxMajor; m++ {
+		if col.byMajor[m] > 0 {
+			majors = append(majors, fmt.Sprintf("<lightMagenta>v%d</> <yellow>%d</>", m, col.byMajor[m]))
 		}
 	}
 	cout.Printf("  <green>close candidates</> <yellow>%d</>  <gray>·</> %s\n", len(findings), strings.Join(majors, " <gray>·</> "))
-	if len(protected) > 0 {
-		parts := make([]string, 0, len(protected))
-		for _, r := range text.SortedKeys(protected) {
-			parts = append(parts, fmt.Sprintf("<gray>%s</> <yellow>%d</>", r, protected[r]))
+	if len(col.protected) > 0 {
+		parts := make([]string, 0, len(col.protected))
+		for _, r := range text.SortedKeys(col.protected) {
+			parts = append(parts, fmt.Sprintf("<gray>%s</> <yellow>%d</>", r, col.protected[r]))
 		}
 		cout.Printf("  <fg=208>protected</>        %s\n", strings.Join(parts, " <gray>·</> "))
 	}
-	if diverted > 0 {
-		cout.Printf("  <gray>fixed-merged-pr  %d (koi fixed closes these)</>\n", diverted)
+	if col.diverted > 0 {
+		cout.Printf("  <gray>fixed-merged-pr  %d (koi fixed closes these)</>\n", col.diverted)
 	}
 	if len(findings) == 0 {
 		return nil
@@ -168,6 +141,61 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 	}
 	cout.Printf("\nnext: <cyan>koi legacy --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
+}
+
+// legacyCollection is everything the legacy sweep learns: the close-cleared
+// findings plus the counts that explain what was NOT cleared.
+type legacyCollection struct {
+	findings   []legacyFinding
+	byMajor    map[int]int
+	protected  map[string]int // keep reason → count
+	diverted   int            // fixed-merged-pr, koi fixed territory
+	legacyBugs int            // every open bug/crash on a legacy major
+	maxMajor   int            // newest legacy major (current-2)
+	open       int            // open-issue total
+}
+
+// collectLegacy builds the legacy findings: open bug/crash reports on legacy
+// majors that the keep rules cleared for closing, optionally scoped to majors.
+func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, error) {
+	cfg := f.RuleConfig()
+	col := legacyCollection{byMajor: map[int]int{}, protected: map[string]int{}, maxMajor: cfg.CurrentMajor - 2}
+
+	issues, err := d.OpenIssues()
+	if err != nil {
+		return col, err
+	}
+	col.open = len(issues)
+	for _, i := range issues {
+		s, serr := d.GetSignals(i.Number)
+		if serr != nil {
+			return col, serr
+		}
+		if s == nil || (s.Kind != signalKindBug && s.Kind != signalKindCrash) || s.VersionMajor < 1 || s.VersionMajor > col.maxMajor {
+			continue
+		}
+		col.legacyBugs++
+
+		a := triage.Propose(i, s, cfg)
+		switch {
+		case a == nil:
+			continue
+		case a.Action == db.ActionKeep:
+			col.protected[a.Reason]++
+			continue
+		case a.Reason == triage.ReasonFixedMergedPR:
+			col.diverted++ // koi fixed territory: a merged PR references it
+			continue
+		case a.Reason != triage.ReasonLegacyBug:
+			continue
+		}
+		if len(onlyMajors) > 0 && !slices.Contains(onlyMajors, s.VersionMajor) {
+			continue
+		}
+		col.findings = append(col.findings, legacyFinding{issue: i, signals: s, action: a})
+		col.byMajor[s.VersionMajor]++
+	}
+	return col, nil
 }
 
 // applyLegacy is plain --apply: close every rules-cleared candidate, no AI.
@@ -405,7 +433,7 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *msMatchVerdict) {
 	i, s := fdg.issue, fdg.signals
 	kindTag := tagOrange
-	if s.Kind == "crash" {
+	if s.Kind == signalKindCrash {
 		kindTag = "red"
 	}
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",

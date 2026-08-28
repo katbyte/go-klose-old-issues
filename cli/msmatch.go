@@ -599,8 +599,8 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	}
 	var need []int
 	for _, n := range want {
-		if _, ok := cached[n]; !ok {
-			need = append(need, n)
+		if t, ok := cached[n]; !ok || !t.HasTail {
+			need = append(need, n) // pre-tail rows refetch once to pick up the comments
 		}
 	}
 	if len(need) == 0 {
@@ -631,9 +631,18 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 				texts = append(texts, db.Text{Number: n})
 				continue
 			}
+			// full timestamps so splitTailAt can place same-day comments on the
+			// right side of a close; a leading note marks truncated discussions
+			var tail strings.Builder
+			if hidden := node.Comments.TotalCount - len(node.Comments.Nodes); hidden > 0 {
+				fmt.Fprintf(&tail, "(%d earlier comments not shown)\n", hidden)
+			}
+			for _, c := range node.Comments.Nodes {
+				fmt.Fprintf(&tail, "[%s] %s: %s\n", c.CreatedAt, c.Author.Login, text.TruncateRunes(text.OneLine(c.Body), commentRunesFor))
+			}
 			texts = append(texts, db.Text{
 				Number: n, IsPR: node.Typename == typePullRequest,
-				State: node.State, Title: node.Title, Body: node.Body,
+				State: node.State, Title: node.Title, Body: node.Body, Tail: tail.String(),
 			})
 		}
 		if err := d.SaveTexts(texts); err != nil {

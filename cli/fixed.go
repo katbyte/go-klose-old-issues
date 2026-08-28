@@ -77,72 +77,16 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 	}
 	defer func() { _ = d.Close() }()
 
-	issues, err := d.OpenIssues()
+	findings, counts, prVersions, open, err := f.collectFixed(d, o.Link)
 	if err != nil {
 		return err
 	}
-	if len(issues) == 0 {
+	if open == 0 {
 		cout.Printf("no fetched issues — run <cyan>koi fetch</> first\n")
 		return nil
 	}
-	prVersions, err := d.ChangelogVersionsByPR()
-	if err != nil {
-		return err
-	}
-	// the milestone scan knows which PR's merge CLOSED an issue — an open issue
-	// with one was reopened, which colours whether the fix actually stuck
-	msFixes, err := d.MSFixesByIssue()
-	if err != nil {
-		return err
-	}
 
-	var findings []fixedFinding
-	counts := map[string]int{}
-	for _, i := range issues {
-		refs, cerr := d.CrossrefsFor(i.Number)
-		if cerr != nil {
-			return cerr
-		}
-		var prs []db.Crossref
-		for _, r := range refs {
-			if r.IsPR && r.Merged && strings.EqualFold(r.RefRepo, f.GH.Repo) {
-				prs = append(prs, r)
-			}
-		}
-		if len(prs) == 0 {
-			continue
-		}
-		fdg := fixedFinding{issue: i, prs: prs, class: classMentionedBy, best: prs[0]}
-		for _, pr := range prs {
-			if pr.WillClose {
-				fdg.class = classFixedBy
-			}
-		}
-		// the comment cites the strongest, earliest-shipped reference
-		for _, pr := range prs {
-			vs := prVersions[pr.RefNumber]
-			better := (pr.WillClose && !fdg.best.WillClose) ||
-				(pr.WillClose == fdg.best.WillClose && fdg.version == "" && len(vs) > 0)
-			if better {
-				fdg.best = pr
-			}
-		}
-		if vs := prVersions[fdg.best.RefNumber]; len(vs) > 0 {
-			fdg.version = vs[0]
-		}
-		for _, fx := range msFixes[i.Number] {
-			if fx.Link == db.LinkClosedBy {
-				fdg.reopenedBy = fx.PRNumber
-			}
-		}
-		if o.Link != "" && fdg.class != o.Link {
-			continue
-		}
-		findings = append(findings, fdg)
-		counts[fdg.class]++
-	}
-
-	cout.Printf("\n<bold>%d of %d open issues are referenced by a merged PR:</>\n", len(findings), len(issues))
+	cout.Printf("\n<bold>%d of %d open issues are referenced by a merged PR:</>\n", len(findings), open)
 	for _, c := range []struct{ class, tag string }{{classFixedBy, tagGreen}, {classMentionedBy, tagOrange}} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-12s</> <yellow>%d</>\n", c.tag, c.class, n)
@@ -200,6 +144,73 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 	}
 	cout.Printf("\nnext: <cyan>koi fixed --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
+}
+
+// collectFixed builds the fixed findings from the crossref cache: every open
+// issue a merged same-repo PR references, classed fixed-by (closing keyword)
+// then mentioned-by, optionally scoped to one class. Returns the findings,
+// per-class counts, the changelog's PR→release map, and the open-issue total.
+func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding, counts map[string]int, prVersions map[int][]string, open int, err error) {
+	issues, err := d.OpenIssues()
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	prVersions, err = d.ChangelogVersionsByPR()
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+	// the milestone scan knows which PR's merge CLOSED an issue — an open issue
+	// with one was reopened, which colours whether the fix actually stuck
+	msFixes, err := d.MSFixesByIssue()
+	if err != nil {
+		return nil, nil, nil, 0, err
+	}
+
+	counts = map[string]int{}
+	for _, i := range issues {
+		refs, cerr := d.CrossrefsFor(i.Number)
+		if cerr != nil {
+			return nil, nil, nil, 0, cerr
+		}
+		var prs []db.Crossref
+		for _, r := range refs {
+			if r.IsPR && r.Merged && strings.EqualFold(r.RefRepo, f.GH.Repo) {
+				prs = append(prs, r)
+			}
+		}
+		if len(prs) == 0 {
+			continue
+		}
+		fdg := fixedFinding{issue: i, prs: prs, class: classMentionedBy, best: prs[0]}
+		for _, pr := range prs {
+			if pr.WillClose {
+				fdg.class = classFixedBy
+			}
+		}
+		// the comment cites the strongest, earliest-shipped reference
+		for _, pr := range prs {
+			vs := prVersions[pr.RefNumber]
+			better := (pr.WillClose && !fdg.best.WillClose) ||
+				(pr.WillClose == fdg.best.WillClose && fdg.version == "" && len(vs) > 0)
+			if better {
+				fdg.best = pr
+			}
+		}
+		if vs := prVersions[fdg.best.RefNumber]; len(vs) > 0 {
+			fdg.version = vs[0]
+		}
+		for _, fx := range msFixes[i.Number] {
+			if fx.Link == db.LinkClosedBy {
+				fdg.reopenedBy = fx.PRNumber
+			}
+		}
+		if link != "" && fdg.class != link {
+			continue
+		}
+		findings = append(findings, fdg)
+		counts[fdg.class]++
+	}
+	return findings, counts, prVersions, len(issues), nil
 }
 
 // applyFixed is plain --apply: close everything listed, no AI involved.

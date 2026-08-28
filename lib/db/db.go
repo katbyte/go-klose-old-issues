@@ -211,6 +211,17 @@ CREATE TABLE texts (
   body       TEXT NOT NULL DEFAULT '',
   fetched_at TEXT NOT NULL DEFAULT ''
 );
+`, `
+-- the last few comments of each fetched issue/PR, rendered as text: often the
+-- closing comment explains WHY something was closed, which the AI judges need.
+-- has_tail marks rows fetched since this column existed; older rows refetch.
+ALTER TABLE texts ADD COLUMN tail TEXT NOT NULL DEFAULT '';
+ALTER TABLE texts ADD COLUMN has_tail INTEGER NOT NULL DEFAULT 0;
+`, `
+-- tail lines gained full timestamps (same-day comments were landing on the
+-- wrong side of the close split), a truncation note, and 15 comments over 8;
+-- date-only tails refetch once to pick all of that up.
+UPDATE texts SET has_tail = 0;
 `}
 
 func (d *DB) migrate() error {

@@ -2,12 +2,12 @@ package cli
 
 import (
 	"encoding/csv"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"html/template"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -16,220 +16,466 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/text"
+	"github.com/katbyte/koi/lib/triage"
 )
 
-type reportEvidence struct {
-	Key, Value string
+// ReportOpts configures the lens report.
+type ReportOpts struct {
+	Out    string // directory to write report.html into
+	WithAI bool   // AI-score every candidate and sort surest first
+	Limit  int    // cap candidates per lens, for cheap test runs (0 = all)
 }
 
-// reportPR is a linked PR in the triaged repo (foreign-repo mentions are filtered out).
-type reportPR struct {
-	Number    int
-	URL       string
-	Title     string
-	State     string // open | merged | closed
-	Release   string // release that shipped it per the changelog, "" if unknown
-	WillClose bool   // the reference carries a closing keyword ("fixes #N")
+// Span colour kinds, matching css classes in the report template.
+const (
+	kindOK    = "ok"
+	kindMid   = "mid"
+	kindWarn  = "warn"
+	kindBad   = "bad"
+	kindVer   = "ver"
+	kindDim   = "dim"
+	kindQuote = "quote"
+)
+
+// reportSpan is one fragment of an evidence line: a link when URL is set,
+// coloured by Kind (a css class in the template).
+type reportSpan struct {
+	Text string
+	URL  string
+	Kind string // "" or one of the kind* consts
 }
 
-// reportMention is one version claim found in the thread, deep-linked to its comment.
-type reportMention struct {
-	Version string
-	Age     string
-	Author  string
-	Quote   string
-	URL     string
-}
-
+// reportItem is one close candidate: the issue, its evidence lines, and the
+// AI's verdict when the report was scored.
 type reportItem struct {
-	Number       int
-	URL          string
-	Title        string
-	Age          string
-	LastActivity string
-	Kind         string
-	Version      string
-	ThumbsUp     int
-	Comments     int
-	Confidence   string
-	Template     string
-	Evidence     []reportEvidence
-	LinkedPRs    []reportPR
-	OpenPRs      int
-	Mentions     []reportMention
-	AIRec        string // classify-pass recommendation, e.g. "close/legacy-bug"
-	AIConf       string
-	AIQuote      string // the thread quote the AI cited as its supporting evidence
-	AIStill      string // still-open pass verdict text, "" if the pass hasn't run
-	AIStillQuote string
+	Number   int
+	URL      string
+	Title    string
+	Meta     string
+	Evidence [][]reportSpan
+	AIScore  string // "" when not judged
+	AIKind   string
+	AIReason string
 }
 
-type reportGroup struct {
-	Reason string
-	Action string
-	Count  int
-	Items  []reportItem
+// reportClass is one evidence class tally shown as a pill.
+type reportClass struct {
+	Name  string
+	Count int
+	Kind  string
+}
+
+// reportSection is one lens: what it asks, what it found, and how to act on it.
+type reportSection struct {
+	Slug        string
+	Question    string
+	Description string
+	Note        string // extra context line, e.g. what the rules protected
+	Command     string // the CLI commands that act on this section
+	Total       int    // every candidate the lens found
+	Classes     []reportClass
+	Items       []reportItem
+	Truncated   bool // --limit cut the item list short
 }
 
 type reportData struct {
 	Repo        string
 	GeneratedAt string
+	WithAI      bool
 	Total       int
-	Groups      []reportGroup
+	Sections    []reportSection
 }
 
-// Report writes report.html (for reading) and decisions.csv (for deciding) so the
-// community manager can review async — no terminal required. Decisions come back
-// via `koi import`.
-func (f *FlagData) Report(outDir string) error {
+func span(t, kind string) reportSpan    { return reportSpan{Text: t, Kind: kind} }
+func linkSpan(t, url string) reportSpan { return reportSpan{Text: t, URL: url} }
+func (f *FlagData) prHTMLURL(n int) string {
+	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, n)
+}
+
+func (f *FlagData) issHTMLURL(n int) string {
+	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, n)
+}
+
+// reportAIKind buckets a confidence for colouring, matching scoreTag's bands.
+func reportAIKind(c float64) string {
+	switch {
+	case c >= 0.7:
+		return kindOK
+	case c >= 0.4:
+		return kindMid
+	default:
+		return kindBad
+	}
+}
+
+// limitFindings caps a lens's candidates for cheap test runs — applied BEFORE
+// any AI judging so --limit 10 costs ten verdicts, not the full set.
+func limitFindings[T any](findings []T, limit int) ([]T, bool) {
+	if limit > 0 && len(findings) > limit {
+		return findings[:limit], true
+	}
+	return findings, false
+}
+
+// sortByVerdict orders findings surest-first once verdicts exist; unanswered
+// candidates sink to the bottom.
+func sortByVerdict[T any](findings []T, number func(*T) int, verdicts map[int]*msMatchVerdict) {
+	slices.SortStableFunc(findings, func(a, b T) int {
+		av, bv := -1.0, -1.0
+		if v := verdicts[number(&a)]; v != nil {
+			av = v.Confidence
+		}
+		if v := verdicts[number(&b)]; v != nil {
+			bv = v.Confidence
+		}
+		switch {
+		case av > bv:
+			return -1
+		case av < bv:
+			return 1
+		default:
+			return 0
+		}
+	})
+}
+
+// attachVerdict fills the AI fields on one item.
+func attachVerdict(item *reportItem, v *msMatchVerdict) {
+	if v == nil {
+		return
+	}
+	item.AIScore = fmt.Sprintf("%.2f", v.Confidence)
+	item.AIKind = reportAIKind(v.Confidence)
+	item.AIReason = text.OneLine(v.Reason)
+}
+
+// Report writes report.html: every close candidate each lens sees (fixed,
+// resolved, legacy), with the evidence for why it is listed and links to
+// everything cited. --with-ai scores each candidate with the lens's judge
+// (cached verdicts are reused) and sorts surest first; --limit N keeps test
+// runs cheap. The old analyse-based report and its decisions.csv are gone —
+// the lens apply modes are the review flow now.
+func (f *FlagData) Report(o ReportOpts) error {
+	if !f.NoAutoFetch {
+		if err := f.Fetch(false); err != nil {
+			return err
+		}
+	}
+	if o.WithAI && !f.AI.Enabled {
+		return errors.New("--with-ai needs the AI (--ai=false is set)")
+	}
+
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = d.Close() }()
 
-	if err := f.ensureAnalysed(d); err != nil {
-		return err
-	}
+	now := time.Now()
+	data := reportData{Repo: f.GH.Repo, WithAI: o.WithAI, GeneratedAt: now.Format("2006-01-02 15:04")}
 
-	actions, err := d.Actions(db.ActionFilter{Status: db.StatusProposed})
+	fixed, err := f.fixedReportSection(d, o, now)
 	if err != nil {
 		return err
 	}
-	if len(actions) == 0 {
-		cout.Printf("no proposed actions to report — is the db fetched? (<cyan>koi fetch</>)\n")
+	resolved, err := f.resolvedReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	legacy, err := f.legacyReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, legacy}
+	for _, s := range data.Sections {
+		data.Total += s.Total
+	}
+	if data.Total == 0 {
+		cout.Printf("no close candidates in any lens — is the db fetched? (<cyan>koi fetch</>)\n")
 		return nil
 	}
 
-	if err := os.MkdirAll(outDir, 0o750); err != nil {
-		return fmt.Errorf("creating %s: %w", outDir, err)
+	if err := os.MkdirAll(o.Out, 0o750); err != nil {
+		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
-
-	now := time.Now()
-	groups := map[string]*reportGroup{}
-	var csvRows [][]string
-
-	for _, a := range actions {
-		card, err := f.loadCard(d, a)
-		if err != nil {
-			return err
-		}
-		i, s := card.issue, card.signals
-
-		item := reportItem{
-			Number:       i.Number,
-			URL:          i.URL,
-			Title:        i.Title,
-			Age:          text.HumanAge(i.CreatedAt, now),
-			LastActivity: text.HumanAge(s.LastActivity, now),
-			Kind:         s.Kind,
-			ThumbsUp:     i.ThumbsUp,
-			Comments:     i.CommentCount,
-			Confidence:   fmt.Sprintf("%.2f", a.Confidence),
-			Template:     a.Template,
-		}
-		if s.VersionMajor > 0 {
-			item.Version = versionText(s)
-		}
-		for _, k := range text.SortedKeys(a.Evidence) {
-			item.Evidence = append(item.Evidence, reportEvidence{Key: k, Value: a.Evidence[k]})
-		}
-
-		for _, r := range card.prs {
-			pr := reportPR{
-				Number:    r.RefNumber,
-				URL:       fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, r.RefNumber),
-				Title:     r.Title,
-				WillClose: r.WillClose,
-			}
-			switch {
-			case r.Merged:
-				pr.State, pr.Release = "merged", card.releases[r.RefNumber]
-			case r.State == db.IssueOpen:
-				pr.State = restStateOpen
-				item.OpenPRs++
-			default:
-				pr.State = "closed"
-			}
-			item.LinkedPRs = append(item.LinkedPRs, pr)
-		}
-
-		if len(card.mentions) > 1 {
-			for _, m := range card.mentions {
-				item.Mentions = append(item.Mentions, reportMention{
-					Version: fmt.Sprintf("v%d.x", m.Major),
-					Age:     text.HumanAge(m.At, now),
-					Author:  m.Author,
-					Quote:   m.Quote,
-					URL:     m.URL,
-				})
-			}
-		}
-
-		if v, ok := card.verdicts[passClassify]; ok {
-			var fields map[string]any
-			if json.Unmarshal([]byte(v.Verdict), &fields) == nil {
-				item.AIRec, _ = fields["recommendation"].(string)
-				item.AIQuote, _ = fields["quote"].(string)
-				item.AIConf = fmt.Sprintf("%.2f", v.Confidence)
-			}
-		}
-		if v, ok := card.verdicts[passStillOpen]; ok {
-			var fields map[string]any
-			if json.Unmarshal([]byte(v.Verdict), &fields) == nil {
-				if claim, _ := fields["still_claim"].(bool); claim {
-					item.AIStill = "found a claim it still occurs"
-				} else {
-					item.AIStill = "found no recent-version claims"
-				}
-				item.AIStillQuote, _ = fields["quote"].(string)
-			}
-		}
-
-		key := a.Action + "/" + a.Reason
-		g, ok := groups[key]
-		if !ok {
-			g = &reportGroup{Reason: a.Reason, Action: a.Action}
-			groups[key] = g
-		}
-		g.Items = append(g.Items, item)
-		g.Count++
-
-		csvRows = append(csvRows, []string{
-			strconv.Itoa(i.Number), a.Action, a.Reason, fmt.Sprintf("%.2f", a.Confidence),
-			text.OneLine(i.Title), i.URL, "", "",
-		})
-	}
-
-	data := reportData{
-		Repo:        f.GH.Repo,
-		GeneratedAt: now.Format("2006-01-02 15:04"),
-		Total:       len(actions),
-	}
-	for _, k := range text.SortedKeys(groups) {
-		data.Groups = append(data.Groups, *groups[k])
-	}
-	// closes first, biggest groups first within each action
-	sort.SliceStable(data.Groups, func(a, b int) bool {
-		if data.Groups[a].Action != data.Groups[b].Action {
-			return data.Groups[a].Action < data.Groups[b].Action
-		}
-		return data.Groups[a].Count > data.Groups[b].Count
-	})
-
-	htmlPath := filepath.Join(outDir, "report.html")
+	htmlPath := filepath.Join(o.Out, "report.html")
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · legacy %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, legacy.Total)
+	if !o.WithAI {
+		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
+	}
+	return nil
+}
 
-	csvPath := filepath.Join(outDir, "decisions.csv")
-	if err := writeDecisionsCSV(csvPath, csvRows); err != nil {
-		return err
+// fixedReportSection builds the "a merged PR touches this" lens section.
+func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passFixed,
+		Question: "a merged PR touches this open issue — did it fix it?",
+		Description: "Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. " +
+			"fixed-by means the PR declared it closes the issue with a closing keyword; mentioned-by is a bare mention. " +
+			"Applying closes with a comment citing the fix PR and its shipped release, closed as completed.",
+		Command: "koi fixed [fixed-by|mentioned-by] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, prVersions, _, err := f.collectFixed(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classFixedBy, counts[classFixedBy], kindOK},
+		{classMentionedBy, counts[classMentionedBy], kindWarn},
 	}
 
-	cout.Printf("wrote <cyan>%s</> (%d proposals) and <cyan>%s</>\n", htmlPath, len(actions), csvPath)
-	cout.Printf("review flow: read the html, fill the <bold>decision</> column (approve/reject) in the csv, then <cyan>koi import %s --as name</>\n", csvPath)
-	return nil
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *fixedFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.prs {
+			pr := &fdg.prs[n]
+			row := make([]reportSpan, 0, 4)
+			if pr.WillClose {
+				row = append(row, span("fixed by", kindOK))
+			} else {
+				row = append(row, span("mentioned by", kindWarn))
+			}
+			row = append(row, linkSpan(fmt.Sprintf("PR #%d", pr.RefNumber), f.prHTMLURL(pr.RefNumber)))
+			if vs := prVersions[pr.RefNumber]; len(vs) > 0 {
+				row = append(row, span("shipped in v"+vs[0], kindVer))
+			} else {
+				row = append(row, span("merged, not yet in a release", kindDim))
+			}
+			row = append(row, span("· "+text.OneLine(pr.Title), kindDim))
+			item.Evidence = append(item.Evidence, row)
+		}
+		if fdg.reopenedBy != 0 {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span(fmt.Sprintf("closed by PR #%d and then reopened — the fix may not have stuck", fdg.reopenedBy), kindBad),
+			})
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// resolvedReportSection builds the "a linked issue was dealt with" lens section.
+func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passResolved,
+		Question: "a linked issue was dealt with — does its outcome cover this open one?",
+		Description: "Every open issue that cross-references a CLOSED issue in the same repository: likely duplicates of something already dealt with. " +
+			"Classes by how the linked issue was closed: completed (with the fixing PR and release when the changelog records them), duplicate, then not planned. " +
+			"Applying closes as a duplicate pointing at the linked issue and its resolution.",
+		Command: "koi resolved [completed|duplicate|not-planned] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, _, err := f.collectResolved(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classCompleted, counts[classCompleted], kindOK},
+		{classDuplicate, counts[classDuplicate], kindMid},
+		{classNotPlanned, counts[classNotPlanned], kindWarn},
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.resolvedJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passResolved, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *resolvedFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	classKind := map[string]string{classCompleted: kindOK, classDuplicate: kindMid, classNotPlanned: kindWarn}
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.targets {
+			t := &fdg.targets[n]
+			class := resolvedClass(t.stateReason)
+			row := make([]reportSpan, 0, 6)
+			row = append(row,
+				span("links", kindDim),
+				linkSpan(fmt.Sprintf("#%d", t.ref.RefNumber), f.issHTMLURL(t.ref.RefNumber)),
+				span("closed "+strings.ReplaceAll(class, "-", " "), classKind[class]))
+			if t.closedAt != "" {
+				row = append(row, span(dateOf(t.closedAt), kindDim))
+			}
+			switch {
+			case t.fixPR != 0:
+				row = append(row, span("by", kindDim), linkSpan(fmt.Sprintf("PR #%d", t.fixPR), f.prHTMLURL(t.fixPR)))
+				if t.version != "" {
+					row = append(row, span("in v"+t.version, kindVer))
+				} else if t.milestone != "" {
+					row = append(row, span(t.milestone, kindVer))
+				}
+			case class == classCompleted:
+				row = append(row, span("(no fix recorded)", kindBad))
+			}
+			row = append(row, span("· "+text.OneLine(t.ref.Title), kindDim))
+			item.Evidence = append(item.Evidence, row)
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// legacyReportSection builds the "this bug is old and unconfirmed" lens section.
+func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	col, err := f.collectLegacy(d, nil)
+	if err != nil {
+		return reportSection{Slug: passLegacy}, err
+	}
+	s := reportSection{
+		Slug:     passLegacy,
+		Question: fmt.Sprintf("this bug is old (v1–v%d) and nobody says it is still alive — close as stale?", col.maxMajor),
+		Description: fmt.Sprintf("Open bug and crash reports against legacy majors (v1–v%d) that the keep rules cleared for closing: "+
+			"no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are not touched. "+
+			"Applying closes with the legacy-bug comment, closed as not planned.", col.maxMajor),
+		Command: "koi legacy [--major N] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Total:   len(col.findings),
+	}
+	for m := 1; m <= col.maxMajor; m++ {
+		if col.byMajor[m] > 0 {
+			s.Classes = append(s.Classes, reportClass{fmt.Sprintf("v%d.x", m), col.byMajor[m], kindVer})
+		}
+	}
+	if col.legacyBugs > 0 {
+		parts := make([]string, 0, len(col.protected)+1)
+		for _, r := range text.SortedKeys(col.protected) {
+			parts = append(parts, fmt.Sprintf("%s %d", r, col.protected[r]))
+		}
+		note := fmt.Sprintf("%d legacy bugs seen in total", col.legacyBugs)
+		if len(parts) > 0 {
+			note += " · protected from closing: " + strings.Join(parts, " · ")
+		}
+		if col.diverted > 0 {
+			note += fmt.Sprintf(" · %d have a merged PR and belong to koi fixed", col.diverted)
+		}
+		s.Note = note
+	}
+
+	findings := col.findings
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.legacyJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *legacyFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.signals.LastActivity, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		kindTag := kindWarn
+		if fdg.signals.Kind == signalKindCrash {
+			kindTag = kindBad
+		}
+		item.Evidence = append(item.Evidence, []reportSpan{
+			span(fdg.signals.Kind, kindTag),
+			span("on v"+text.OrDefault(fdg.signals.VersionFull, fmt.Sprintf("%d.x", fdg.signals.VersionMajor)), kindVer),
+			span("("+fdg.signals.VersionSource+")", kindDim),
+		})
+		// a label-sourced quote is just "labelled v/3.x" — the source tag above
+		// already says that; only body/template/ai quotes add anything
+		if fdg.signals.VersionQuote != "" && fdg.signals.VersionSource != versionSourceLabel {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span("version evidence:", kindDim),
+				span("“"+text.TruncateRunes(text.OneLine(fdg.signals.VersionQuote), 120)+"”", kindQuote),
+			})
+		}
+
+		// the thread's version trail is what decides a staleness close: every
+		// version claim with its quote and deep link, or the silence spelt out
+		comments, cerr := d.CommentsFor(fdg.issue.Number)
+		if cerr != nil {
+			return s, cerr
+		}
+		mentions := triage.VersionMentions(comments)
+		const maxMentions = 6
+		for n, m := range mentions {
+			if n == maxMentions {
+				item.Evidence = append(item.Evidence, []reportSpan{
+					span(fmt.Sprintf("… and %d more version mentions in the thread", len(mentions)-maxMentions), kindDim),
+				})
+				break
+			}
+			row := []reportSpan{
+				span(fmt.Sprintf("v%d.x", m.Major), kindVer),
+				span(fmt.Sprintf("%s ago · @%s:", text.HumanAge(m.At, now), m.Author), kindDim),
+				span("“"+text.TruncateRunes(text.OneLine(m.Quote), 110)+"”", kindQuote),
+			}
+			if m.URL != "" {
+				row = append(row, linkSpan("view comment", m.URL))
+			}
+			item.Evidence = append(item.Evidence, row)
+		}
+		if len(mentions) == 0 && len(comments) > 0 {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span(fmt.Sprintf("no version mentions in the thread's %d comments — nobody re-confirmed on a newer version", len(comments)), kindDim),
+			})
+		}
+		// how the thread ended is the other half of the staleness call
+		if len(comments) > 0 {
+			last := &comments[len(comments)-1]
+			row := []reportSpan{
+				span(fmt.Sprintf("last comment %s ago · @%s:", text.HumanAge(last.CreatedAt, now), last.Author), kindDim),
+				span("“"+text.TruncateRunes(text.OneLine(triage.CleanBody(last.Body)), 140)+"”", kindQuote),
+			}
+			if last.URL != "" {
+				row = append(row, linkSpan("view comment", last.URL))
+			}
+			item.Evidence = append(item.Evidence, row)
+		} else {
+			item.Evidence = append(item.Evidence, []reportSpan{span("no comments at all", kindDim)})
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
 }
 
 func writeReportHTML(path string, data *reportData) error {
@@ -248,28 +494,6 @@ func writeReportHTML(path string, data *reportData) error {
 		return fmt.Errorf("rendering report: %w", err)
 	}
 	return nil
-}
-
-var csvHeader = []string{csvColNumber, "action", "reason", "confidence", csvColTitle, csvColURL, "decision", "notes"}
-
-func writeDecisionsCSV(path string, rows [][]string) error {
-	out, err := os.Create(path) //nolint:gosec // G304: user-chosen output path is the point
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	w := csv.NewWriter(out)
-	if err := w.Write(csvHeader); err != nil {
-		return fmt.Errorf("writing csv header: %w", err)
-	}
-	for _, row := range rows {
-		if err := w.Write(row); err != nil {
-			return fmt.Errorf("writing csv row: %w", err)
-		}
-	}
-	w.Flush()
-	return w.Error()
 }
 
 // Import reads a filled-in decisions.csv and records approve/reject decisions.

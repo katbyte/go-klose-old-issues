@@ -125,17 +125,22 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report + decisions CSV for async (community manager) review",
+		Short:         "writes an HTML report of every close candidate the lenses see (fixed, resolved, legacy)",
+		Long:          `One page listing every close candidate each lens sees, grouped by lens with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each lens and jumps to its section. --with-ai scores every candidate with the lens's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each lens for a cheap test run.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"db"}),
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
 			out, _ := cmd.Flags().GetString("out")
-			return GetFlags().Report(out)
+			withAI, _ := cmd.Flags().GetBool("with-ai")
+			limit, _ := cmd.Flags().GetInt("limit")
+			return GetFlags().Report(ReportOpts{Out: out, WithAI: withAI, Limit: limit})
 		},
 	}
-	reportCmd.Flags().String("out", "report", "directory to write report.html and decisions.csv into")
+	reportCmd.Flags().String("out", "report", "directory to write report.html into")
+	reportCmd.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
+	reportCmd.Flags().Int("limit", 0, "cap candidates per lens for a cheap test run (0 = all)")
 	root.AddCommand(reportCmd)
 
 	root.AddCommand(&cobra.Command{
@@ -205,7 +210,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	milestoneCmd := &cobra.Command{
 		Use:           "milestone",
-		Short:         "audits ALL issues (open and closed) for missing or wrong release milestones",
+		Short:         "which release dealt with each issue? audits and fixes milestones (bookkeeping, not closing)",
 		Long:          `Scans every issue in the repository (light fields only — no bodies or comments) and determines the milestone each should carry: PRs tied to an issue are mapped to the release that shipped them via the changelog, using the strongest evidence available — the PR that closed the issue, then closing-keyword links, then a direct changelog citation, then bare mentions. --apply sets the determined milestone on closed issues, filling missing ones and correcting mismatches — the changelog is the ground truth of what shipped where. Open issues on released milestones are report-only. Subcommands restrict determination to one evidence class.`,
 		Aliases:       []string{"ms"},
 		Args:          cobra.NoArgs,
@@ -272,7 +277,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	fixedCmd := &cobra.Command{
 		Use:           "fixed",
-		Short:         "OPEN issues a merged PR references — likely fixed, AI-scored, closeable with a tailored comment",
+		Short:         "a merged PR touches these open issues — did it fix them? AI-scored, closeable",
 		Long:          `Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. References class like the milestone audit: fixed-by (closing-keyword reference) then mentioned-by (bare mention), with subcommands scoping to one class. The AI judges whether the PR(s) actually fix each issue on full text. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with the fix PR and shipped version, closes as completed, and records an action for koi reopen.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
@@ -314,7 +319,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	resolvedCmd := &cobra.Command{
 		Use:           "resolved",
-		Short:         "OPEN issues referencing a CLOSED issue — likely duplicates of something already dealt with",
+		Short:         "a linked issue was dealt with — does its outcome cover these open ones? AI-scored, closeable",
 		Long:          `Every open issue that cross-references a closed issue in the same repository. Targets class by how they were closed: completed (resolved, with the fixing PR and release when known), duplicate, then not-planned; subcommands scope to one class. The AI compares the substance of both issues before blessing a close. --apply closes everything listed, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment as a duplicate pointing at the linked issue and its resolution, closed as completed when the target was resolved and not planned otherwise.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
@@ -344,7 +349,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	legacyCmd := &cobra.Command{
 		Use:           "legacy",
-		Short:         "closeable bug/crash reports against legacy majors, AI-scored on staleness from issue + comments",
+		Short:         "these bugs are old (v1–v3) and nobody says they are still alive — close as stale? AI reads issue + comments",
 		Long:          `Open bug and crash reports against legacy majors (v1..current-2) that the keep rules cleared for closing: no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are a different problem and are not touched. The AI reads each issue AND its comments and scores whether closing as stale is right. --apply closes the rules-cleared set, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment with the legacy-bug template and close as not planned.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),

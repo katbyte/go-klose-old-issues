@@ -6,7 +6,7 @@
 <title>🎏 koi — {{ .Repo }}</title>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --dim:#59636e; --line:#d1d9e0;
-          --close:#cf222e; --keep:#1a7f37; --human:#9a6700; --accent:#0969da; }
+          --ok:#1a7f37; --mid:#9a6700; --warn:#bc4c00; --bad:#cf222e; --ver:#8250df; --accent:#0969da; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
          background:var(--bg); color:var(--ink); }
@@ -14,79 +14,93 @@
   header h1 { margin:0 0 4px; font-size:20px; }
   header p  { margin:0; color:var(--dim); }
   main { max-width:1100px; margin:0 auto; padding:24px 32px 80px; }
-  details.group { margin-bottom:16px; background:var(--card); border:1px solid var(--line); border-radius:8px; }
-  details.group > summary { cursor:pointer; padding:12px 16px; font-weight:600; list-style:none; display:flex; gap:10px; align-items:center; }
-  details.group > summary::-webkit-details-marker { display:none; }
-  .pill { font-size:12px; font-weight:600; padding:2px 10px; border-radius:999px; color:#fff; }
-  .pill.close { background:var(--close); } .pill.keep { background:var(--keep); } .pill.human { background:var(--human); }
+  a { color:var(--accent); text-decoration:none; }
+  a:hover { text-decoration:underline; }
   .count { color:var(--dim); font-weight:400; }
-  .item { border-top:1px solid var(--line); padding:14px 16px; }
-  .item h3 { margin:0 0 4px; font-size:15px; font-weight:600; }
-  .item h3 a { color:var(--accent); text-decoration:none; }
-  .item h3 a:hover { text-decoration:underline; }
-  .meta { color:var(--dim); font-size:13px; margin-bottom:6px; }
-  .meta b { color:var(--ink); }
-  .evidence { margin:6px 0 0; padding:8px 12px; background:var(--bg); border-radius:6px; font-size:13px; }
-  .evidence div { margin:2px 0; }
-  .evidence .k { color:var(--dim); }
-  .quote { font-style:italic; color:#57606a; }
-  .conf { font-variant-numeric: tabular-nums; }
-  .openpr { color:#9a6700; font-weight:600; }
-  .prline .st { font-size:11px; font-weight:700; padding:1px 7px; border-radius:999px; margin-right:4px; }
-  .prline .st.open   { background:#fff8c5; color:#9a6700; border:1px solid #d4a72c66; }
-  .prline .st.merged { background:#fbefff; color:#8250df; border:1px solid #8250df33; }
-  .prline .st.closed { background:#eff2f5; color:#59636e; border:1px solid #d1d9e0; }
-  .mention { margin:2px 0 2px 12px; }
-  .mention .ver { color:#8250df; font-weight:600; }
-  .subtle { color:var(--dim); }
-  .howto { background:#fff8c5; border:1px solid #d4a72c66; border-radius:8px; padding:12px 16px; margin-bottom:24px; font-size:14px; }
+
+  /* the lenses: one card per section up top, linking down into the report */
+  .toc { display:grid; gap:12px; margin-bottom:32px; }
+  .toc a.lens { display:block; background:var(--card); border:1px solid var(--line); border-radius:8px;
+                padding:14px 18px; color:var(--ink); }
+  .toc a.lens:hover { text-decoration:none; border-color:var(--accent); }
+  .toc h2 { margin:0 0 2px; font-size:16px; }
+  .toc h2 .n { color:var(--accent); }
+  .toc .q { margin:0 0 6px; font-weight:600; color:var(--mid); font-style:italic; }
+  .toc p { margin:0 0 6px; color:var(--dim); font-size:14px; }
+
+  .pill { display:inline-block; font-size:12px; font-weight:600; padding:1px 10px; border-radius:999px;
+          border:1px solid var(--line); background:var(--bg); margin-right:6px; }
+  .pill .c { font-weight:400; color:var(--dim); }
+
+  section { margin-bottom:36px; }
+  section > h2 { font-size:18px; margin:0 0 2px; }
+  section > h2 .n { color:var(--accent); }
+  section .q { margin:0 0 8px; font-weight:600; color:var(--mid); font-style:italic; }
+  section .desc { margin:0 0 6px; color:var(--dim); font-size:14px; max-width:80ch; }
+  section .note { margin:0 0 6px; color:var(--dim); font-size:13px; }
+  section .cmd { margin:0 0 12px; font-size:13px; color:var(--dim); }
+  section .cmd code { background:var(--card); border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
+  .trunc { background:#fff8c5; border:1px solid #d4a72c66; border-radius:6px; padding:6px 12px;
+           font-size:13px; margin-bottom:12px; display:inline-block; }
+
+  .items { background:var(--card); border:1px solid var(--line); border-radius:8px; }
+  .item { border-top:1px solid var(--line); padding:12px 16px; }
+  .item:first-child { border-top:none; }
+  .item h3 { margin:0 0 2px; font-size:15px; font-weight:600; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:4px; }
+  .ev { font-size:13px; margin:2px 0; }
+  .ai { font-size:13px; margin-top:6px; }
+  .ai .score { font-weight:700; font-variant-numeric:tabular-nums; }
+
+  .ok    { color:var(--ok);   font-weight:600; }
+  .mid   { color:var(--mid);  font-weight:600; }
+  .warn  { color:var(--warn); font-weight:600; }
+  .bad   { color:var(--bad);  font-weight:600; }
+  .ver   { color:var(--ver);  font-weight:600; }
+  .dim   { color:var(--dim); }
+  .quote { color:var(--dim); font-style:italic; }
+  .top { display:block; margin-top:8px; font-size:13px; }
 </style>
 </head>
 <body>
-<header>
-  <h1>🎏 koi triage report — {{ .Repo }}</h1>
-  <p>{{ .Total }} proposed actions · generated {{ .GeneratedAt }}</p>
+<header id="top">
+  <h1>🎏 koi — {{ .Repo }}</h1>
+  <p>{{ .Total }} close candidates across {{ len .Sections }} lenses · generated {{ .GeneratedAt }}{{ if .WithAI }} · AI-scored, surest first{{ end }}</p>
 </header>
 <main>
-  <div class="howto">
-    <b>How to review:</b> each card below is a proposed action awaiting a decision. Open the linked
-    issue for full context, then record your decision (<code>approve</code> / <code>reject</code>) in the
-    <code>decision</code> column of the accompanying <code>decisions.csv</code> and send it back — it gets
-    imported with <code>koi import decisions.csv --as yourname</code>. Anything left blank stays undecided.
+  <div class="toc">
+    {{ range .Sections }}
+    <a class="lens" href="#{{ .Slug }}">
+      <h2><span class="n">koi {{ .Slug }}</span> <span class="count">— {{ .Total }} candidates</span></h2>
+      <p class="q">{{ .Question }}</p>
+      <p>{{ .Description }}</p>
+      {{ range .Classes }}{{ if .Count }}<span class="pill"><span class="{{ .Kind }}">{{ .Name }}</span> <span class="c">{{ .Count }}</span></span>{{ end }}{{ end }}
+    </a>
+    {{ end }}
   </div>
-  {{ range .Groups }}
-  <details class="group" open>
-    <summary><span class="pill {{ .Action }}">{{ .Action }}</span> {{ .Reason }} <span class="count">— {{ .Count }} issues</span></summary>
-    {{ range .Items }}
-    <div class="item">
-      <h3><a href="{{ .URL }}" target="_blank" rel="noopener">#{{ .Number }}</a> {{ .Title }}</h3>
-      <div class="meta">
-        {{ if .Kind }}<b>{{ .Kind }}</b> · {{ end }}{{ if .Version }}v{{ .Version }} · {{ end }}opened {{ .Age }} ago ·
-        last activity {{ .LastActivity }} ago · 💬 {{ .Comments }} · 👍 {{ .ThumbsUp }} ·
-        confidence <span class="conf">{{ .Confidence }}</span>{{ if .Template }} · template: {{ .Template }}{{ end }}{{ if .OpenPRs }} ·
-        <span class="openpr">⚠ {{ .OpenPRs }} open PR(s) linked</span>{{ end }}
-      </div>
-      {{ if or .Evidence .LinkedPRs .Mentions .AIRec .AIStill }}
-      <div class="evidence">
-        {{ range .Evidence }}<div><span class="k">{{ .Key }}:</span> {{ .Value }}</div>{{ end }}
-        {{ range .LinkedPRs }}
-        <div class="prline"><span class="st {{ .State }}">{{ .State }}</span><a href="{{ .URL }}" target="_blank" rel="noopener">#{{ .Number }}</a>
-          {{ if .WillClose }}<span class="subtle">(closes this issue)</span> {{ end }}{{ .Title }}{{ if .Release }} <span class="subtle">— shipped in <b>{{ .Release }}</b></span>{{ end }}{{ if eq .State "open" }} <span class="openpr">← unmerged work in flight</span>{{ end }}</div>
-        {{ end }}
-        {{ if .Mentions }}
-        <div><span class="k">version mentions in the thread</span> <span class="subtle">(each links to the comment):</span></div>
-        {{ range .Mentions }}
-        <div class="mention"><span class="ver">{{ .Version }}</span> · {{ .Age }} ago · @{{ .Author }}:
-          <span class="quote">“{{ .Quote }}”</span>{{ if .URL }} — <a href="{{ .URL }}" target="_blank" rel="noopener">view comment</a>{{ end }}</div>
-        {{ end }}
-        {{ end }}
-        {{ if .AIRec }}<div><span class="k">AI recommendation (classify pass):</span> <b>{{ .AIRec }}</b> (confidence {{ .AIConf }}){{ if .AIQuote }} — quoting the thread: <span class="quote">“{{ .AIQuote }}”</span>{{ end }}</div>{{ end }}
-        {{ if .AIStill }}<div><span class="k">AI still-open re-check:</span> {{ .AIStill }}{{ if .AIStillQuote }} — quoting the thread: <span class="quote">“{{ .AIStillQuote }}”</span>{{ end }}</div>{{ end }}
+
+  {{ range .Sections }}
+  <section id="{{ .Slug }}">
+    <h2><span class="n">koi {{ .Slug }}</span> <span class="count">— {{ .Total }} candidates</span></h2>
+    <p class="q">{{ .Question }}</p>
+    <p class="desc">{{ .Description }}</p>
+    {{ if .Note }}<p class="note">{{ .Note }}</p>{{ end }}
+    <p class="cmd">act on these with <code>{{ .Command }}</code></p>
+    {{ if .Truncated }}<div class="trunc">showing the first {{ len .Items }} of {{ .Total }} candidates (--limit)</div>{{ end }}
+    {{ if .Items }}
+    <div class="items">
+      {{ range .Items }}
+      <div class="item">
+        <h3><a href="{{ .URL }}" target="_blank" rel="noopener">#{{ .Number }}</a> {{ .Title }}</h3>
+        <div class="meta">{{ .Meta }}</div>
+        {{ range .Evidence }}<div class="ev">{{ range . }}{{ if .URL }}<a class="{{ .Kind }}" href="{{ .URL }}" target="_blank" rel="noopener">{{ .Text }}</a>{{ else }}<span class="{{ .Kind }}">{{ .Text }}</span>{{ end }} {{ end }}</div>{{ end }}
+        {{ if .AIScore }}<div class="ai"><span class="dim">AI:</span> <span class="score {{ .AIKind }}">{{ .AIScore }}</span> <span class="dim">—</span> {{ .AIReason }}</div>{{ end }}
       </div>
       {{ end }}
     </div>
     {{ end }}
-  </details>
+    <a class="top" href="#top">↑ back to top</a>
+  </section>
   {{ end }}
 </main>
 </body>

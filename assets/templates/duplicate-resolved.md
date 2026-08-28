@@ -1,3 +1,3 @@
-Thank you for the report. This issue covers the same ground as #{{ .Linked }}{{ if .LinkedTitle }} ({{ .LinkedTitle }}){{ end }}, which has since been {{ if .Resolved }}resolved{{ if .Version }} in v{{ .Version }}{{ end }}{{ else }}closed{{ end }}, so we are closing this one as a duplicate of it.
+It appears this issue is a duplicate of, or similar to, #{{ .Linked }}{{ if .LinkedTitle }} ({{ .LinkedTitle }}){{ end }}, which has been marked as {{ if .Resolved }}completed{{ else }}closed{{ end }}{{ if .Version }} and resolved in v{{ .Version }}{{ end }}, as such we are going to close this one out.
 
-If you are still running into this on the current (v{{ .CurrentMajor }}.x) version of the provider, please let us know with a comment or open a new issue referencing this one and we will take another look.
+If this is still an issue on the latest version of the provider (v{{ .CurrentMajor }}.x) please do let us know with a comment or open a new issue referencing this one. Thank you!

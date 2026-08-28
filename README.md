@@ -25,6 +25,25 @@ waves, and every mutation is audited and reversible (`koi reopen`).
 
 See [PLAN.md](PLAN.md) for the full design.
 
+## The lenses
+
+Each command asks one question about an open issue, from one kind of evidence:
+
+| command | the question | the evidence |
+|---|---|---|
+| `koi fixed` | a merged **PR** touches this — did it fix it? | code that shipped |
+| `koi resolved` | a linked **issue** was dealt with — does its outcome cover this one? | another ticket's fate |
+| `koi legacy` | this **bug is old** (v1–v3) and nobody says it's still alive — close as stale? | version + silence |
+| `koi milestone` | which release dealt with each issue/PR? (bookkeeping, not closing) | the changelog |
+
+Every lens works the same way: evidence classes as subcommands (strongest
+first), an AI that judges the actual substance, and three apply modes —
+`--apply` acts on the evidence with no AI, `--apply-with-ai` shows each card
+with its score and asks you, `--apply-with-ai-auto[=t]` acts alone above a
+confidence threshold. Bare invocation is always a report; `--dry-run` previews
+any apply. The lenses overlap on purpose: one issue can be seen by several, and
+whichever closes it first removes it from the others.
+
 ## Workflow
 
 ```sh
@@ -37,8 +56,8 @@ koi review             # interactive card-by-card decisions (a/n/s/e/c/b/t/o/u �
 koi stats              # the funnel: what can close, what keeps, what needs AI
 koi classify           # AI passes: classify the undetermined, double-check closes for "still an issue on 4.x/5.x" claims
 koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking
-koi report             # report.html + decisions.csv for async (community manager) review
-koi import report/decisions.csv --as manager
+koi report             # report.html: every close candidate each lens sees, with its evidence, linked
+koi report --with-ai --limit 10   # AI-score a small slice per lens first — cheap end-to-end test
 koi apply --max 100 --dry-run   # preview a wave
 koi apply --max 100             # comment + close, throttled, staleness-guarded
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
