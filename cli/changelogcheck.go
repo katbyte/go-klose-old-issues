@@ -267,8 +267,8 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		if err != nil {
 			return err
 		}
-		cout.Printf("      cited in the <lightMagenta>%s</> changelog: <gray>%s</>\n",
-			fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
+		cout.Printf("      cited in <lightMagenta>%s</><gray>@changelog:</> %s\n",
+			fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
 
 		if f.DryRun {
 			cout.Printf("      <yellow>dry-run: would set milestone → %s</>\n", fdg.expected)

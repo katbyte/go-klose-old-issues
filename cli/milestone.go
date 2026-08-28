@@ -661,16 +661,16 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 			if err != nil {
 				return err
 			}
-			cout.Printf("      %s — <lightMagenta>%s</> changelog: <gray>%s</>\n",
-				linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
+			cout.Printf("      %s — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+				linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
 		}
 		if fdg.cited {
 			bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
 			if err != nil {
 				return err
 			}
-			cout.Printf("      cited directly in the <lightMagenta>%s</> changelog: <gray>%s</>\n",
-				fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
+			cout.Printf("      cited directly — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+				fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
 		}
 
 		if f.DryRun {
