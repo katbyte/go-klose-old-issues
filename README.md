@@ -52,8 +52,6 @@ koi milestone --skip-scan --apply-with-ai   # AI scores each issue↔evidence pa
 koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI scores at/above the threshold
 koi milestone changelog-check --apply       # the PR-side audit: every changelog-cited PR carries the citing release
 
-koi shipped                      # OPEN issues whose fix already shipped in a release, AI-scored by likelihood
-koi shipped closed-by-pr         # just the ones closed by their fix PR and then reopened
 koi fixed                        # OPEN issues a merged PR references — likely fixed, AI-scored on the match
 koi fixed mentioned-by --apply-with-ai      # confirm each close: comments cite the fix PR + shipped version
 koi fixed --apply-with-ai-auto=0.9          # auto-close the matches the AI is confident about

@@ -41,11 +41,12 @@ type FixedOpts struct {
 
 // fixedFinding is one open issue with the merged same-repo PRs referencing it.
 type fixedFinding struct {
-	issue   *db.Issue
-	prs     []db.Crossref
-	class   string      // strongest reference class present
-	best    db.Crossref // the PR the close comment cites
-	version string      // earliest release shipping best ("" when unreleased)
+	issue      *db.Issue
+	prs        []db.Crossref
+	class      string      // strongest reference class present
+	best       db.Crossref // the PR the close comment cites
+	version    string      // earliest release shipping best ("" when unreleased)
+	reopenedBy int         // PR whose merge closed this issue before it was reopened (0 = never)
 }
 
 // Fixed lists every OPEN issue a merged same-repo PR references — the issue
@@ -69,6 +70,12 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 		return nil
 	}
 	prVersions, err := d.ChangelogVersionsByPR()
+	if err != nil {
+		return err
+	}
+	// the milestone scan knows which PR's merge CLOSED an issue — an open issue
+	// with one was reopened, which colours whether the fix actually stuck
+	msFixes, err := d.MSFixesByIssue()
 	if err != nil {
 		return err
 	}
@@ -107,6 +114,11 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 		if vs := prVersions[fdg.best.RefNumber]; len(vs) > 0 {
 			fdg.version = vs[0]
 		}
+		for _, fx := range msFixes[i.Number] {
+			if fx.Link == db.LinkClosedBy {
+				fdg.reopenedBy = fx.PRNumber
+			}
+		}
 		if o.Link != "" && fdg.class != o.Link {
 			continue
 		}
@@ -124,8 +136,14 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 		return nil
 	}
 
+	// plain --apply closes what's listed with no AI involved; the report and
+	// the -with-ai modes score every pairing first
+	judge := o.ApplyWithAI || o.ApplyWithAIAuto || (!o.Apply && f.AI.Enabled)
 	var verdicts map[int]*msMatchVerdict
-	if f.AI.Enabled {
+	if judge {
+		if !f.AI.Enabled {
+			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
+		}
 		if verdicts, err = f.judgeFixed(d, findings, prVersions); err != nil {
 			return err
 		}
@@ -146,7 +164,7 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 				return 0
 			}
 		})
-	} else {
+	} else if !o.Apply {
 		cout.Printf("<gray>--ai=false: listing without match scores</>\n")
 	}
 
@@ -171,6 +189,9 @@ func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions 
 	for i := range fdg.prs {
 		cout.Printf("      %s\n", fixedPRLine(&fdg.prs[i], prVersions))
 	}
+	if fdg.reopenedBy != 0 {
+		cout.Printf("      <red>closed by PR #%d and then reopened</>\n", fdg.reopenedBy)
+	}
 	printMSVerdict(v)
 }
 
@@ -193,8 +214,10 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, verdicts map[in
 
 	mode := "<gray>you confirm each close</>"
 	switch {
-	case f.DryRun:
+	case f.DryRun && gated:
 		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
+	case f.DryRun:
+		mode = "<gray>previewing every close</>"
 	case auto:
 		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
 	case !gated:
@@ -456,6 +479,9 @@ func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[
 			if t, ok := texts[pr.RefNumber]; ok && t.Body != "" {
 				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(t.Body), msPRBodyRunes))
 			}
+		}
+		if fdg.reopenedBy != 0 {
+			fmt.Fprintf(&b, "NOTE: this issue was closed by PR #%d and then REOPENED — the fix may have been incomplete or regressed.\n", fdg.reopenedBy)
 		}
 		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
 	}

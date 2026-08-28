@@ -257,42 +257,6 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	})
 	root.AddCommand(milestoneCmd)
 
-	shRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
-		return func(cmd *cobra.Command, _ []string) error {
-			cmd.SilenceUsage = true
-			var o ShippedOpts
-			o.SkipScan, _ = cmd.Flags().GetBool("skip-scan")
-			o.Link = link
-			return GetFlags().Shipped(o)
-		}
-	}
-	shippedCmd := &cobra.Command{
-		Use:           "shipped",
-		Short:         "finds OPEN issues whose fix already shipped, AI-scored by likelihood",
-		Long:          `Scans for open issues tied to merged PRs that a released changelog entry shipped — the issue looks resolved but nobody closed it. Uses the milestone scan's evidence classes: closed-by means the issue was closed by its fix PR then reopened; linked should be empty (GitHub auto-closes those); cited and mention surface quietly-delivered fixes and feature requests. Each pairing is scored by the AI on the full issue and PR text, listed most-likely-shipped first. Report-only: closing goes through koi review / koi apply.`,
-		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
-		SilenceErrors: true,
-		RunE:          shRunE(""),
-	}
-	shippedCmd.PersistentFlags().Bool("skip-scan", false, "audit the existing scan data without re-fetching")
-	for _, sub := range []struct{ use, link, short string }{
-		{"closed-by-pr", db.LinkClosedBy, "only issues closed by their fix PR and then reopened"},
-		{"linked-to-pr", db.LinkLinked, "only closing-keyword linked PRs (should be empty — github auto-closes these)"},
-		{"mentioned-by-pr", db.LinkMention, "only issues merely mentioned by a shipped PR (weakest evidence)"},
-		{"cited", msLinkCited, "only issues the changelog cites directly"},
-	} {
-		shippedCmd.AddCommand(&cobra.Command{
-			Use:           sub.use,
-			Short:         sub.short,
-			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
-			SilenceErrors: true,
-			RunE:          shRunE(sub.link),
-		})
-	}
-	root.AddCommand(shippedCmd)
-
 	fxdRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
