@@ -93,7 +93,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 			current = "(none)"
 		}
 		cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(cited in the %s changelog)</> %s <darkGray>%s</>\n",
-			fdg.bucket, fdg.pr.Number, current, orDash(fdg.expected), orDash(fdg.expected),
+			fdg.bucket, fdg.pr.Number, current, orDash(fdg.expected), joinVersions(fdg.versions),
 			truncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
 	}
 	if o.Bucket == "" && len(findings) > 10 {
