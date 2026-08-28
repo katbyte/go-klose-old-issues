@@ -73,11 +73,16 @@ func (r Repo) do(method, path string, payload any) (statusCode int, respBody []b
 	return resp.StatusCode, respBody, nil
 }
 
-// IssueState is the subset of issue fields the staleness guard needs.
+// IssueState is the subset of issue/PR fields the staleness guard and the
+// milestone sync need. The issues endpoint serves PRs too, milestone included.
 type IssueState struct {
 	Number    int       `json:"number"`
 	State     string    `json:"state"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Milestone *struct {
+		Number int    `json:"number"`
+		Title  string `json:"title"`
+	} `json:"milestone"`
 }
 
 // GetIssue fetches the live state of an issue.

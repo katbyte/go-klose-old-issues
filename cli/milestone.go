@@ -11,6 +11,7 @@ import (
 
 	"github.com/katbyte/go-klose-old-issues/lib/cout"
 	"github.com/katbyte/go-klose-old-issues/lib/db"
+	"github.com/katbyte/go-klose-old-issues/lib/gh"
 	"github.com/katbyte/go-klose-old-issues/lib/ghql"
 	"github.com/katbyte/go-klose-old-issues/lib/triage"
 )
@@ -461,6 +462,34 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 	return fdg
 }
 
+// syncFixPRMilestones brings the fix PRs behind a just-set milestone into line:
+// the milestone was determined FROM those PRs' changelog entries, so a fix PR
+// missing it is the same bookkeeping gap the issue had (e.g. PRs merged before
+// the milestone existed). A PR carrying a different milestone is called out but
+// left alone — that's a human judgement, same policy as issue mismatches.
+func (f *FlagData) syncFixPRMilestones(repo gh.Repo, fdg *msFinding, m *db.Milestone, throttle func()) {
+	for i := range fdg.via {
+		pr := fdg.via[i].PRNumber
+		live, err := repo.GetIssue(pr) // the issues endpoint serves PRs too
+		if err != nil {
+			cout.Errorf("      <red>checking fix PR #%d: %v</>\n", pr, err)
+			continue
+		}
+		switch {
+		case live.Milestone == nil:
+			throttle()
+			if err := repo.SetMilestone(pr, m.Number); err != nil {
+				cout.Errorf("      <red>setting milestone on fix PR #%d: %v</>\n", pr, err)
+				continue
+			}
+			cout.Printf("      <green>fix PR <lightCyan>#%d</> was missing it too — set milestone → %s</>\n", pr, fdg.expected)
+			cout.Quietf("%d@pr-milestone@%s\n", pr, fdg.expected)
+		case live.Milestone.Title != fdg.expected:
+			cout.Printf("      <yellow>fix PR #%d carries %s, expected %s — left as-is</>\n", pr, live.Milestone.Title, fdg.expected)
+		}
+	}
+}
+
 // linkClass is the evidence class that determined this finding's expected
 // milestone ("" when nothing did).
 func (fdg *msFinding) linkClass() string {
@@ -646,7 +675,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		}
 
 		if f.DryRun {
-			cout.Printf("      <yellow>dry-run: would set milestone → %s</>\n", fdg.expected)
+			cout.Printf("      <yellow>dry-run: would set milestone → %s</> <gray>(and sync it onto the fix PR if missing there)</>\n", fdg.expected)
 			continue
 		}
 
@@ -659,6 +688,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		applied++
 		cout.Printf("      <green>set milestone → %s</>\n", fdg.expected)
 		cout.Quietf("%d@milestone@%s\n", fdg.issue.Number, fdg.expected)
+		f.syncFixPRMilestones(repo, &fdg, &m, throttle)
 
 		// keep the local scan in sync so a re-audit doesn't re-propose it
 		if _, err := d.Exec("UPDATE ms_issues SET milestone = ? WHERE number = ?", fdg.expected, fdg.issue.Number); err != nil {
