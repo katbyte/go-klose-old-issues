@@ -58,6 +58,14 @@ type fixedFinding struct {
 // whether the PR(s) actually fix each issue on full text, and the apply modes
 // close the confirmed ones with a comment citing the PR and shipped version.
 func (f *FlagData) Fixed(o FixedOpts) error {
+	// stay fresh by default: the incremental fetch is cheap and stale crossref
+	// or issue state here means judging (or closing!) on old information
+	if !f.NoAutoFetch {
+		if err := f.Fetch(false); err != nil {
+			return err
+		}
+	}
+
 	d, err := f.OpenDB()
 	if err != nil {
 		return err

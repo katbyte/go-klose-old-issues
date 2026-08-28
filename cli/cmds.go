@@ -299,6 +299,33 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	root.AddCommand(fixedCmd)
 
+	legacyCmd := &cobra.Command{
+		Use:           "legacy",
+		Short:         "closeable bug/crash reports against legacy majors, AI-scored on staleness from issue + comments",
+		Long:          `Open bug and crash reports against legacy majors (v1..current-2) that the keep rules cleared for closing: no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are a different problem and are not touched. The AI reads each issue AND its comments and scores whether closing as stale is right. --apply closes the rules-cleared set, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment with the legacy-bug template and close as not planned.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o LegacyOpts
+			o.Major, _ = cmd.Flags().GetInt("major")
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Legacy(o)
+		},
+	}
+	legacyCmd.Flags().Int("major", 0, "only bugs reported against this major, e.g. 1 (0 = every legacy major)")
+	legacyCmd.Flags().Bool("apply", false, "comment and close every rules-cleared candidate as not planned")
+	legacyCmd.Flags().Bool("apply-with-ai", false, "the AI scores each candidate from issue + comments, you confirm each close")
+	legacyCmd.Flags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	legacyCmd.Flags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	legacyCmd.Flags().Int("max", 50, "maximum closes to apply this run")
+	root.AddCommand(legacyCmd)
+
 	cacheCmd := &cobra.Command{
 		Use:           "cache",
 		Short:         "lists the local db's clearable caches and their sizes",

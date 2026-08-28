@@ -56,6 +56,10 @@ koi fixed                        # OPEN issues a merged PR references — likely
 koi fixed mentioned-by --apply-with-ai      # confirm each close: comments cite the fix PR + shipped version
 koi fixed --apply-with-ai-auto=0.9          # auto-close the matches the AI is confident about
 
+koi legacy                       # closeable bug/crash reports against v1–v3, AI-scored on staleness
+koi legacy --major 1 --apply --dry-run      # preview the sure things one major at a time
+koi legacy --apply-with-ai                  # AI reads issue + comments, you confirm each close
+
 koi cache                        # list the local db's caches and sizes
 koi cache clear ai               # drop AI verdicts (or issues|milestones|prs|texts|changelog|all)
 ```
