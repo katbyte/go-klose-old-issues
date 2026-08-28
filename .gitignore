@@ -1,0 +1,8 @@
+/koi
+*.db
+*.db-shm
+*.db-wal
+/report/
+.koi
+.DS_Store
+.idea/
