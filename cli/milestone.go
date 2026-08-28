@@ -774,6 +774,40 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 	return nil
 }
 
+// printMSEvidence prints one finding's evidence lines: each fix PR at its link
+// strength with the changelog bullet that shipped it, and a direct citation
+// when the changelog names the issue itself.
+func (f *FlagData) printMSEvidence(d *db.DB, fdg *msFinding) error {
+	version := normalizeMilestone(fdg.expected)
+	for i := range fdg.via {
+		fx := &fdg.via[i]
+		bullet, err := d.ChangelogTextFor(version, fx.PRNumber)
+		if err != nil {
+			return err
+		}
+		cout.Printf("      %s — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+			linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	}
+	if fdg.cited {
+		bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
+		if err != nil {
+			return err
+		}
+		cout.Printf("      <%s>cited directly</> — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+			classTag(msLinkCited), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	}
+	return nil
+}
+
+// printMSVerdict prints the AI's score and reason for a judged finding.
+func printMSVerdict(v *msMatchVerdict) {
+	if v == nil {
+		return
+	}
+	cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", scoreTag(v.Confidence), v.Confidence)
+	cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+}
+
 // applyOneMilestone results.
 const (
 	msApplyPreviewed = iota // dry-run: card shown, nothing changed
@@ -789,34 +823,16 @@ const (
 // y/n as quiet aliases.
 func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, milestones map[string]db.Milestone, pos, total int, throttle func(), v *msMatchVerdict, ask bool) (int, error) {
 	m := milestones[fdg.expected]
-	version := normalizeMilestone(fdg.expected)
 
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, text.TruncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
-	for i := range fdg.via {
-		fx := &fdg.via[i]
-		bullet, err := d.ChangelogTextFor(version, fx.PRNumber)
-		if err != nil {
-			return msApplyFailed, err
-		}
-		cout.Printf("      %s — <lightMagenta>%s</><gray>@changelog:</> %s\n",
-			linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
-	}
-	if fdg.cited {
-		bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
-		if err != nil {
-			return msApplyFailed, err
-		}
-		cout.Printf("      <%s>cited directly</> — <lightMagenta>%s</><gray>@changelog:</> %s\n",
-			classTag(msLinkCited), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	if err := f.printMSEvidence(d, fdg); err != nil {
+		return msApplyFailed, err
 	}
 	if fdg.bucket == msMismatch {
 		cout.Printf("      <yellow>mismatch: carries %s, the changelog says %s</>\n", fdg.issue.Milestone, fdg.expected)
 	}
-	if v != nil {
-		cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", scoreTag(v.Confidence), v.Confidence)
-		cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
-	}
+	printMSVerdict(v)
 
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would set milestone → %s</> <gray>(and sync it onto the fix PR if missing there)</>\n", fdg.expected)
