@@ -30,6 +30,11 @@ const (
 
 	// prLabelMerged is shared between the state labels and the fixed subcommand.
 	prLabelMerged = "merged"
+
+	// shared apply-mode strings and evidence keys across the closing commands.
+	modePreviewEveryClose = "<gray>previewing every close</>"
+	modeConfirmEachClose  = "<gray>you confirm each close</>"
+	evidenceKeyVersion    = "version"
 )
 
 // FixedOpts configures the fixed audit and its apply modes.
@@ -201,7 +206,7 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
 	mode := "<gray>closing everything listed</>"
 	if f.DryRun {
-		mode = "<gray>previewing every close</>"
+		mode = modePreviewEveryClose
 	}
 	cout.Printf("closing <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
@@ -258,7 +263,7 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
 
-	mode := "<gray>you confirm each close</>"
+	mode := modeConfirmEachClose
 	switch {
 	case f.DryRun:
 		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
@@ -458,7 +463,7 @@ func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *msMatchVerdi
 	a := &db.Action{
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: triage.ReasonFixedMergedPR,
 		StateReason: triage.StateCompleted, Template: templateFixedShipped,
-		Evidence:       map[string]string{"pr": fmt.Sprintf("#%d", fdg.best.RefNumber), "version": fdg.version},
+		Evidence:       map[string]string{"pr": fmt.Sprintf("#%d", fdg.best.RefNumber), evidenceKeyVersion: fdg.version},
 		Source:         "fixed",
 		IssueUpdatedAt: fdg.issue.UpdatedAt,
 	}

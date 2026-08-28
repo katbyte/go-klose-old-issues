@@ -174,7 +174,7 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts) error {
 	mode := "<gray>closing everything the rules cleared</>"
 	if f.DryRun {
-		mode = "<gray>previewing every close</>"
+		mode = modePreviewEveryClose
 	}
 	cout.Printf("closing <yellow>%d</> legacy bugs in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
@@ -228,7 +228,7 @@ func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpt
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
 
-	mode := "<gray>you confirm each close</>"
+	mode := modeConfirmEachClose
 	switch {
 	case f.DryRun:
 		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)

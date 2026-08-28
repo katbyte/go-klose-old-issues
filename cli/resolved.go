@@ -1,0 +1,583 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"slices"
+	"strings"
+	"text/template"
+
+	"github.com/katbyte/koi/assets"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/text"
+	"github.com/katbyte/koi/lib/triage"
+)
+
+const (
+	passResolved   = "resolved"
+	promptResolved = "issue-duplicate-resolved"
+
+	templateDuplicateResolved = "duplicate-resolved"
+	reasonDuplicateResolved   = "duplicate-resolved"
+
+	// classes by how the linked issue was closed, strongest first: a resolved
+	// target can cover this issue, a duplicate target chains to whatever it
+	// duplicated, a not-planned target resolved nothing.
+	classCompleted  = "completed"
+	classDuplicate  = "duplicate"
+	classNotPlanned = "not-planned"
+)
+
+// ResolvedOpts configures the resolved audit and its apply modes.
+type ResolvedOpts struct {
+	Link            string  // completed | duplicate | not-planned ("" = every class)
+	Apply           bool    // close the listed issues as duplicates, no AI
+	ApplyWithAI     bool    // AI compares both issues and scores, the human confirms each close
+	ApplyWithAIAuto bool    // AI scores and likely duplicates (>= Threshold) close without asking
+	Threshold       float64 // auto-close confidence floor (0 = the default)
+	Max             int     // cap on closes per run
+}
+
+// resolvedTarget is one closed linked issue with everything known about how it
+// was dealt with.
+type resolvedTarget struct {
+	ref         db.Crossref
+	stateReason string // COMPLETED | DUPLICATE | NOT_PLANNED | ""
+	milestone   string
+	fixPR       int    // the PR whose merge closed it (0 = unknown)
+	version     string // earliest release shipping fixPR ("" = unknown)
+}
+
+// resolvedFinding is one open issue with its closed same-repo linked issues.
+type resolvedFinding struct {
+	issue   *db.Issue
+	targets []resolvedTarget
+	class   string         // strongest target class present
+	best    resolvedTarget // the target the close comment cites
+}
+
+// Resolved lists every OPEN issue that cross-references a CLOSED issue in the
+// same repo — likely duplicates of something already dealt with. Targets class
+// by how they were closed: completed (resolved, possibly with a known fix PR
+// and release), duplicate, then not-planned. The AI compares the substance of
+// both issues before blessing a close; closes comment as a duplicate pointing
+// at the linked issue and its resolution.
+func (f *FlagData) Resolved(o ResolvedOpts) error {
+	if !f.NoAutoFetch {
+		if err := f.Fetch(false); err != nil {
+			return err
+		}
+	}
+
+	d, err := f.OpenDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+
+	issues, err := d.OpenIssues()
+	if err != nil {
+		return err
+	}
+	if len(issues) == 0 {
+		cout.Printf("no fetched issues — run <cyan>koi fetch</> first\n")
+		return nil
+	}
+	scanned, err := d.MSIssues()
+	if err != nil {
+		return err
+	}
+	msIssues := make(map[int]db.MSIssue, len(scanned))
+	for _, m := range scanned {
+		msIssues[m.Number] = m
+	}
+	msFixes, err := d.MSFixesByIssue()
+	if err != nil {
+		return err
+	}
+	prVersions, err := d.ChangelogVersionsByPR()
+	if err != nil {
+		return err
+	}
+
+	var findings []resolvedFinding
+	counts := map[string]int{}
+	for _, i := range issues {
+		refs, cerr := d.CrossrefsFor(i.Number)
+		if cerr != nil {
+			return cerr
+		}
+		var targets []resolvedTarget
+		for _, r := range refs {
+			if r.IsPR || r.State != db.IssueClosed || !strings.EqualFold(r.RefRepo, f.GH.Repo) {
+				continue
+			}
+			t := resolvedTarget{ref: r}
+			if m, ok := msIssues[r.RefNumber]; ok {
+				t.stateReason, t.milestone = m.StateReason, m.Milestone
+			}
+			for _, fx := range msFixes[r.RefNumber] {
+				if fx.Link == db.LinkClosedBy {
+					t.fixPR = fx.PRNumber
+					if vs := prVersions[fx.PRNumber]; len(vs) > 0 {
+						t.version = vs[0]
+					}
+				}
+			}
+			targets = append(targets, t)
+		}
+		if len(targets) == 0 {
+			continue
+		}
+
+		fdg := resolvedFinding{issue: i, targets: targets, class: classNotPlanned, best: targets[0]}
+		for _, t := range targets {
+			if resolvedClass(t.stateReason) == classCompleted {
+				fdg.class = classCompleted
+			} else if resolvedClass(t.stateReason) == classDuplicate && fdg.class != classCompleted {
+				fdg.class = classDuplicate
+			}
+		}
+		// the comment cites the strongest target, preferring one with a known fix
+		for _, t := range targets {
+			cur, cand := resolvedRank(fdg.best), resolvedRank(t)
+			if cand > cur || (cand == cur && fdg.best.fixPR == 0 && t.fixPR != 0) {
+				fdg.best = t
+			}
+		}
+		if o.Link != "" && fdg.class != o.Link {
+			continue
+		}
+		findings = append(findings, fdg)
+		counts[fdg.class]++
+	}
+
+	cout.Printf("\n<bold>%d of %d open issues reference a closed issue:</>\n", len(findings), len(issues))
+	for _, c := range []struct{ class, tag string }{
+		{classCompleted, tagGreen}, {classDuplicate, tagYellow}, {classNotPlanned, tagOrange},
+	} {
+		if n := counts[c.class]; n > 0 {
+			cout.Printf("  <%s>%-12s</> <yellow>%d</> <gray>(linked issue closed as %s)</>\n", c.tag, c.class, n, strings.ReplaceAll(c.class, "-", " "))
+		}
+	}
+	if len(findings) == 0 {
+		return nil
+	}
+
+	switch {
+	case o.ApplyWithAI || o.ApplyWithAIAuto:
+		if !f.AI.Enabled {
+			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
+		}
+		return f.applyResolvedAI(d, findings, o)
+	case o.Apply:
+		return f.applyResolved(d, findings, o)
+	}
+
+	// report: score everything (pipelined, cached) and list surest first
+	var verdicts map[int]*msMatchVerdict
+	if f.AI.Enabled {
+		promptText, items, jerr := f.resolvedJudgeItems(d, findings)
+		if jerr != nil {
+			return jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passResolved, promptText, items, nil, nil); err != nil {
+			return err
+		}
+		slices.SortStableFunc(findings, func(a, b resolvedFinding) int {
+			av, bv := -1.0, -1.0
+			if v := verdicts[a.issue.Number]; v != nil {
+				av = v.Confidence
+			}
+			if v := verdicts[b.issue.Number]; v != nil {
+				bv = v.Confidence
+			}
+			switch {
+			case av > bv:
+				return -1
+			case av < bv:
+				return 1
+			default:
+				return 0
+			}
+		})
+	} else {
+		cout.Printf("<gray>--ai=false: listing without match scores</>\n")
+	}
+
+	for n := range findings {
+		f.printResolvedCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
+	}
+	cout.Printf("\nnext: <cyan>koi resolved --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	return nil
+}
+
+// resolvedClass maps a github state reason to a class.
+func resolvedClass(stateReason string) string {
+	switch stateReason {
+	case "COMPLETED":
+		return classCompleted
+	case "DUPLICATE":
+		return classDuplicate
+	default:
+		return classNotPlanned
+	}
+}
+
+// resolvedRank orders targets: completed beats duplicate beats not-planned.
+func resolvedRank(t resolvedTarget) int {
+	switch resolvedClass(t.stateReason) {
+	case classCompleted:
+		return 2
+	case classDuplicate:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// applyResolved is plain --apply: close everything listed, no AI.
+func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
+	mode := "<gray>closing everything listed</>"
+	if f.DryRun {
+		mode = modePreviewEveryClose
+	}
+	cout.Printf("closing <yellow>%d</> duplicates in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
+
+	if !f.DryRun && !f.Yes {
+		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag()))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			cout.Printf("aborted\n")
+			return nil
+		}
+	}
+
+	repo, err := f.NewRepo()
+	if err != nil {
+		return err
+	}
+	throttle := newThrottle()
+
+	closed, failed, previewed, skipped := 0, 0, 0, 0
+	for n := range findings {
+		res, err := f.closeOneResolved(d, repo, &findings[n], nil, n+1, len(findings), throttle, false)
+		if err != nil {
+			return err
+		}
+		switch res {
+		case msApplySet:
+			closed++
+		case msApplyFailed:
+			failed++
+		case msApplyPreviewed:
+			previewed++
+		case msApplySkipped:
+			skipped++
+		}
+		if !f.DryRun && o.Max > 0 && closed >= o.Max {
+			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
+			break
+		}
+	}
+	return f.fixedSummary(closed, skipped, 0, failed, previewed)
+}
+
+// applyResolvedAI is --apply-with-ai[-auto], pipelined on the shared judge.
+func (f *FlagData) applyResolvedAI(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
+	threshold := o.Threshold
+	if threshold <= 0 {
+		threshold = msMatchThreshold
+	}
+	auto := o.ApplyWithAIAuto
+	interactive := !auto && !f.DryRun
+
+	mode := modeConfirmEachClose
+	switch {
+	case f.DryRun:
+		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
+	case auto:
+		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
+	}
+	cout.Printf("closing up to <yellow>%d</> duplicates in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
+
+	promptText, items, err := f.resolvedJudgeItems(d, findings)
+	if err != nil {
+		return err
+	}
+	byNumber := map[int]*resolvedFinding{}
+	for i := range findings {
+		byNumber[findings[i].issue.Number] = &findings[i]
+	}
+
+	repo, err := f.NewRepo()
+	if err != nil {
+		return err
+	}
+	throttle := newThrottle()
+
+	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
+	process := func(ts []judgedTarget) (bool, error) {
+		for _, t := range ts {
+			pos++
+			fdg, v := byNumber[t.number], t.verdict
+			switch {
+			case v == nil:
+				unanswered++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <yellow>no verdict</> %s\n",
+					pos, len(findings), fdg.issue.Number, text.TruncateRunes(text.OneLine(fdg.issue.Title), 70))
+			case !interactive && v.Confidence < threshold:
+				below++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <%s>%.2f</> %s <darkGray>%s</>\n",
+					pos, len(findings), fdg.issue.Number, scoreTag(v.Confidence), v.Confidence,
+					text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
+				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+			default:
+				res, cerr := f.closeOneResolved(d, repo, fdg, v, pos, len(findings), throttle, interactive)
+				if cerr != nil {
+					return true, cerr
+				}
+				switch res {
+				case msApplySet:
+					closed++
+				case msApplyFailed:
+					failed++
+				case msApplyPreviewed:
+					previewed++
+				case msApplySkipped:
+					if interactive {
+						humanSkipped++
+					} else {
+						skipped++
+					}
+				case msApplyQuit:
+					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
+					return true, nil
+				}
+				if !f.DryRun && o.Max > 0 && closed >= o.Max {
+					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	}
+	onReady := func() (bool, error) {
+		if !auto || f.DryRun || f.Yes {
+			return true, nil
+		}
+		ok, err := confirm(fmt.Sprintf("comment and close duplicates the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		if err == nil && !ok {
+			cout.Printf("aborted\n")
+		}
+		return ok, err
+	}
+
+	if _, err := f.judgeBlocks(d, passResolved, promptText, items, onReady, process); err != nil {
+		return err
+	}
+	if below+unanswered > 0 {
+		cout.Printf("\nAI match gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", below, threshold, unanswered)
+	}
+	return f.fixedSummary(closed, skipped, humanSkipped, failed, previewed)
+}
+
+// closeOneResolved handles one candidate: card, the duplicate comment, and the
+// close (or preview under dry-run, or the a/s ask when interactive). Closes as
+// completed when the linked issue was resolved, not planned otherwise.
+func (f *FlagData) closeOneResolved(d *db.DB, repo gh.Repo, fdg *resolvedFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+	f.printResolvedCard(fdg, pos, total, v)
+
+	stateReason := triage.StateNotPlanned
+	if resolvedClass(fdg.best.stateReason) == classCompleted {
+		stateReason = triage.StateCompleted
+	}
+	comment, err := f.renderResolvedComment(fdg)
+	if err != nil {
+		return msApplyFailed, err
+	}
+	if f.DryRun {
+		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
+			len(comment), templateDuplicateResolved, stateReason)
+		return msApplyPreviewed, nil
+	}
+
+	if ask {
+		for {
+			ans, perr := promptKey(fmt.Sprintf("      close <cyan>#%d</> as a duplicate of <cyan>#%d</>? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.issue.Number, fdg.best.ref.RefNumber))
+			if perr != nil {
+				return msApplyFailed, perr
+			}
+			done := false
+			switch strings.ToLower(ans) {
+			case "a", "y":
+				done = true
+			case "s", "n", "":
+				return msApplySkipped, nil
+			case "o":
+				openIssueInBrowser(fdg.issue.URL)
+			case "q":
+				return msApplyQuit, nil
+			}
+			if done {
+				break
+			}
+		}
+	}
+
+	throttle()
+	live, err := repo.GetIssue(fdg.issue.Number)
+	if err != nil {
+		cout.Errorf("      <red>fetching live state: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	if live.State != restStateOpen {
+		cout.Printf("      <gray>already closed on github — skipped</>\n")
+		return msApplySkipped, nil
+	}
+
+	throttle()
+	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
+		cout.Errorf("      <red>comment failed: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	throttle()
+	if err := repo.CloseIssue(fdg.issue.Number, stateReason); err != nil {
+		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
+		return msApplyFailed, nil
+	}
+
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", stateReason)
+	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, reasonDuplicateResolved)
+
+	a := &db.Action{
+		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonDuplicateResolved,
+		StateReason: stateReason, Template: templateDuplicateResolved,
+		Evidence:       map[string]string{"duplicate-of": fmt.Sprintf("#%d", fdg.best.ref.RefNumber), evidenceKeyVersion: fdg.best.version},
+		Source:         "resolved",
+		IssueUpdatedAt: fdg.issue.UpdatedAt,
+	}
+	if v != nil {
+		a.Confidence = v.Confidence
+		a.Evidence["ai"] = v.Reason
+	}
+	if _, err := d.ProposeAction(a); err != nil {
+		return msApplyFailed, err
+	}
+	row, err := d.GetAction(fdg.issue.Number)
+	if err != nil || row == nil {
+		return msApplyFailed, err
+	}
+	if row.Status == db.StatusProposed {
+		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
+			return msApplyFailed, err
+		}
+	}
+	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+}
+
+// printResolvedCard is one candidate: the open issue, its closed linked issues
+// with how each was dealt with, and the AI's score when judged.
+func (f *FlagData) printResolvedCard(fdg *resolvedFinding, pos, total int, v *msMatchVerdict) {
+	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
+		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+	for i := range fdg.targets {
+		cout.Printf("      %s\n", resolvedTargetLine(&fdg.targets[i]))
+	}
+	printMSVerdict(v)
+}
+
+// resolvedTargetLine renders one closed linked issue: its close reason
+// coloured, the fix PR and release when known, and the title.
+func resolvedTargetLine(t *resolvedTarget) string {
+	var b strings.Builder
+	class := resolvedClass(t.stateReason)
+	tag := map[string]string{classCompleted: tagGreen, classDuplicate: tagYellow, classNotPlanned: tagOrange}[class]
+	fmt.Fprintf(&b, "<gray>links</> <cyan>#%d</> <%s>closed %s</>", t.ref.RefNumber, tag, strings.ReplaceAll(class, "-", " "))
+	if t.fixPR != 0 {
+		fmt.Fprintf(&b, " <gray>by</> PR <lightCyan>#%d</>", t.fixPR)
+	}
+	if t.version != "" {
+		fmt.Fprintf(&b, " <gray>in</> <lightMagenta>v%s</>", t.version)
+	} else if t.milestone != "" {
+		fmt.Fprintf(&b, " <gray>·</> <lightMagenta>%s</>", t.milestone)
+	}
+	fmt.Fprintf(&b, " <gray>·</> %s", text.TruncateRunes(text.OneLine(t.ref.Title), 65))
+	return b.String()
+}
+
+// renderResolvedComment renders the duplicate close comment citing the best target.
+func (f *FlagData) renderResolvedComment(fdg *resolvedFinding) (string, error) {
+	tt, err := assets.CommentTemplate(templateDuplicateResolved)
+	if err != nil {
+		return "", err
+	}
+	tmpl, err := template.New(templateDuplicateResolved).Parse(tt)
+	if err != nil {
+		return "", fmt.Errorf("parsing template %s: %w", templateDuplicateResolved, err)
+	}
+	data := struct {
+		Linked       int
+		LinkedTitle  string
+		Resolved     bool
+		Version      string
+		CurrentMajor int
+	}{fdg.best.ref.RefNumber, text.OneLine(fdg.best.ref.Title), resolvedClass(fdg.best.stateReason) == classCompleted, fdg.best.version, f.CurrentMajor}
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("rendering template %s: %w", templateDuplicateResolved, err)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// resolvedJudgeItems fetches the linked issues' texts and renders one judge
+// block per finding: both sides' substance plus how each target was closed.
+func (f *FlagData) resolvedJudgeItems(d *db.DB, findings []resolvedFinding) (string, []judgeItem, error) {
+	promptText, err := assets.Prompt(promptResolved)
+	if err != nil {
+		return "", nil, err
+	}
+
+	targetNumbers := map[int]bool{}
+	for i := range findings {
+		for _, t := range findings[i].targets {
+			targetNumbers[t.ref.RefNumber] = true
+		}
+	}
+	if err := f.fetchTexts(d, text.SortedKeys(targetNumbers)); err != nil {
+		return "", nil, err
+	}
+	texts, err := d.Texts()
+	if err != nil {
+		return "", nil, err
+	}
+
+	items := make([]judgeItem, 0, len(findings))
+	for i := range findings {
+		fdg := &findings[i]
+		var b strings.Builder
+		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		b.WriteString("CLOSED LINKED ISSUES:\n")
+		for _, t := range fdg.targets {
+			how := "closed as " + strings.ReplaceAll(resolvedClass(t.stateReason), "-", " ")
+			if t.fixPR != 0 {
+				how += fmt.Sprintf(", fixed by PR #%d", t.fixPR)
+			}
+			if t.version != "" {
+				how += ", shipped in v" + t.version
+			}
+			fmt.Fprintf(&b, "- Issue #%d (%s): %s\n", t.ref.RefNumber, how, text.OneLine(t.ref.Title))
+			if txt, ok := texts[t.ref.RefNumber]; ok && txt.Body != "" {
+				fmt.Fprintf(&b, "  LINKED ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(txt.Body), msPRBodyRunes))
+			}
+		}
+		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+	}
+	return promptText, items, nil
+}

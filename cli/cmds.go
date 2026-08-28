@@ -299,6 +299,49 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	root.AddCommand(fixedCmd)
 
+	rsRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o ResolvedOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Resolved(o)
+		}
+	}
+	resolvedCmd := &cobra.Command{
+		Use:           "resolved",
+		Short:         "OPEN issues referencing a CLOSED issue — likely duplicates of something already dealt with",
+		Long:          `Every open issue that cross-references a closed issue in the same repository. Targets class by how they were closed: completed (resolved, with the fixing PR and release when known), duplicate, then not-planned; subcommands scope to one class. The AI compares the substance of both issues before blessing a close. --apply closes everything listed, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment as a duplicate pointing at the linked issue and its resolution, closed as completed when the target was resolved and not planned otherwise.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE:          rsRunE(""),
+	}
+	resolvedCmd.PersistentFlags().Bool("apply", false, "comment and close everything listed as a duplicate")
+	resolvedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI compares both issues and scores, you confirm each close")
+	resolvedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close duplicates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	resolvedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	resolvedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, short string }{
+		{"completed", "only issues whose linked issue was resolved (strongest evidence)"},
+		{"duplicate", "only issues whose linked issue was itself closed as a duplicate"},
+		{"not-planned", "only issues whose linked issue was closed as not planned (weakest evidence)"},
+	} {
+		resolvedCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			SilenceErrors: true,
+			RunE:          rsRunE(sub.use),
+		})
+	}
+	root.AddCommand(resolvedCmd)
+
 	legacyCmd := &cobra.Command{
 		Use:           "legacy",
 		Short:         "closeable bug/crash reports against legacy majors, AI-scored on staleness from issue + comments",

@@ -29,6 +29,7 @@ const (
 
 	// shared colour tag names for the class/score/state tag helpers.
 	tagGreen  = "green"
+	tagYellow = "yellow"
 	tagOrange = "fg=208"
 )
 
@@ -567,7 +568,7 @@ func classTag(class string) string {
 	case db.LinkLinked:
 		return "lightBlue"
 	case msLinkCited:
-		return "yellow"
+		return tagYellow
 	default:
 		return tagOrange
 	}
