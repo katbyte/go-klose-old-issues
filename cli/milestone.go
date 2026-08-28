@@ -128,14 +128,18 @@ func (f *FlagData) msFullScan(d *db.DB, client *ghql.Client, owner, name, cursor
 			return err
 		}
 
-		if err := d.SaveMSIssues(scanBundles(p.Issues, f.GH.Repo), metaMSScanCursor, p.PageInfo.EndCursor); err != nil {
+		bundles := scanBundles(p.Issues, f.GH.Repo)
+		if err := d.SaveMSIssues(bundles, metaMSScanCursor, p.PageInfo.EndCursor); err != nil {
 			return err
 		}
 
+		for i := range bundles {
+			printScannedIssue(fetched+i+1, p.TotalCount, &bundles[i])
+		}
 		fetched += len(p.Issues)
 		page++
-		if page%10 == 0 || !p.PageInfo.HasNextPage {
-			cout.Printf("  <yellow>%d</>/<yellow>%d</> issues (rate limit: %d remaining)\n", fetched, p.TotalCount, p.RateLimit.Remaining)
+		if page%5 == 0 || !p.PageInfo.HasNextPage {
+			cout.Printf("  <gray>%d/%d scanned · rate limit: %d remaining</>\n", fetched, p.TotalCount, p.RateLimit.Remaining)
 		}
 		p.RateLimit.WaitIfLow()
 
@@ -160,12 +164,15 @@ func (f *FlagData) msIncrementalScan(d *db.DB, client *ghql.Client, owner, name 
 			return f.msFullScan(d, client, owner, name, "")
 		}
 
-		if err := d.SaveMSIssues(scanBundles(p.Issues, f.GH.Repo), "", ""); err != nil {
+		bundles := scanBundles(p.Issues, f.GH.Repo)
+		if err := d.SaveMSIssues(bundles, "", ""); err != nil {
 			return err
 		}
 
+		for i := range bundles {
+			printScannedIssue(fetched+i+1, p.TotalCount, &bundles[i])
+		}
 		fetched += len(p.Issues)
-		cout.Printf("  <yellow>%d</>/<yellow>%d</> updated issues\n", fetched, p.TotalCount)
 		p.RateLimit.WaitIfLow()
 
 		if !p.PageInfo.HasNextPage {
@@ -217,6 +224,31 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 	return bundles
 }
 
+// printScannedIssue is one line per scanned issue: position, number, state
+// (green closed / orange open), title, milestone, and how its fix PRs link.
+func printScannedIssue(pos, total int, b *db.MSBundle) {
+	i := &b.Issue
+	state := "<fg=208>open</>  "
+	if i.State == db.IssueClosed {
+		state = "<green>closed</>"
+	}
+	var extra strings.Builder
+	if i.Milestone != "" {
+		fmt.Fprintf(&extra, " <gray>·</> <lightMagenta>%s</>", i.Milestone)
+	}
+	byLink := map[string]int{}
+	for _, fx := range b.Fixes {
+		byLink[fx.Link]++
+	}
+	for _, link := range []string{db.LinkClosedBy, db.LinkLinked, db.LinkMention} {
+		if n := byLink[link]; n > 0 {
+			fmt.Fprintf(&extra, " <gray>· %d %s PR(s)</>", n, link)
+		}
+	}
+	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
+		pos, total, i.Number, state, truncateRunes(oneLine(i.Title), 65), extra.String())
+}
+
 // ---- audit ----
 
 // audit buckets.
@@ -265,11 +297,18 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 	}
 
 	counts := map[string]int{}
+	classCounts := map[string]map[string]int{}
 	var findings []msFinding
 
 	for _, i := range issues {
 		fdg := auditIssue(i, fixes[i.Number], prVersions, milestones, o.Link)
 		counts[fdg.bucket]++
+		if class := fdg.linkClass(); class != "" {
+			if classCounts[fdg.bucket] == nil {
+				classCounts[fdg.bucket] = map[string]int{}
+			}
+			classCounts[fdg.bucket][class]++
+		}
 		if fdg.bucket != msOK && fdg.bucket != msUndetermined {
 			findings = append(findings, fdg)
 		}
@@ -278,6 +317,15 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", len(issues))
 	for _, k := range sortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
+		if cc := classCounts[k]; len(cc) > 0 {
+			parts := make([]string, 0, len(cc))
+			for _, class := range []string{db.LinkClosedBy, db.LinkLinked, msLinkCited, db.LinkMention} {
+				if n := cc[class]; n > 0 {
+					parts = append(parts, fmt.Sprintf("%s <yellow>%d</>", class, n))
+				}
+			}
+			cout.Printf("      <gray>by evidence:</> %s\n", strings.Join(parts, " <gray>·</> "))
+		}
 	}
 
 	if o.Bucket != "" {
@@ -409,6 +457,19 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 
 	fdg.reason = msReason(&fdg)
 	return fdg
+}
+
+// linkClass is the evidence class that determined this finding's expected
+// milestone ("" when nothing did).
+func (fdg *msFinding) linkClass() string {
+	switch {
+	case len(fdg.via) > 0:
+		return fdg.via[0].Link
+	case fdg.cited:
+		return msLinkCited
+	default:
+		return ""
+	}
 }
 
 // printFinding is one audit finding on one line, url in dark gray at the end so

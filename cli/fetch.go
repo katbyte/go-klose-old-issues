@@ -122,8 +122,11 @@ func (f *FlagData) fullWalk(d *db.DB, client *ghql.Client, owner, name, cursor s
 			return err
 		}
 
+		for i := range bundles {
+			printFetchedIssue(fetched+i+1, page.TotalCount, &bundles[i])
+		}
 		fetched += len(page.Issues)
-		cout.Printf("  <yellow>%d</>/<yellow>%d</> issues (rate limit: %d remaining)\n", fetched, page.TotalCount, page.RateLimit.Remaining)
+		cout.Printf("  <gray>%d/%d fetched · rate limit: %d remaining</>\n", fetched, page.TotalCount, page.RateLimit.Remaining)
 		page.RateLimit.WaitIfLow()
 
 		if !page.PageInfo.HasNextPage {
@@ -131,6 +134,28 @@ func (f *FlagData) fullWalk(d *db.DB, client *ghql.Client, owner, name, cursor s
 		}
 		cursor = page.PageInfo.EndCursor
 	}
+}
+
+// printFetchedIssue is one line per fetched issue: position, number, state
+// (green closed / orange open), title, and the facts that ride along.
+func printFetchedIssue(pos, total int, b *db.IssueBundle) {
+	i := &b.Issue
+	state := "<fg=208>open</>  "
+	if i.State == db.IssueClosed {
+		state = "<green>closed</>"
+	}
+	extra := fmt.Sprintf(" <gray>· 💬 %d</>", i.CommentCount)
+	if i.ThumbsUp > 0 {
+		extra += fmt.Sprintf(" <gray>· 👍 %d</>", i.ThumbsUp)
+	}
+	if major, _ := triage.VersionFromLabels(i.Labels); major > 0 {
+		extra += fmt.Sprintf(" <gray>·</> <lightMagenta>v%d.x</>", major)
+	}
+	if prs := len(b.Crossrefs); prs > 0 {
+		extra += fmt.Sprintf(" <gray>· %d crossref(s)</>", prs)
+	}
+	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
+		pos, total, i.Number, state, truncateRunes(oneLine(i.Title), 65), extra)
 }
 
 func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string, since time.Time) error {
@@ -155,8 +180,10 @@ func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string
 			return err
 		}
 
+		for i := range bundles {
+			printFetchedIssue(fetched+i+1, page.IssueCount, &bundles[i])
+		}
 		fetched += len(page.Issues)
-		cout.Printf("  <yellow>%d</>/<yellow>%d</> updated issues\n", fetched, page.IssueCount)
 		page.RateLimit.WaitIfLow()
 
 		if !page.PageInfo.HasNextPage {
