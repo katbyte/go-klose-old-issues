@@ -176,7 +176,7 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 		fdg := &findings[n]
 		f.printFixedCard(fdg, n+1, len(findings), prVersions, verdicts[fdg.issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi fixed --apply-with-ai</> to close the confirmed ones, one accept at a time\n")
+	cout.Printf("\nnext: <cyan>koi fixed --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -309,6 +309,7 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, verdicts map[in
 
 	if f.DryRun {
 		cout.Printf("\n<yellow>dry-run:</> %d closes previewed · %d below the gate, nothing changed\n", previewed, below)
+		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to close these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n")
 		return nil
 	}
 	cout.Printf("\n<green>%d closed</> · %d skipped · %d below the gate · %d failed\n", closed, skipped, below, failed)

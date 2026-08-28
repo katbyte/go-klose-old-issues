@@ -120,7 +120,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 		return f.applyPRMilestones(d, findings, milestones, o)
 	}
 	if counts[msMissing]+counts[msMismatch] > 0 {
-		cout.Printf("next: <cyan>koi milestone changelog-check --apply</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "PR milestones"))
+		cout.Printf("next: <cyan>koi milestone changelog-check --apply --dry-run</> to preview, then drop <cyan>--dry-run</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "PR milestones"))
 	}
 	return nil
 }

@@ -389,7 +389,7 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 		return f.applyMilestones(d, findings, milestones, o)
 	}
 	if o.Bucket == "" && counts[msMissing]+counts[msMismatch] > 0 {
-		cout.Printf("next: <cyan>koi milestone --skip-scan --apply</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "milestones"))
+		cout.Printf("next: <cyan>koi milestone --skip-scan --apply --dry-run</> to preview, then drop <cyan>--dry-run</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "milestones"))
 	}
 	return nil
 }
@@ -769,6 +769,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 
 	if f.DryRun {
 		cout.Printf("\n<yellow>dry-run:</> %d milestone sets previewed, nothing changed\n", len(todo))
+		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to set these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n")
 		return nil
 	}
 	cout.Printf("\n<green>%d set</> · %d failed\n", applied, failed)
