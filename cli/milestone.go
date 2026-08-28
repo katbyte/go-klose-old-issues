@@ -229,10 +229,7 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 // (green closed / orange open), title, milestone, and how its fix PRs link.
 func printScannedIssue(pos, total int, b *db.MSBundle) {
 	i := &b.Issue
-	state := "<fg=208>open</>  "
-	if i.State == db.IssueClosed {
-		state = "<green>closed</>"
-	}
+	state := stateTag(i.State)
 	var extra strings.Builder
 	if i.Milestone != "" {
 		fmt.Fprintf(&extra, " <gray>·</> <lightMagenta>%s</>", i.Milestone)
@@ -482,7 +479,7 @@ func (f *FlagData) syncFixPRMilestones(repo gh.Repo, fdg *msFinding, m *db.Miles
 				cout.Errorf("      <red>setting milestone on fix PR #%d: %v</>\n", pr, err)
 				continue
 			}
-			cout.Printf("      <green>fix PR <lightCyan>#%d</> was missing it too — set milestone → %s</>\n", pr, fdg.expected)
+			cout.Printf("      <fg=208>fix PR #%d was missing it too — set milestone → %s</>\n", pr, fdg.expected)
 			cout.Quietf("%d@pr-milestone@%s\n", pr, fdg.expected)
 		case live.Milestone.Title != fdg.expected:
 			cout.Printf("      <yellow>fix PR #%d carries %s, expected %s — left as-is</>\n", pr, live.Milestone.Title, fdg.expected)
@@ -545,7 +542,7 @@ func linkPhrase(fx *db.MSFix) string {
 func linkPhraseColoured(fx *db.MSFix) string {
 	switch fx.Link {
 	case db.LinkClosedBy:
-		return fmt.Sprintf("<green>closed by</> PR <lightCyan>#%d</>", fx.PRNumber)
+		return fmt.Sprintf("<lightBlue>closed by</> PR <lightCyan>#%d</>", fx.PRNumber)
 	case db.LinkLinked:
 		return fmt.Sprintf("<yellow>linked</> fix PR <lightCyan>#%d</>", fx.PRNumber)
 	default:
@@ -589,7 +586,7 @@ func (f *FlagData) writeMilestoneCSV(path string, findings []msFinding) error {
 	defer func() { _ = out.Close() }()
 
 	w := csv.NewWriter(out)
-	if err := w.Write([]string{"number", "bucket", "state", "state_reason", "current_milestone", "expected_milestone", "fix_prs", "reason", "title", "url"}); err != nil {
+	if err := w.Write([]string{csvColNumber, "bucket", "state", "state_reason", "current_milestone", "expected_milestone", "fix_prs", "reason", csvColTitle, csvColURL}); err != nil {
 		return fmt.Errorf("writing csv header: %w", err)
 	}
 	for _, fdg := range findings {

@@ -187,6 +187,18 @@ ALTER TABLE comments ADD COLUMN url TEXT NOT NULL DEFAULT '';
 -- backfilled by: koi fetch --full and koi milestone --rescan
 ALTER TABLE crossrefs ADD COLUMN will_close INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE ms_fixes ADD COLUMN link TEXT NOT NULL DEFAULT 'mention';
+`, `
+-- light PR cache for the changelog check: every PR a changelog bullet cites,
+-- with its current milestone. is_pr=0 marks bullet references that resolved to
+-- issues, so they are fetched once and skipped forever after.
+CREATE TABLE ms_prs (
+  number     INTEGER PRIMARY KEY,
+  title      TEXT NOT NULL DEFAULT '',
+  state      TEXT NOT NULL DEFAULT '',
+  milestone  TEXT NOT NULL DEFAULT '',
+  is_pr      INTEGER NOT NULL DEFAULT 1,
+  fetched_at TEXT NOT NULL DEFAULT ''
+);
 `}
 
 func (d *DB) migrate() error {

@@ -73,7 +73,20 @@ func (c *Client) throttle() {
 // Do runs a GraphQL query and decodes the "data" object into out. Requests are
 // throttled, and secondary-rate-limit 403s are retried after a long backoff
 // (honouring Retry-After when present).
+// Do runs a graphql query, retrying through rate limits. Any graphql-level
+// error fails the call.
 func (c *Client) Do(query string, variables map[string]any, out any) error {
+	return c.do(query, variables, out, false)
+}
+
+// DoTolerant is Do for queries whose aliased fields may individually fail —
+// e.g. pullRequest lookups where the number is actually an issue. NOT_FOUND
+// errors are ignored and the partial data is decoded; anything else still fails.
+func (c *Client) DoTolerant(query string, variables map[string]any, out any) error {
+	return c.do(query, variables, out, true)
+}
+
+func (c *Client) do(query string, variables map[string]any, out any, tolerateNotFound bool) error {
 	payload, err := json.Marshal(map[string]any{"query": query, "variables": variables})
 	if err != nil {
 		return fmt.Errorf("marshalling graphql request: %w", err)
@@ -117,7 +130,18 @@ func (c *Client) Do(query string, variables map[string]any, out any) error {
 				time.Sleep(secondaryLimitWait)
 				continue
 			}
-			return fmt.Errorf("graphql error (%s): %s", envelope.Errors[0].Type, envelope.Errors[0].Message)
+			fatal := envelope.Errors
+			if tolerateNotFound && envelope.Data != nil {
+				fatal = nil
+				for _, e := range envelope.Errors {
+					if e.Type != "NOT_FOUND" {
+						fatal = append(fatal, e)
+					}
+				}
+			}
+			if len(fatal) > 0 {
+				return fmt.Errorf("graphql error (%s): %s", fatal[0].Type, fatal[0].Message)
+			}
 		}
 
 		if err := json.Unmarshal(envelope.Data, out); err != nil {

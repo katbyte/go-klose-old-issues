@@ -140,10 +140,7 @@ func (f *FlagData) fullWalk(d *db.DB, client *ghql.Client, owner, name, cursor s
 // (green closed / orange open), title, and the facts that ride along.
 func printFetchedIssue(pos, total int, b *db.IssueBundle) {
 	i := &b.Issue
-	state := "<fg=208>open</>  "
-	if i.State == db.IssueClosed {
-		state = "<green>closed</>"
-	}
+	state := stateTag(i.State)
 	extra := fmt.Sprintf(" <gray>· 💬 %d</>", i.CommentCount)
 	if i.ThumbsUp > 0 {
 		extra += fmt.Sprintf(" <gray>· 👍 %d</>", i.ThumbsUp)

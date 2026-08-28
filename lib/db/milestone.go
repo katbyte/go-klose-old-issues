@@ -179,6 +179,67 @@ func (d *DB) MSFixesByIssue() (map[int][]MSFix, error) {
 	return fixes, rows.Err()
 }
 
+// MSPR is a cached changelog-cited PR: its current milestone and whether the
+// cited number was actually a PR at all.
+type MSPR struct {
+	Number    int
+	Title     string
+	State     string
+	Milestone string
+	IsPR      bool
+}
+
+// SaveMSPRs upserts a batch of cached PRs.
+func (d *DB) SaveMSPRs(prs []MSPR) error {
+	tx, err := d.Begin()
+	if err != nil {
+		return fmt.Errorf("beginning ms_prs tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, p := range prs {
+		if _, err := tx.Exec(`
+			INSERT INTO ms_prs (number, title, state, milestone, is_pr, fetched_at) VALUES (?, ?, ?, ?, ?, ?)
+			ON CONFLICT(number) DO UPDATE SET
+				title = excluded.title, state = excluded.state, milestone = excluded.milestone,
+				is_pr = excluded.is_pr, fetched_at = excluded.fetched_at`,
+			p.Number, p.Title, p.State, p.Milestone, boolToInt(p.IsPR), toDBTime(Now())); err != nil {
+			return fmt.Errorf("upserting ms pr #%d: %w", p.Number, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing ms_prs tx: %w", err)
+	}
+	return nil
+}
+
+// MSPRs returns every cached PR by number.
+func (d *DB) MSPRs() (map[int]MSPR, error) {
+	rows, err := d.Query("SELECT number, title, state, milestone, is_pr FROM ms_prs")
+	if err != nil {
+		return nil, fmt.Errorf("querying ms_prs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	prs := map[int]MSPR{}
+	for rows.Next() {
+		var p MSPR
+		var isPR int
+		if err := rows.Scan(&p.Number, &p.Title, &p.State, &p.Milestone, &isPR); err != nil {
+			return nil, fmt.Errorf("scanning ms pr: %w", err)
+		}
+		p.IsPR = isPR != 0
+		prs[p.Number] = p
+	}
+	return prs, rows.Err()
+}
+
+// SetMSPRMilestone updates the cached milestone after an apply.
+func (d *DB) SetMSPRMilestone(number int, title string) error {
+	_, err := d.Exec("UPDATE ms_prs SET milestone = ? WHERE number = ?", title, number)
+	return err
+}
+
 // ChangelogVersionsByPR returns version(s) per changelog PR number.
 func (d *DB) ChangelogVersionsByPR() (map[int][]string, error) {
 	rows, err := d.Query("SELECT DISTINCT pr_number, version FROM changelog WHERE pr_number > 0")

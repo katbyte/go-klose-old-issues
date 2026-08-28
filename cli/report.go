@@ -249,7 +249,7 @@ func writeReportHTML(path string, data *reportData) error {
 	return nil
 }
 
-var csvHeader = []string{"number", "action", "reason", "confidence", "title", "url", "decision", "notes"}
+var csvHeader = []string{csvColNumber, "action", "reason", "confidence", csvColTitle, csvColURL, "decision", "notes"}
 
 func writeDecisionsCSV(path string, rows [][]string) error {
 	out, err := os.Create(path) //nolint:gosec // G304: user-chosen output path is the point

@@ -70,3 +70,24 @@ func orDefault(s, def string) string {
 func (f *FlagData) issueURL(number int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, number)
 }
+
+// stateTag colours an issue/PR state for list lines: green when closed/merged,
+// orange while open — padded so titles align.
+func stateTag(state string) string {
+	if state == "OPEN" {
+		return "<fg=208>open</>  "
+	}
+	return "<green>" + fmt.Sprintf("%-6s", strings.ToLower(state)) + "</>"
+}
+
+// Column names shared by every csv this tool writes.
+const (
+	csvColNumber = "number"
+	csvColTitle  = "title"
+	csvColURL    = "url"
+)
+
+// prURL builds the web url for a PR in the triaged repo.
+func (f *FlagData) prURL(number int) string {
+	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, number)
+}

@@ -243,6 +243,24 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			RunE:          msRunE(sub.link),
 		})
 	}
+	milestoneCmd.AddCommand(&cobra.Command{
+		Use:           "changelog-check",
+		Short:         "audits every changelog-cited PR for the citing release's milestone",
+		Long:          `The changelog is the ground truth of what shipped in which release: every bullet cites the PR that shipped it. This checks each cited PR carries the citing release's milestone — the PR-side complement of the issue audit. Missing ones are fixable with --apply; PRs on a different milestone are report-only.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o MilestoneOpts
+			o.Rescan, _ = cmd.Flags().GetBool("rescan")
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			o.CSV, _ = cmd.Flags().GetString("csv")
+			o.Bucket, _ = cmd.Flags().GetString("bucket")
+			return GetFlags().ChangelogCheck(o)
+		},
+	})
 	root.AddCommand(milestoneCmd)
 
 	root.AddCommand(&cobra.Command{
