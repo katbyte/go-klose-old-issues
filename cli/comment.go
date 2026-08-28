@@ -35,11 +35,11 @@ func renderCloseComment(f *FlagData, i *db.Issue, s *db.Signals, a *db.Action) (
 	}
 
 	data := commentData{
-		Number:       i.Number,
-		Title:        i.Title,
+		Number:        i.Number,
+		Title:         i.Title,
 		CurrentMajor:  f.CurrentMajor,
 		PreviousMajor: f.CurrentMajor - 1,
-		Evidence:     a.Evidence,
+		Evidence:      a.Evidence,
 	}
 	if s != nil {
 		data.VersionMajor = s.VersionMajor
