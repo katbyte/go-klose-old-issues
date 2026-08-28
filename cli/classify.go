@@ -239,12 +239,24 @@ func (f *FlagData) applyClassifyVerdict(d *db.DB, t target, v *classifyVerdict) 
 		proposal.Action, proposal.Reason, proposal.Confidence = db.ActionKeep, triage.ReasonAIKeep, v.Confidence
 		proposal.StateReason, proposal.Template = "", ""
 	case proposal.Action == db.ActionClose && v.Recommendation == "unknown":
+		cout.Printf("  <cyan>#%-6d</> AI says <bold>unknown</> — stays human/undetermined <darkGray>%s</>\n", t.issue.Number, t.issue.URL)
 		return nil // not confident enough to act on; stays human/undetermined
 	case proposal.Action == db.ActionClose:
 		if v.Confidence < proposal.Confidence {
 			proposal.Confidence = v.Confidence
 		}
 	}
+
+	line := fmt.Sprintf("<lightBlue>%s</>/%s", proposal.Action, proposal.Reason)
+	if proposal.Action == db.ActionKeep && proposal.Reason == triage.ReasonAIKeep {
+		line = "<fg=208>keep/ai-keep — AI vetoed the close</>"
+	}
+	quote := ""
+	if v.Quote != "" {
+		quote = fmt.Sprintf(" — <gray>%q</>", text.TruncateRunes(v.Quote, 60))
+	}
+	cout.Printf("  <cyan>#%-6d</> AI says <bold>%s</> %s → %s%s <darkGray>%s</>\n",
+		t.issue.Number, v.Recommendation, confidenceColoured(v.Confidence), line, quote, t.issue.URL)
 
 	_, err = d.ProposeAction(proposal)
 	return err
@@ -335,8 +347,8 @@ func (f *FlagData) applyStillOpenVerdict(d *db.DB, t target, v *stillOpenVerdict
 
 	// a credible recent-version claim flips the close to keep
 	if v.StillClaim && v.ClaimedMajor >= f.CurrentMajor-1 && v.Confidence >= 0.5 {
-		cout.Printf("  <yellow>#%d</> flipped to keep: <green>still an issue on v%d</> — %s\n",
-			t.issue.Number, v.ClaimedMajor, text.TruncateRunes(v.Quote, 80))
+		cout.Printf("  <cyan>#%d</> <fg=208>flipped to keep:</> <bold>still an issue on v%d</> — <gray>%q</> <darkGray>%s</>\n",
+			t.issue.Number, v.ClaimedMajor, text.TruncateRunes(v.Quote, 80), t.issue.URL)
 		flip := &db.Action{
 			IssueNumber:    t.issue.Number,
 			Action:         db.ActionKeep,

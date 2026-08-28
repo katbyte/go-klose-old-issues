@@ -95,7 +95,7 @@ func (c *cardContext) render(pos, total int) {
 	i, s, a := c.issue, c.signals, c.action
 
 	cout.Printf("\n<gray>%s</>\n", strings.Repeat("─", 100))
-	cout.Printf("<lightBlue>[%d/%d]</> <cyan>#%d</> <bold>%s</>\n", pos, total, i.Number, text.TruncateRunes(i.Title, 90))
+	cout.Printf("<lightBlue>[%d/%d]</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n", pos, total, i.Number, text.TruncateRunes(i.Title, 90), i.URL)
 
 	// labels · age · author · engagement
 	labels := strings.Join(i.Labels, " · ")

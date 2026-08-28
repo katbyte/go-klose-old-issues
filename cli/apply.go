@@ -6,6 +6,7 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 )
 
 // mutationThrottle keeps ~2s between GitHub mutations: friendly to secondary
@@ -58,15 +59,24 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 	throttle := newThrottle(mutationThrottle)
 	applied, stale, failed := 0, 0, 0
 
-	for _, a := range actions {
+	for n, a := range actions {
 		card, err := f.loadCard(d, a)
 		if err != nil {
 			return err
 		}
 
+		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
+			n+1, len(actions), a.IssueNumber, text.TruncateRunes(text.OneLine(card.issue.Title), 90), f.issueURL(a.IssueNumber))
+		version := "no version"
+		if card.signals != nil && card.signals.VersionMajor > 0 {
+			version = fmt.Sprintf("<lightMagenta>v%s</> <gray>(%s)</>", versionText(card.signals), card.signals.VersionSource)
+		}
+		cout.Printf("      <lightBlue>%s</> · %s · confidence %s · 💬 %d · 👍 %d\n",
+			a.Reason, version, confidenceColoured(a.Confidence), card.issue.CommentCount, card.issue.ThumbsUp)
+
 		comment, err := renderCloseComment(f, card.issue, card.signals, a)
 		if err != nil {
-			cout.Errorf("  <red>#%d:</> %v\n", a.IssueNumber, err)
+			cout.Errorf("      <red>rendering comment: %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, err.Error()); err != nil {
 				return err
 			}
@@ -75,8 +85,8 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 		}
 
 		if f.DryRun {
-			cout.Printf("  <yellow>dry-run:</> would close <cyan>#%d</> as %s (%s), commenting %d chars\n",
-				a.IssueNumber, a.StateReason, a.Reason, len(comment))
+			cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
+				len(comment), a.Template, a.StateReason)
 			continue
 		}
 
@@ -84,7 +94,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 		throttle()
 		live, err := repo.GetIssue(a.IssueNumber)
 		if err != nil {
-			cout.Errorf("  <red>#%d:</> %v\n", a.IssueNumber, err)
+			cout.Errorf("      <red>fetching live state: %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, err.Error()); err != nil {
 				return err
 			}
@@ -92,7 +102,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 			continue
 		}
 		if live.State != "open" {
-			cout.Printf("  <gray>#%d already closed, skipping</>\n", a.IssueNumber)
+			cout.Printf("      <gray>already closed on github — skipped</>\n")
 			if err := d.MarkApplied(a.ID, db.StatusStale, "already closed"); err != nil {
 				return err
 			}
@@ -101,8 +111,8 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 		}
 		// second-precision slack: db timestamps are truncated to the second
 		if live.UpdatedAt.After(a.IssueUpdatedAt.Add(2 * time.Second)) {
-			cout.Printf("  <yellow>#%d changed since the decision (%s > %s) — marked stale for re-review</>\n",
-				a.IssueNumber, live.UpdatedAt.Format(time.RFC3339), a.IssueUpdatedAt.Format(time.RFC3339))
+			cout.Printf("      <fg=208>changed since the decision (%s > %s) — marked stale for re-review</>\n",
+				live.UpdatedAt.Format(time.RFC3339), a.IssueUpdatedAt.Format(time.RFC3339))
 			if err := d.MarkApplied(a.ID, db.StatusStale, "issue updated since decision"); err != nil {
 				return err
 			}
@@ -112,7 +122,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 
 		throttle()
 		if err := repo.CreateComment(a.IssueNumber, comment); err != nil {
-			cout.Errorf("  <red>#%d comment failed:</> %v\n", a.IssueNumber, err)
+			cout.Errorf("      <red>comment failed: %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, err.Error()); err != nil {
 				return err
 			}
@@ -122,7 +132,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 
 		throttle()
 		if err := repo.CloseIssue(a.IssueNumber, a.StateReason); err != nil {
-			cout.Errorf("  <red>#%d close failed (comment was posted):</> %v\n", a.IssueNumber, err)
+			cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, "commented but close failed: "+err.Error()); err != nil {
 				return err
 			}
@@ -134,7 +144,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 			return err
 		}
 		applied++
-		cout.Printf("  <green>closed</> <cyan>#%d</> as %s (%s)\n", a.IssueNumber, a.StateReason, a.Reason)
+		cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", a.StateReason)
 		cout.Quietf("%d@closed@%s\n", a.IssueNumber, a.Reason)
 	}
 
@@ -164,7 +174,7 @@ func (f *FlagData) Reopen(number int, comment string) error {
 	}
 
 	if f.DryRun {
-		cout.Printf("<yellow>dry-run:</> would reopen <cyan>#%d</>\n", number)
+		cout.Printf("<yellow>dry-run: would reopen</> <cyan>#%d</> <darkGray>%s</>\n", number, f.issueURL(number))
 		return nil
 	}
 
@@ -185,7 +195,7 @@ func (f *FlagData) Reopen(number int, comment string) error {
 		}
 	}
 
-	cout.Printf("<green>reopened</> <cyan>#%d</>\n", number)
+	cout.Printf("<fg=28>reopened</> <cyan>#%d</> <darkGray>%s</>\n", number, f.issueURL(number))
 	return nil
 }
 
