@@ -94,8 +94,13 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 		if current == "" {
 			current = "(none)"
 		}
-		cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(cited in the %s changelog)</> %s <darkGray>%s</>\n",
-			fdg.bucket, fdg.pr.Number, current, orDash(fdg.expected), joinVersions(fdg.versions),
+		target, note := orDash(fdg.expected), ""
+		if fdg.expected == "" && fdg.wanted != "" {
+			target = fdg.wanted
+			note = fmt.Sprintf(" <red>no %s milestone — create it to fix</>", fdg.wanted)
+		}
+		cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(cited in the %s changelog)</>%s %s <darkGray>%s</>\n",
+			fdg.bucket, fdg.pr.Number, current, target, joinVersions(fdg.versions), note,
 			text.TruncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
 	}
 	if o.Bucket == "" && len(findings) > 10 {
@@ -109,11 +114,13 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 		cout.Printf("wrote <cyan>%s</> (%d findings)\n", o.CSV, len(findings))
 	}
 
+	f.printMissingMilestones(prFindingWants(findings))
+
 	if o.Apply {
-		return f.applyPRMilestones(d, findings, milestones, o.Max)
+		return f.applyPRMilestones(d, findings, milestones, o)
 	}
-	if counts[msMissing] > 0 {
-		cout.Printf("next: <cyan>koi milestone changelog-check --apply</> to set the %d missing PR milestones\n", counts[msMissing])
+	if counts[msMissing]+counts[msMismatch] > 0 {
+		cout.Printf("next: <cyan>koi milestone changelog-check --apply</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "PR milestones"))
 	}
 	return nil
 }
@@ -122,7 +129,8 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 type prFinding struct {
 	pr       db.MSPR
 	bucket   string   // msMissing | msMismatch | msNoSuchRelease | msOK
-	expected string   // milestone title, e.g. "v4.80.0"
+	expected string   // milestone title, e.g. "v4.80.0" ("" when none of the citing releases has one)
+	wanted   string   // the earliest citing release, milestone or not — what expected would be if it existed
 	versions []string // every release whose changelog cites this PR
 }
 
@@ -133,15 +141,21 @@ func auditChangelogPR(pr *db.MSPR, versions []string, milestones map[string]db.M
 	fdg := prFinding{pr: *pr, bucket: msOK, versions: versions}
 
 	cited := map[string]bool{}
-	expected := ""
+	expected, wanted := "", ""
 	for _, v := range versions {
 		cited[v] = true
+		if wanted == "" || triage.VersionLess(v, wanted) {
+			wanted = v
+		}
 		if _, ok := milestones["v"+v]; ok && (expected == "" || triage.VersionLess(v, expected)) {
 			expected = v
 		}
 	}
 	if expected != "" {
 		fdg.expected = "v" + expected
+	}
+	if wanted != "" {
+		fdg.wanted = "v" + wanted
 	}
 
 	switch {
@@ -222,22 +236,28 @@ func printCheckedPR(pos, total int, p *db.MSPR) {
 	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s <gray>·</> %s\n", pos, total, p.Number, state, ms, text.TruncateRunes(text.OneLine(p.Title), 60))
 }
 
-// applyPRMilestones sets the milestone on changelog-cited PRs missing one.
-// Mismatches are report-only, same policy as everywhere else.
-func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones map[string]db.Milestone, maxApply int) error {
+// applyPRMilestones sets the citing release's milestone on changelog-cited PRs —
+// filling missing ones and correcting mismatches alike: the changelog is the
+// ground truth of what shipped where, so the citing release overwrites a
+// differing milestone. MERGED PRs only, and only where a citing release has a
+// milestone to point at.
+func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
 	var todo []prFinding
 	for _, fdg := range findings {
-		if fdg.bucket == msMissing {
+		switch {
+		case fdg.bucket == msMissing:
+			todo = append(todo, fdg)
+		case fdg.bucket == msMismatch && fdg.pr.State == "MERGED" && fdg.expected != "":
 			todo = append(todo, fdg)
 		}
 	}
 	if len(todo) == 0 {
-		cout.Printf("no missing PR milestones to apply\n")
+		cout.Printf("no missing or mismatched PR milestones to apply\n")
 		return nil
 	}
-	if !f.DryRun && maxApply > 0 && len(todo) > maxApply {
-		cout.Printf("<gray>capping at %d of %d (--max; dry-run shows all)</>\n", maxApply, len(todo))
-		todo = todo[:maxApply]
+	if !f.DryRun && o.Max > 0 && len(todo) > o.Max {
+		cout.Printf("<gray>capping at %d of %d (--max; dry-run shows all)</>\n", o.Max, len(todo))
+		todo = todo[:o.Max]
 	}
 
 	repo, err := f.NewRepo()
@@ -257,7 +277,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		}
 	}
 
-	throttle := newThrottle(mutationThrottle)
+	throttle := newThrottle()
 	applied, failed := 0, 0
 	for n, fdg := range todo {
 		version := normalizeMilestone(fdg.expected)
@@ -269,6 +289,9 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		}
 		cout.Printf("      cited in <lightMagenta>%s</><gray>@changelog:</> %s\n",
 			fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+		if fdg.bucket == msMismatch {
+			cout.Printf("      <yellow>mismatch: carries %s, the changelog says %s</>\n", fdg.pr.Milestone, fdg.expected)
+		}
 
 		if f.DryRun {
 			cout.Printf("      <yellow>dry-run: would set milestone → %s</>\n", fdg.expected)
@@ -323,6 +346,18 @@ func (f *FlagData) writeChangelogCheckCSV(path string, findings []prFinding) err
 	}
 	w.Flush()
 	return w.Error()
+}
+
+// prFindingWants collects the releases whose absent milestone blocks a fix —
+// every finding stuck on a wanted release with no milestone to point at.
+func prFindingWants(findings []prFinding) []string {
+	seen := map[string]bool{}
+	for i := range findings {
+		if fdg := &findings[i]; fdg.expected == "" && fdg.wanted != "" {
+			seen[fdg.wanted] = true
+		}
+	}
+	return text.SortedKeys(seen)
 }
 
 func joinVersions(vs []string) string {

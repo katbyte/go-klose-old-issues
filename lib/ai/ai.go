@@ -54,6 +54,15 @@ func (a AI) style() string {
 
 // Prompt runs the AI CLI non-interactively with the prompt and returns the result text.
 func (a AI) Prompt(prompt string) (string, error) {
+	text, _, err := a.PromptWithModel(prompt)
+	return text, err
+}
+
+// PromptWithModel is Prompt plus the model that actually answered, when the
+// CLI's output discloses it: claude's JSON envelope names it (so a blank Model
+// still learns what the CLI's default resolved to), the plain-text styles
+// return "".
+func (a AI) PromptWithModel(prompt string) (text, model string, err error) {
 	switch a.style() {
 	case styleAgy:
 		return a.run(a.withModel([]string{"-p", prompt}), "", false)
@@ -73,6 +82,18 @@ func (a AI) Prompt(prompt string) (string, error) {
 	}
 }
 
+// ResolveModel asks the CLI which model the configured (possibly blank or
+// aliased) Model actually invokes, via a minimal prompt — claude's JSON
+// envelope names the canonical model id. CLIs that don't disclose models
+// return "".
+func (a AI) ResolveModel() (string, error) {
+	if a.style() != styleClaude {
+		return "", nil
+	}
+	_, model, err := a.PromptWithModel("Reply with exactly: ok")
+	return model, err
+}
+
 // withModel appends --model when one is set.
 func (a AI) withModel(args []string) []string {
 	if a.Model != "" {
@@ -82,9 +103,10 @@ func (a AI) withModel(args []string) []string {
 }
 
 // run invokes the CLI with args, feeding stdin when non-empty. With envelope, claude's
-// JSON envelope ({"result": "...", "is_error": bool, ...}) is unwrapped; otherwise the
-// output is returned as trimmed plain text.
-func (a AI) run(args []string, stdin string, envelope bool) (string, error) {
+// JSON envelope ({"result": "...", "is_error": bool, ...}) is unwrapped and the
+// answering model reported from its modelUsage; otherwise the output is returned as
+// trimmed plain text with no model.
+func (a AI) run(args []string, stdin string, envelope bool) (text, model string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), a.Timeout)
 	defer cancel()
 
@@ -97,28 +119,39 @@ func (a AI) run(args []string, stdin string, envelope bool) (string, error) {
 	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-			return "", fmt.Errorf("%s exited with %d: %s", a.Cmd, exitErr.ExitCode(), strings.TrimSpace(string(exitErr.Stderr)))
+			return "", "", fmt.Errorf("%s exited with %d: %s", a.Cmd, exitErr.ExitCode(), strings.TrimSpace(string(exitErr.Stderr)))
 		}
-		return "", fmt.Errorf("running %s: %w", a.Cmd, err)
+		return "", "", fmt.Errorf("running %s: %w", a.Cmd, err)
 	}
 
 	if !envelope {
-		return strings.TrimSpace(string(out)), nil
+		return strings.TrimSpace(string(out)), "", nil
 	}
 
 	var env struct {
-		Result  string `json:"result"`
-		IsError bool   `json:"is_error"`
+		Result     string `json:"result"`
+		IsError    bool   `json:"is_error"`
+		ModelUsage map[string]struct {
+			OutputTokens int `json:"outputTokens"`
+		} `json:"modelUsage"`
 	}
 	if err := json.Unmarshal(out, &env); err != nil {
-		return "", fmt.Errorf("parsing %s output envelope: %w", a.Cmd, err)
+		return "", "", fmt.Errorf("parsing %s output envelope: %w", a.Cmd, err)
 	}
 
 	if env.IsError {
-		return "", fmt.Errorf("%s returned an error: %s", a.Cmd, env.Result)
+		return "", "", fmt.Errorf("%s returned an error: %s", a.Cmd, env.Result)
 	}
 
-	return env.Result, nil
+	// the model that did the answering: most output tokens wins (ties broken
+	// lexicographically so the pick is deterministic)
+	model, best := "", -1
+	for id, u := range env.ModelUsage {
+		if u.OutputTokens > best || (u.OutputTokens == best && id < model) {
+			model, best = id, u.OutputTokens
+		}
+	}
+	return env.Result, model, nil
 }
 
 // ExtractJSON unmarshals a JSON object or array embedded in model output into v,

@@ -56,7 +56,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 		}
 	}
 
-	throttle := newThrottle(mutationThrottle)
+	throttle := newThrottle()
 	applied, stale, failed := 0, 0, 0
 
 	for n, a := range actions {
@@ -199,13 +199,13 @@ func (f *FlagData) Reopen(number int, comment string) error {
 	return nil
 }
 
-// newThrottle returns a func that sleeps to keep at least d between calls
-// (no sleep on the first call).
-func newThrottle(d time.Duration) func() {
+// newThrottle returns a func that sleeps to keep at least mutationThrottle
+// between calls (no sleep on the first call).
+func newThrottle() func() {
 	var lastCall time.Time
 	return func() {
 		if !lastCall.IsZero() {
-			if wait := d - time.Since(lastCall); wait > 0 {
+			if wait := mutationThrottle - time.Since(lastCall); wait > 0 {
 				time.Sleep(wait)
 			}
 		}

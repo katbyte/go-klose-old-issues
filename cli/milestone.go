@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/browser"
+
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
@@ -21,17 +23,23 @@ import (
 const (
 	metaMSScanCursor = "ms_scan_cursor"
 	metaMSLastScan   = "ms_last_scan"
+
+	// typePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
+	typePullRequest = "PullRequest"
 )
 
 // MilestoneOpts configures the milestone audit.
 type MilestoneOpts struct {
-	SkipScan bool   // audit existing data without re-scanning
-	Rescan   bool   // force a full re-walk
-	Apply    bool   // set milestones for the determinable missing ones
-	Max      int    // cap on applies per run
-	CSV      string // write the full audit to this csv ("" = don't)
-	Bucket   string // list every finding in this bucket instead of the 10-per-bucket sample
-	Link     string // determine milestones from this evidence class only ("" = strongest available)
+	SkipScan        bool    // audit existing data without re-scanning
+	Rescan          bool    // force a full re-walk
+	Apply           bool    // set the determined milestones (missing and mismatched)
+	ApplyWithAI     bool    // AI scores each issue↔evidence pairing, the human confirms each set
+	ApplyWithAIAuto bool    // AI scores and likely matches (≥ Threshold) apply without asking
+	Threshold       float64 // auto-apply confidence floor (0 = the default, msMatchThreshold)
+	Max             int     // cap on applies per run
+	CSV             string  // write the full audit to this csv ("" = don't)
+	Bucket          string  // list every finding in this bucket instead of the 10-per-bucket sample
+	Link            string  // determine milestones from this evidence class only ("" = strongest available)
 }
 
 // Milestone audits every issue in the repo — open AND closed — against the
@@ -203,7 +211,7 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 		best := map[int]db.MSFix{}
 		consider := func(s *ghql.ScanPRRef, link string) {
 			// only merged PRs from the same repo can map to a release
-			if s.Typename != "PullRequest" || !s.Merged || !strings.EqualFold(s.Repository.NameWithOwner, repo) {
+			if s.Typename != typePullRequest || !s.Merged || !strings.EqualFold(s.Repository.NameWithOwner, repo) {
 				return
 			}
 			if prev, ok := best[s.Number]; ok && db.LinkRank[prev.Link] >= db.LinkRank[link] {
@@ -242,7 +250,7 @@ func printScannedIssue(pos, total int, b *db.MSBundle) {
 	}
 	for _, link := range []string{db.LinkClosedBy, db.LinkLinked, db.LinkMention} {
 		if n := byLink[link]; n > 0 {
-			fmt.Fprintf(&extra, " <gray>· %d %s PR(s)</>", n, link)
+			fmt.Fprintf(&extra, " <gray>·</> <%s>%d %s PR(s)</>", classTag(link), n, link)
 		}
 	}
 	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
@@ -262,13 +270,14 @@ const (
 )
 
 type msFinding struct {
-	issue    db.MSIssue
-	bucket   string
-	expected string // milestone title, e.g. "v4.81.0"
-	fixPRs   []int
-	via      []db.MSFix // the fix PRs behind expected, at the winning link strength
-	cited    bool       // expected came from the changelog citing the issue number itself
-	reason   string     // the above as a sentence, e.g. "closed by PR #1564 — in the v1.10.0 changelog"
+	issue       db.MSIssue
+	bucket      string
+	expected    string // milestone title, e.g. "v4.81.0"
+	noMilestone bool   // expected is determinable but no such milestone exists — create it to fix
+	fixPRs      []int
+	via         []db.MSFix // the fix PRs behind expected, at the winning link strength
+	cited       bool       // expected came from the changelog citing the issue number itself
+	reason      string     // the above as a sentence, e.g. "closed by PR #1564 — in the v1.10.0 changelog"
 }
 
 func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
@@ -317,13 +326,14 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", len(issues))
 	for _, k := range text.SortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
-		// only missing gets the class split: it's the bucket --apply acts on, so
-		// the split is the wave plan — the other buckets are report-only noise
-		if cc := classCounts[k]; k == msMissing && len(cc) > 0 {
+		// missing and mismatch get the class split: they're the buckets --apply
+		// acts on, so the split is the wave plan — the other buckets are
+		// report-only noise
+		if cc := classCounts[k]; (k == msMissing || k == msMismatch) && len(cc) > 0 {
 			parts := make([]string, 0, len(cc))
 			for _, class := range []string{db.LinkClosedBy, db.LinkLinked, msLinkCited, db.LinkMention} {
 				if n := cc[class]; n > 0 {
-					parts = append(parts, fmt.Sprintf("%s <yellow>%d</>", class, n))
+					parts = append(parts, fmt.Sprintf("<%s>%s</> <yellow>%d</>", classTag(class), class, n))
 				}
 			}
 			cout.Printf("      %s\n", strings.Join(parts, " <gray>·</> "))
@@ -363,11 +373,19 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 		cout.Printf("<gray>(showing up to 10 per bucket — use --csv audit.csv for the full list, --bucket <name> for one bucket)</>\n")
 	}
 
-	if o.Apply {
-		return f.applyMilestones(d, findings, milestones, o.Max)
+	wants := map[string]bool{}
+	for i := range findings {
+		if fdg := &findings[i]; fdg.noMilestone {
+			wants[fdg.expected] = true
+		}
 	}
-	if o.Bucket == "" && counts[msMissing] > 0 {
-		cout.Printf("next: <cyan>koi milestone --skip-scan --apply</> to set the %d determinable missing milestones\n", counts[msMissing])
+	f.printMissingMilestones(text.SortedKeys(wants))
+
+	if o.Apply || o.ApplyWithAI || o.ApplyWithAIAuto {
+		return f.applyMilestones(d, findings, milestones, o)
+	}
+	if o.Bucket == "" && counts[msMissing]+counts[msMismatch] > 0 {
+		cout.Printf("next: <cyan>koi milestone --skip-scan --apply</> to %s\n", applyHint(counts[msMissing], counts[msMismatch], "milestones"))
 	}
 	return nil
 }
@@ -438,6 +456,8 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 	}
 	if expected != "" {
 		fdg.expected = "v" + expected
+		_, ok := milestones[fdg.expected]
+		fdg.noMilestone = !ok
 	}
 
 	current := i.Milestone
@@ -462,10 +482,9 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 }
 
 // syncFixPRMilestones brings the fix PRs behind a just-set milestone into line:
-// the milestone was determined FROM those PRs' changelog entries, so a fix PR
-// missing it is the same bookkeeping gap the issue had (e.g. PRs merged before
-// the milestone existed). A PR carrying a different milestone is called out but
-// left alone — that's a human judgement, same policy as issue mismatches.
+// the milestone was determined FROM those PRs' changelog entries, so the PR
+// carries the same bookkeeping gap the issue had — filled when missing,
+// corrected when different (the changelog wins there too).
 func (f *FlagData) syncFixPRMilestones(repo gh.Repo, fdg *msFinding, m *db.Milestone, throttle func()) {
 	for i := range fdg.via {
 		pr := fdg.via[i].PRNumber
@@ -474,18 +493,20 @@ func (f *FlagData) syncFixPRMilestones(repo gh.Repo, fdg *msFinding, m *db.Miles
 			cout.Errorf("      <red>checking fix PR #%d: %v</>\n", pr, err)
 			continue
 		}
-		switch {
-		case live.Milestone == nil:
-			throttle()
-			if err := repo.SetMilestone(pr, m.Number); err != nil {
-				cout.Errorf("      <red>setting milestone on fix PR #%d: %v</>\n", pr, err)
-				continue
-			}
-			cout.Printf("      <fg=208>fix PR #%d was missing it too — set milestone → %s</>\n", pr, fdg.expected)
-			cout.Quietf("%d@pr-milestone@%s\n", pr, fdg.expected)
-		case live.Milestone.Title != fdg.expected:
-			cout.Printf("      <yellow>fix PR #%d carries %s, expected %s — left as-is</>\n", pr, live.Milestone.Title, fdg.expected)
+		if live.Milestone != nil && live.Milestone.Title == fdg.expected {
+			continue
 		}
+		throttle()
+		if err := repo.SetMilestone(pr, m.Number); err != nil {
+			cout.Errorf("      <red>setting milestone on fix PR #%d: %v</>\n", pr, err)
+			continue
+		}
+		if live.Milestone == nil {
+			cout.Printf("      <fg=208>fix PR #%d was missing it too — set milestone → %s</>\n", pr, fdg.expected)
+		} else {
+			cout.Printf("      <fg=208>fix PR #%d carried %s — set milestone → %s</>\n", pr, live.Milestone.Title, fdg.expected)
+		}
+		cout.Quietf("%d@pr-milestone@%s\n", pr, fdg.expected)
 	}
 }
 
@@ -509,9 +530,13 @@ func (f *FlagData) printFinding(fdg *msFinding) {
 	if current == "" {
 		current = "(none)"
 	}
-	cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(%s)</> %s <darkGray>%s</>\n",
-		fdg.bucket, fdg.issue.Number, current, orDash(fdg.expected), text.OrDefault(fdg.reason, "no changelog mapping"),
-		text.TruncateRunes(fdg.issue.Title, 60), f.issueURL(fdg.issue.Number))
+	note := ""
+	if fdg.noMilestone {
+		note = fmt.Sprintf(" <red>no %s milestone — create it to fix</>", fdg.expected)
+	}
+	cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(</>%s<gray>)</>%s %s <darkGray>%s</>\n",
+		fdg.bucket, fdg.issue.Number, current, orDash(fdg.expected), msReasonColoured(fdg),
+		note, text.TruncateRunes(fdg.issue.Title, 60), f.issueURL(fdg.issue.Number))
 }
 
 // reChangelogRef strips the trailing PR link a changelog bullet carries —
@@ -527,6 +552,23 @@ func changelogBullet(bullet string) string {
 // number itself" — no PR link involved.
 const msLinkCited = "cited"
 
+// classTag is the one colour per evidence class, strongest to weakest: green
+// closed-by, lightBlue linked, yellow cited, orange mention. lightMagenta is
+// reserved for milestones/versions — cited must not blend into the version
+// printed beside it.
+func classTag(class string) string {
+	switch class {
+	case db.LinkClosedBy:
+		return "green"
+	case db.LinkLinked:
+		return "lightBlue"
+	case msLinkCited:
+		return "yellow"
+	default:
+		return "fg=208"
+	}
+}
+
 // linkPhrase describes one fix PR at its link strength, e.g. "closed by PR #123".
 func linkPhrase(fx *db.MSFix) string {
 	switch fx.Link {
@@ -540,15 +582,33 @@ func linkPhrase(fx *db.MSFix) string {
 }
 
 // linkPhraseColoured is linkPhrase with the PR number highlighted and the link
-// strength colour-coded: green for closed-by, yellow for linked, gray for mention.
+// strength in its class colour.
 func linkPhraseColoured(fx *db.MSFix) string {
 	switch fx.Link {
 	case db.LinkClosedBy:
-		return fmt.Sprintf("<lightBlue>closed by</> PR <lightCyan>#%d</>", fx.PRNumber)
+		return fmt.Sprintf("<%s>closed by</> PR <lightCyan>#%d</>", classTag(fx.Link), fx.PRNumber)
 	case db.LinkLinked:
-		return fmt.Sprintf("<yellow>linked</> fix PR <lightCyan>#%d</>", fx.PRNumber)
+		return fmt.Sprintf("<%s>linked</> fix PR <lightCyan>#%d</>", classTag(fx.Link), fx.PRNumber)
 	default:
-		return fmt.Sprintf("<gray>mentioned by</> PR <lightCyan>#%d</>", fx.PRNumber)
+		return fmt.Sprintf("<%s>mentioned by</> PR <lightCyan>#%d</>", classTag(fx.Link), fx.PRNumber)
+	}
+}
+
+// msReasonColoured is msReason for the console: each fix PR phrase in its class
+// colour, the connective text gray. Callers supply the surrounding parens so the
+// tags never nest.
+func msReasonColoured(fdg *msFinding) string {
+	switch {
+	case len(fdg.via) > 0:
+		phrases := make([]string, 0, len(fdg.via))
+		for i := range fdg.via {
+			phrases = append(phrases, linkPhraseColoured(&fdg.via[i]))
+		}
+		return fmt.Sprintf("%s <gray>— in the %s changelog</>", strings.Join(phrases, "<gray>, </>"), fdg.expected)
+	case fdg.cited:
+		return fmt.Sprintf("<%s>cited directly</> <gray>by the %s changelog</>", classTag(msLinkCited), fdg.expected)
+	default:
+		return "<gray>no changelog mapping</>"
 	}
 }
 
@@ -566,6 +626,31 @@ func msReason(fdg *msFinding) string {
 	default:
 		return ""
 	}
+}
+
+// printMissingMilestones calls out releases the changelog proves shipped but
+// that have no milestone — nothing can be fixed against them until a human
+// creates the milestone, so say so and show how.
+func (f *FlagData) printMissingMilestones(versions []string) {
+	if len(versions) == 0 {
+		return
+	}
+	cout.Printf("\n<red>%d release(s) have no milestone — the findings above wanting them can't be fixed until they exist:</> <lightMagenta>%s</>\n",
+		len(versions), strings.Join(versions, " "))
+	cout.Printf("  create them (closed) then rerun: <cyan>gh api repos/%s/milestones -f title=<version> -f state=closed</>\n", f.GH.Repo)
+}
+
+// applyHint phrases what --apply would do, skipping whichever count is zero,
+// e.g. "set the 12 missing milestones", "correct the 6 mismatched PR milestones".
+func applyHint(missing, mismatched int, what string) string {
+	parts := make([]string, 0, 2)
+	if missing > 0 {
+		parts = append(parts, fmt.Sprintf("set the %d missing", missing))
+	}
+	if mismatched > 0 {
+		parts = append(parts, fmt.Sprintf("correct the %d mismatched", mismatched))
+	}
+	return strings.Join(parts, " and ") + " " + what
 }
 
 // normalizeMilestone strips the leading v so titles compare against changelog versions.
@@ -610,24 +695,39 @@ func (f *FlagData) writeMilestoneCSV(path string, findings []msFinding) error {
 	return w.Error()
 }
 
-// applyMilestones sets the milestone on closed issues where it's missing and the
-// release is determinable. Mismatches and open-released are report-only: changing
-// an existing milestone is a judgement call, not an automation.
-func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones map[string]db.Milestone, maxApply int) error {
+// applyMilestones sets the determined milestone on closed issues — filling
+// missing ones and correcting mismatches alike: the changelog is the ground
+// truth of what shipped where, so the determined release overwrites a differing
+// milestone. CLOSED issues only — an open issue's milestone can be a deliberate
+// plan (e.g. a future major), not bookkeeping — so open-released stays
+// report-only.
+func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
 	var todo []msFinding
 	for _, fdg := range findings {
-		if fdg.bucket == msMissing {
+		switch {
+		case fdg.bucket == msMissing:
 			todo = append(todo, fdg)
+		case fdg.bucket == msMismatch && fdg.issue.State == db.IssueClosed:
+			if _, ok := milestones[fdg.expected]; ok {
+				todo = append(todo, fdg)
+			}
 		}
 	}
 	if len(todo) == 0 {
-		cout.Printf("no determinable missing milestones to apply\n")
+		cout.Printf("no determinable missing or mismatched milestones to apply\n")
 		return nil
 	}
+
+	// --apply-with-ai[-auto] pipelines AI judging with the apply: batch N's
+	// candidates are reviewed and set while batch N+1 is already off being scored
+	if o.ApplyWithAI || o.ApplyWithAIAuto {
+		return f.applyMilestonesWithAI(d, todo, milestones, o)
+	}
+
 	// --max caps a real apply into waves; a dry-run previews the complete list
-	if !f.DryRun && maxApply > 0 && len(todo) > maxApply {
-		cout.Printf("<gray>capping at %d of %d (--max; dry-run shows all)</>\n", maxApply, len(todo))
-		todo = todo[:maxApply]
+	if !f.DryRun && o.Max > 0 && len(todo) > o.Max {
+		cout.Printf("<gray>capping at %d of %d (--max; dry-run shows all)</>\n", o.Max, len(todo))
+		todo = todo[:o.Max]
 	}
 
 	repo, err := f.NewRepo()
@@ -647,51 +747,19 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		}
 	}
 
-	throttle := newThrottle(mutationThrottle)
+	throttle := newThrottle()
 	applied, failed := 0, 0
-	for n, fdg := range todo {
-		m := milestones[fdg.expected]
-		version := normalizeMilestone(fdg.expected)
-
-		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
-			n+1, len(todo), fdg.issue.Number, text.TruncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
-		for i := range fdg.via {
-			fx := &fdg.via[i]
-			bullet, err := d.ChangelogTextFor(version, fx.PRNumber)
-			if err != nil {
-				return err
-			}
-			cout.Printf("      %s — <lightMagenta>%s</><gray>@changelog:</> %s\n",
-				linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	for n := range todo {
+		res, err := f.applyOneMilestone(d, repo, &todo[n], milestones, n+1, len(todo), throttle, nil, false)
+		if err != nil {
+			return err
 		}
-		if fdg.cited {
-			bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
-			if err != nil {
-				return err
-			}
-			cout.Printf("      cited directly — <lightMagenta>%s</><gray>@changelog:</> %s\n",
-				fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
-		}
-
-		if f.DryRun {
-			cout.Printf("      <yellow>dry-run: would set milestone → %s</> <gray>(and sync it onto the fix PR if missing there)</>\n", fdg.expected)
-			continue
-		}
-
-		throttle()
-		if err := repo.SetMilestone(fdg.issue.Number, m.Number); err != nil {
-			cout.Errorf("      <red>failed: %v</>\n", err)
+		switch res {
+		case msApplySet:
+			applied++
+		case msApplyFailed:
 			failed++
-			continue
-		}
-		applied++
-		cout.Printf("      <fg=28>set milestone →</> <lightMagenta>%s</>\n", fdg.expected)
-		cout.Quietf("%d@milestone@%s\n", fdg.issue.Number, fdg.expected)
-		f.syncFixPRMilestones(repo, &fdg, &m, throttle)
-
-		// keep the local scan in sync so a re-audit doesn't re-propose it
-		if _, err := d.Exec("UPDATE ms_issues SET milestone = ? WHERE number = ?", fdg.expected, fdg.issue.Number); err != nil {
-			return fmt.Errorf("updating scan row for #%d: %w", fdg.issue.Number, err)
+		case msApplyPreviewed:
 		}
 	}
 
@@ -704,4 +772,91 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		return fmt.Errorf("%d of %d milestone sets failed", failed, len(todo))
 	}
 	return nil
+}
+
+// applyOneMilestone results.
+const (
+	msApplyPreviewed = iota // dry-run: card shown, nothing changed
+	msApplySet              // milestone set on GitHub
+	msApplyFailed           // the mutation failed (reported, not fatal)
+	msApplySkipped          // the human said no
+	msApplyQuit             // the human quit the session
+)
+
+// applyOneMilestone prints one finding's card — evidence, mismatch callout, AI
+// score when judged — and sets the milestone, or previews it under dry-run.
+// With ask, the human confirms each set: (a)ccept (s)kip (o)pen (q)uit, with
+// y/n as quiet aliases.
+func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, milestones map[string]db.Milestone, pos, total int, throttle func(), v *msMatchVerdict, ask bool) (int, error) {
+	m := milestones[fdg.expected]
+	version := normalizeMilestone(fdg.expected)
+
+	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
+		pos, total, fdg.issue.Number, text.TruncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
+	for i := range fdg.via {
+		fx := &fdg.via[i]
+		bullet, err := d.ChangelogTextFor(version, fx.PRNumber)
+		if err != nil {
+			return msApplyFailed, err
+		}
+		cout.Printf("      %s — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+			linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	}
+	if fdg.cited {
+		bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
+		if err != nil {
+			return msApplyFailed, err
+		}
+		cout.Printf("      <%s>cited directly</> — <lightMagenta>%s</><gray>@changelog:</> %s\n",
+			classTag(msLinkCited), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "<gray>(bullet not found)</>"))
+	}
+	if fdg.bucket == msMismatch {
+		cout.Printf("      <yellow>mismatch: carries %s, the changelog says %s</>\n", fdg.issue.Milestone, fdg.expected)
+	}
+	if v != nil {
+		cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", scoreTag(v.Confidence), v.Confidence)
+		cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+	}
+
+	if f.DryRun {
+		cout.Printf("      <yellow>dry-run: would set milestone → %s</> <gray>(and sync it onto the fix PR if missing there)</>\n", fdg.expected)
+		return msApplyPreviewed, nil
+	}
+
+	if ask {
+	prompt:
+		for {
+			ans, err := promptKey(fmt.Sprintf("      set → <lightMagenta>%s</>? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.expected))
+			if err != nil {
+				return msApplyFailed, err
+			}
+			switch strings.ToLower(ans) {
+			case "a", "y":
+				break prompt
+			case "s", "n", "":
+				return msApplySkipped, nil
+			case "o":
+				if err := browser.OpenURL(f.issueURL(fdg.issue.Number)); err != nil {
+					cout.Errorf("      <yellow>WARNING:</> opening browser: %v\n", err)
+				}
+			case "q":
+				return msApplyQuit, nil
+			}
+		}
+	}
+
+	throttle()
+	if err := repo.SetMilestone(fdg.issue.Number, m.Number); err != nil {
+		cout.Errorf("      <red>failed: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	cout.Printf("      <fg=28>set milestone →</> <lightMagenta>%s</>\n", fdg.expected)
+	cout.Quietf("%d@milestone@%s\n", fdg.issue.Number, fdg.expected)
+	f.syncFixPRMilestones(repo, fdg, &m, throttle)
+
+	// keep the local scan in sync so a re-audit doesn't re-propose it
+	if _, err := d.Exec("UPDATE ms_issues SET milestone = ? WHERE number = ?", fdg.expected, fdg.issue.Number); err != nil {
+		return msApplyFailed, fmt.Errorf("updating scan row for #%d: %w", fdg.issue.Number, err)
+	}
+	return msApplySet, nil
 }

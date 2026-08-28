@@ -349,7 +349,7 @@ func nodeToBundle(n *ghql.IssueNode) db.IssueBundle {
 			IssueNumber: n.Number,
 			RefRepo:     s.Repository.NameWithOwner,
 			RefNumber:   s.Number,
-			IsPR:        s.Typename == "PullRequest",
+			IsPR:        s.Typename == typePullRequest,
 			Merged:      s.Merged,
 			MergedAt:    s.MergedAt,
 			Title:       s.Title,

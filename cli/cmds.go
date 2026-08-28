@@ -193,6 +193,9 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			o.SkipScan, _ = cmd.Flags().GetBool("skip-scan")
 			o.Rescan, _ = cmd.Flags().GetBool("rescan")
 			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
 			o.Max, _ = cmd.Flags().GetInt("max")
 			o.CSV, _ = cmd.Flags().GetString("csv")
 			o.Bucket, _ = cmd.Flags().GetString("bucket")
@@ -203,7 +206,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	milestoneCmd := &cobra.Command{
 		Use:           "milestone",
 		Short:         "audits ALL issues (open and closed) for missing or wrong release milestones",
-		Long:          `Scans every issue in the repository (light fields only — no bodies or comments) and determines the milestone each should carry: PRs tied to an issue are mapped to the release that shipped them via the changelog, using the strongest evidence available — the PR that closed the issue, then closing-keyword links, then a direct changelog citation, then bare mentions. Closed issues missing a determinable milestone can be fixed with --apply; mismatches and open issues on released milestones are report-only. Subcommands restrict determination to one evidence class.`,
+		Long:          `Scans every issue in the repository (light fields only — no bodies or comments) and determines the milestone each should carry: PRs tied to an issue are mapped to the release that shipped them via the changelog, using the strongest evidence available — the PR that closed the issue, then closing-keyword links, then a direct changelog citation, then bare mentions. --apply sets the determined milestone on closed issues, filling missing ones and correcting mismatches — the changelog is the ground truth of what shipped where. Open issues on released milestones are report-only. Subcommands restrict determination to one evidence class.`,
 		Aliases:       []string{"ms"},
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
@@ -212,7 +215,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	milestoneCmd.PersistentFlags().Bool("skip-scan", false, "audit the existing scan data without re-fetching")
 	milestoneCmd.PersistentFlags().Bool("rescan", false, "force a full re-walk instead of an incremental scan")
-	milestoneCmd.PersistentFlags().Bool("apply", false, "set milestones on closed issues where the release is determinable")
+	milestoneCmd.PersistentFlags().Bool("apply", false, "set the determined milestones on closed issues — filling missing ones and correcting mismatches")
+	milestoneCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each issue↔evidence pairing, you confirm each set interactively")
+	milestoneCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-apply pairings the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	milestoneCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
 	milestoneCmd.PersistentFlags().Int("max", 200, "maximum milestone sets to apply this run")
 	milestoneCmd.PersistentFlags().String("csv", "", "write the full audit findings to this csv file")
 	milestoneCmd.PersistentFlags().String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
@@ -234,7 +240,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	milestoneCmd.AddCommand(&cobra.Command{
 		Use:           "changelog-check",
 		Short:         "audits every changelog-cited PR for the citing release's milestone",
-		Long:          `The changelog is the ground truth of what shipped in which release: every bullet cites the PR that shipped it. This checks each cited PR carries the citing release's milestone — the PR-side complement of the issue audit. Missing ones are fixable with --apply; PRs on a different milestone are report-only.`,
+		Long:          `The changelog is the ground truth of what shipped in which release: every bullet cites the PR that shipped it. This checks each cited PR carries the citing release's milestone — the PR-side complement of the issue audit. --apply sets the citing release on merged PRs, filling missing milestones and correcting mismatches.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 		SilenceErrors: true,
@@ -250,6 +256,30 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		},
 	})
 	root.AddCommand(milestoneCmd)
+
+	cacheCmd := &cobra.Command{
+		Use:           "cache",
+		Short:         "lists the local db's clearable caches and their sizes",
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Cache("")
+		},
+	}
+	cacheCmd.AddCommand(&cobra.Command{
+		Use:           "clear ai|issues|milestones|prs|changelog|all",
+		Short:         "empties one cache domain — the next fetch/scan/judge rebuilds it (decisions are never touched)",
+		Args:          cobra.ExactArgs(1),
+		PreRunE:       ValidateParams([]string{"db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Cache(args[0])
+		},
+	})
+	root.AddCommand(cacheCmd)
 
 	root.AddCommand(&cobra.Command{
 		Use:           "stats",

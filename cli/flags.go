@@ -53,7 +53,7 @@ func configureFlags(root *cobra.Command) error {
 	// AI Flags (FlagsAI)
 	pflags.Bool("ai", true, "use an AI CLI for the classify and still-open passes")
 	pflags.String("ai-cmd", "claude", "the AI CLI binary to invoke: claude, antigravity's agy, or IBM's bob (all run as <cmd> -p)")
-	pflags.String("ai-model", "", "the model to pass to the AI CLI via --model (blank for the CLI default)")
+	pflags.String("ai-model", "", "the model to pass to the AI CLI via --model, e.g. fable, haiku, or a full model id (blank for the CLI default, which is discovered and shown)")
 	pflags.Int("ai-timeout", 10, "timeout, in minutes, for each AI CLI invocation")
 
 	// General Flags (FlagData / Global)

@@ -33,7 +33,7 @@ export GITHUB_TOKEN=$(gh auth token)
 koi fetch              # everything non-AI in one step: open issues + comments + changelogs +
                        # the all-issues milestone scan -> issues.db, rules run automatically
                        # (resumable; later runs sync incrementally — the only required setup step)
-koi review             # interactive card-by-card decisions (y/n/s/e/c/b/t/o/u)
+koi review             # interactive card-by-card decisions (a/n/s/e/c/b/t/o/u — single keypress)
 koi stats              # the funnel: what can close, what keeps, what needs AI
 koi classify           # AI passes: classify the undetermined, double-check closes for "still an issue on 4.x/5.x" claims
 koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking
@@ -47,7 +47,13 @@ koi milestone                    # scan ALL issues (open+closed, light fields) +
 koi milestone --skip-scan --csv audit.csv   # re-audit offline, full findings to csv
 koi milestone --skip-scan --bucket open-released    # list every finding in one bucket
 koi milestone closed-by-pr --skip-scan --apply      # apply using only the strongest evidence class
-koi milestone --skip-scan --apply --max 200 # set determinable missing milestones (closed issues only)
+koi milestone --skip-scan --apply --max 200 # fill missing + correct mismatched milestones (closed issues only)
+koi milestone --skip-scan --apply-with-ai   # AI scores each issue↔evidence pairing, you confirm each set (a/s/o/q)
+koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI scores at/above the threshold
+koi milestone changelog-check --apply       # the PR-side audit: every changelog-cited PR carries the citing release
+
+koi cache                        # list the local db's caches and sizes
+koi cache clear ai               # drop AI verdicts (or issues|milestones|prs|texts|changelog|all)
 ```
 
 `koi milestone` maps the PRs tied to each issue to the release that shipped them
@@ -55,11 +61,23 @@ via the changelog and checks the issue carries that milestone. Evidence is
 ranked: the PR that **closed** the issue, then closing-keyword **linked** PRs
 ("fixes #N"), then changelog bullets **citing** the issue directly, then bare
 **mentions** — the strongest class that yields a release wins, and every
-proposal says which class it came from. The `closed-by-pr` / `linked-to-pr` /
-`cited` / `mentioned-by-pr` subcommands restrict determination to one class
-(e.g. apply the sure things first). Closed issues missing a determinable
-milestone are fixable with `--apply` (dry-run previews the complete list);
-mismatches and open issues sitting on released milestones are report-only.
+proposal says which class it came from (colour-coded everywhere it appears).
+The `closed-by-pr` / `linked-to-pr` / `cited` / `mentioned-by-pr` subcommands
+restrict determination to one class (e.g. apply the sure things first).
+`--apply` fills missing milestones and corrects mismatched ones — the changelog
+is the ground truth of what shipped where — on closed issues only; open issues
+sitting on released milestones stay report-only, and findings blocked by a
+release whose milestone was never created are called out with the exact command
+to create it.
+
+The weaker evidence classes are where wrong matches hide (number collisions,
+PRs that merely mention an issue), so `--apply-with-ai` puts an AI match check
+in front of the apply: each candidate issue (title + body) and its evidence PRs
+(title + body + changelog bullet) go to the AI CLI, which scores how likely the
+evidence actually resolves that issue — verdicts are cached per model, batches
+are judged in the background while you review the previous batch, and each card
+shows the score and a one-line reason before you accept or skip. `--apply-with-ai-auto`
+applies everything at or above the threshold without asking (bare flag = 0.70).
 
 ## What closes, what keeps
 
@@ -81,7 +99,10 @@ Flags, env vars, or a `.koi` file (env format) in `$HOME` or `.`:
 `KOI_AI_MODEL`, `KOI_AS`, `KOI_LOG` (debug/trace HTTP dumps). AI calls shell out
 to an already-authenticated CLI — no API key management. `claude` (default),
 `gemini`, antigravity's `agy`, and IBM's `bob` are recognised by binary name;
-anything speaking one of those dialects works via `KOI_AI_CMD`.
+anything speaking one of those dialects works via `KOI_AI_CMD`. With a blank
+`KOI_AI_MODEL` the CLI's default model is discovered and shown (and aliases like
+`fable` resolve to their canonical id) so cached verdicts always record which
+model produced them.
 
 ## Building
 
