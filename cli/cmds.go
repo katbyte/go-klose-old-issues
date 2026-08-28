@@ -293,25 +293,36 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	root.AddCommand(shippedCmd)
 
-	fxdRunE := func(state string) func(cmd *cobra.Command, _ []string) error {
+	fxdRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return GetFlags().Fixed(FixedOpts{State: state})
+			var o FixedOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Fixed(o)
 		}
 	}
 	fixedCmd := &cobra.Command{
 		Use:           "fixed",
-		Short:         "lists OPEN issues with a same-repo PR referencing them, AI-scored on whether it actually fixes them",
-		Long:          `Every open issue with a same-repository pull request referencing it — merged, still open, or closed without merging — with the AI judging whether the PR(s) actually address the issue on full text. Merged high-scorers are close candidates (a superset of koi shipped: no release required), open high-scorers have a pending fix, abandoned high-scorers show where a fix was tried and dropped. Report-only: closing goes through koi review / koi apply.`,
+		Short:         "OPEN issues a merged PR references — likely fixed, AI-scored, closeable with a tailored comment",
+		Long:          `Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. References class like the milestone audit: fixed-by (closing-keyword reference) then mentioned-by (bare mention), with subcommands scoping to one class. The AI judges whether the PR(s) actually fix each issue on full text. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with the fix PR and shipped version, closes as completed, and records an action for koi reopen.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 		SilenceErrors: true,
 		RunE:          fxdRunE(""),
 	}
-	for _, sub := range []struct{ use, state, short string }{
-		{"merged", db.PRMerged, "only issues referenced by a merged PR — close candidates when the score is high"},
-		{"open", "OPEN", "only issues referenced by a still-open PR — a fix may be pending"},
-		{"abandoned", "CLOSED", "only issues referenced by a PR closed without merging — attempted fixes that died"},
+	fixedCmd.PersistentFlags().Bool("apply", false, "comment and close everything listed as completed")
+	fixedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each pairing, you confirm each close interactively")
+	fixedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close pairings the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	fixedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	fixedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, link, short string }{
+		{"fixed-by", classFixedBy, "only issues a merged PR references with a closing keyword (strongest evidence)"},
+		{"mentioned-by", classMentionedBy, "only issues a merged PR merely mentions (the AI earns its keep here)"},
 	} {
 		fixedCmd.AddCommand(&cobra.Command{
 			Use:           sub.use,
@@ -319,7 +330,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Args:          cobra.NoArgs,
 			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 			SilenceErrors: true,
-			RunE:          fxdRunE(sub.state),
+			RunE:          fxdRunE(sub.link),
 		})
 	}
 	root.AddCommand(fixedCmd)

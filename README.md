@@ -54,9 +54,9 @@ koi milestone changelog-check --apply       # the PR-side audit: every changelog
 
 koi shipped                      # OPEN issues whose fix already shipped in a release, AI-scored by likelihood
 koi shipped closed-by-pr         # just the ones closed by their fix PR and then reopened
-koi fixed                        # OPEN issues with ANY same-repo PR referencing them, AI-scored on the match
-koi fixed merged                 # just the ones with a merged PR — close candidates (no release required)
-koi fixed open                   # a fix may be pending; `abandoned` shows attempts that died unmerged
+koi fixed                        # OPEN issues a merged PR references — likely fixed, AI-scored on the match
+koi fixed mentioned-by --apply-with-ai      # confirm each close: comments cite the fix PR + shipped version
+koi fixed --apply-with-ai-auto=0.9          # auto-close the matches the AI is confident about
 
 koi cache                        # list the local db's caches and sizes
 koi cache clear ai               # drop AI verdicts (or issues|milestones|prs|texts|changelog|all)
