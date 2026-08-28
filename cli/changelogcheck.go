@@ -282,7 +282,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 			continue
 		}
 		applied++
-		cout.Printf("      <green>set milestone → %s</>\n", fdg.expected)
+		cout.Printf("      <fg=28>set milestone →</> <lightMagenta>%s</>\n", fdg.expected)
 		cout.Quietf("%d@pr-milestone@%s\n", fdg.pr.Number, fdg.expected)
 		if err := d.SetMSPRMilestone(fdg.pr.Number, fdg.expected); err != nil {
 			return err

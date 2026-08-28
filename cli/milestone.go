@@ -685,7 +685,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 			continue
 		}
 		applied++
-		cout.Printf("      <green>set milestone → %s</>\n", fdg.expected)
+		cout.Printf("      <fg=28>set milestone →</> <lightMagenta>%s</>\n", fdg.expected)
 		cout.Quietf("%d@milestone@%s\n", fdg.issue.Number, fdg.expected)
 		f.syncFixPRMilestones(repo, &fdg, &m, throttle)
 
