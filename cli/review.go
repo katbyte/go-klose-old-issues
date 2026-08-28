@@ -4,10 +4,11 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/pkg/browser"
+
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/triage"
-	"github.com/pkg/browser"
 )
 
 // ReviewOpts filters which proposals are reviewed.

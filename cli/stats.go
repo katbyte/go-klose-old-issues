@@ -7,6 +7,7 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 )
 
 // Stats prints the triage funnel: what's fetched, what the signals say, and where
@@ -78,8 +79,8 @@ func printStatTable(rows []db.StatRow) {
 		colTotals[r.Key2] += r.Count
 	}
 
-	colNames := sortedKeys(cols)
-	rowNames := sortedKeys(table)
+	colNames := text.SortedKeys(cols)
+	rowNames := text.SortedKeys(table)
 
 	// widths: first column sized to the longest row name
 	rowW := len("total")

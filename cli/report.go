@@ -15,6 +15,7 @@ import (
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 )
 
 type reportEvidence struct {
@@ -119,8 +120,8 @@ func (f *FlagData) Report(outDir string) error {
 			Number:       i.Number,
 			URL:          i.URL,
 			Title:        i.Title,
-			Age:          humanAge(i.CreatedAt, now),
-			LastActivity: humanAge(s.LastActivity, now),
+			Age:          text.HumanAge(i.CreatedAt, now),
+			LastActivity: text.HumanAge(s.LastActivity, now),
 			Kind:         s.Kind,
 			ThumbsUp:     i.ThumbsUp,
 			Comments:     i.CommentCount,
@@ -130,7 +131,7 @@ func (f *FlagData) Report(outDir string) error {
 		if s.VersionMajor > 0 {
 			item.Version = versionText(s)
 		}
-		for _, k := range sortedKeys(a.Evidence) {
+		for _, k := range text.SortedKeys(a.Evidence) {
 			item.Evidence = append(item.Evidence, reportEvidence{Key: k, Value: a.Evidence[k]})
 		}
 
@@ -157,7 +158,7 @@ func (f *FlagData) Report(outDir string) error {
 			for _, m := range card.mentions {
 				item.Mentions = append(item.Mentions, reportMention{
 					Version: fmt.Sprintf("v%d.x", m.Major),
-					Age:     humanAge(m.At, now),
+					Age:     text.HumanAge(m.At, now),
 					Author:  m.Author,
 					Quote:   m.Quote,
 					URL:     m.URL,
@@ -196,7 +197,7 @@ func (f *FlagData) Report(outDir string) error {
 
 		csvRows = append(csvRows, []string{
 			strconv.Itoa(i.Number), a.Action, a.Reason, fmt.Sprintf("%.2f", a.Confidence),
-			oneLine(i.Title), i.URL, "", "",
+			text.OneLine(i.Title), i.URL, "", "",
 		})
 	}
 
@@ -205,7 +206,7 @@ func (f *FlagData) Report(outDir string) error {
 		GeneratedAt: now.Format("2006-01-02 15:04"),
 		Total:       len(actions),
 	}
-	for _, k := range sortedKeys(groups) {
+	for _, k := range text.SortedKeys(groups) {
 		data.Groups = append(data.Groups, *groups[k])
 	}
 	// closes first, biggest groups first within each action
@@ -355,3 +356,10 @@ func (f *FlagData) Import(path string) error {
 	}
 	return nil
 }
+
+// Column names shared by every csv this tool writes.
+const (
+	csvColNumber = "number"
+	csvColTitle  = "title"
+	csvColURL    = "url"
+)

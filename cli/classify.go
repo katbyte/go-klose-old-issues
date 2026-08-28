@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/katbyte/koi/lib/ai"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
 
@@ -131,8 +133,8 @@ func (f *FlagData) preparePrompt(name string) (string, error) {
 		return "", err
 	}
 	recent := fmt.Sprintf("%d or %d", f.CurrentMajor-1, f.CurrentMajor)
-	p = strings.ReplaceAll(p, "{{CURRENT_MAJOR}}", itoa(f.CurrentMajor))
-	p = strings.ReplaceAll(p, "{{LEGACY_MAX}}", itoa(f.CurrentMajor-2))
+	p = strings.ReplaceAll(p, "{{CURRENT_MAJOR}}", strconv.Itoa(f.CurrentMajor))
+	p = strings.ReplaceAll(p, "{{LEGACY_MAX}}", strconv.Itoa(f.CurrentMajor-2))
 	p = strings.ReplaceAll(p, "{{RECENT_MAJORS}}", recent)
 	return p, nil
 }
@@ -254,14 +256,14 @@ func classifyBlock(t target) string {
 	i := t.issue
 	fmt.Fprintf(&b, "### Issue #%d: %s\n", i.Number, i.Title)
 	fmt.Fprintf(&b, "labels: %s | opened: %s | comments: %d\n", strings.Join(i.Labels, ", "), i.CreatedAt.Format("2006-01-02"), i.CommentCount)
-	fmt.Fprintf(&b, "BODY:\n%s\n", truncateRunes(triage.CleanBody(i.Body), bodyRunesForAI))
+	fmt.Fprintf(&b, "BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(i.Body), bodyRunesForAI))
 
 	picked := digestComments(t.comments, 5)
 	if len(picked) > 0 {
 		fmt.Fprintf(&b, "COMMENTS (%d of %d):\n", len(picked), len(t.comments))
 		for _, c := range picked {
 			fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-				truncateRunes(oneLine(triage.CleanBody(c.Body)), commentRunesFor))
+				text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
 		}
 	}
 	return b.String()
@@ -334,7 +336,7 @@ func (f *FlagData) applyStillOpenVerdict(d *db.DB, t target, v *stillOpenVerdict
 	// a credible recent-version claim flips the close to keep
 	if v.StillClaim && v.ClaimedMajor >= f.CurrentMajor-1 && v.Confidence >= 0.5 {
 		cout.Printf("  <yellow>#%d</> flipped to keep: <green>still an issue on v%d</> — %s\n",
-			t.issue.Number, v.ClaimedMajor, truncateRunes(v.Quote, 80))
+			t.issue.Number, v.ClaimedMajor, text.TruncateRunes(v.Quote, 80))
 		flip := &db.Action{
 			IssueNumber:    t.issue.Number,
 			Action:         db.ActionKeep,
@@ -364,7 +366,7 @@ func stillOpenBlock(t target) string {
 	fmt.Fprintf(&b, "RECENT COMMENTS (%d of %d):\n", len(comments), len(t.comments))
 	for _, c := range comments {
 		fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-			truncateRunes(oneLine(triage.CleanBody(c.Body)), commentRunesFor))
+			text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
 	}
 	return b.String()
 }

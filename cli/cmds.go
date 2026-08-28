@@ -1,5 +1,5 @@
-// Package cli implements the koi command tree: fetch, analyse, classify,
-// review, report/import, apply, reopen, and stats over a shared sqlite db.
+// Package cli implements the koi command tree: fetch, classify, review,
+// report/import, apply, reopen, milestone, and stats over a shared sqlite db.
 package cli
 
 import (
@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/version"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 // ValidateParams returns a PreRunE ensuring the named viper keys are non-empty.
@@ -80,19 +81,6 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	fetchCmd.Flags().Bool("full", false, "force a full re-walk instead of an incremental sync")
 	root.AddCommand(fetchCmd)
-
-	root.AddCommand(&cobra.Command{
-		Use:           "analyse",
-		Short:         "computes triage signals and proposes actions using deterministic rules",
-		Aliases:       []string{"a"},
-		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"db"}),
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cmd.SilenceUsage = true
-			return GetFlags().Analyse()
-		},
-	})
 
 	classifyCmd := &cobra.Command{
 		Use:           "classify",

@@ -1,48 +1,30 @@
 package cli
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
-
-// Analyse computes triage signals for every open issue and runs the rules engine,
-// proposing actions. Deterministic and free: safe to re-run any time (it never
-// overwrites decisions a human has already made).
-func (f *FlagData) Analyse() error {
-	d, err := f.OpenDB()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = d.Close() }()
-
-	counts, err := f.analyseAll(d, true)
-	if err != nil || counts == nil {
-		return err
-	}
-
-	cout.Printf("\n<green>proposals:</>\n")
-	printCounts(counts)
-	cout.Printf("\nnext: <cyan>koi classify</> for the undetermined, <cyan>koi review</> to start deciding\n")
-	return nil
-}
 
 // ensureAnalysed refreshes signals and rule proposals before a consumer command
 // runs. Analyse is deterministic, takes seconds, and never overwrites human
 // decisions or AI enrichment — so commands re-run it themselves rather than
 // making the user remember to.
 func (f *FlagData) ensureAnalysed(d *db.DB) error {
-	_, err := f.analyseAll(d, false)
+	_, err := f.analyseAll(d)
 	return err
 }
 
-// analyseAll computes signals + rule proposals for every open issue. Verbose
-// prints progress and per-proposal detail; quiet prints a single line. Returns
-// nil counts when the db has no open issues (a message is printed either way).
-func (f *FlagData) analyseAll(d *db.DB, verbose bool) (map[string]int, error) {
+// analyseAll computes signals + rule proposals for every open issue, printing a
+// single summary line. Returns nil counts when the db has no open issues (a
+// message is printed either way). Deterministic and free: safe to re-run any
+// time, and it never overwrites decisions a human has already made.
+func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, err
@@ -53,12 +35,8 @@ func (f *FlagData) analyseAll(d *db.DB, verbose bool) (map[string]int, error) {
 	}
 
 	cfg := f.RuleConfig()
-	if verbose {
-		cout.Printf("analysing <yellow>%d</> open issues...\n", len(issues))
-	}
-
 	counts := map[string]int{}
-	for n, i := range issues {
+	for _, i := range issues {
 		s, err := computeSignals(d, i, f.GH.Repo)
 		if err != nil {
 			return nil, err
@@ -99,21 +77,15 @@ func (f *FlagData) analyseAll(d *db.DB, verbose bool) (map[string]int, error) {
 				counts[a.Action+"/"+a.Reason]++
 			}
 		}
-
-		if verbose && (n+1)%500 == 0 {
-			cout.Printf("  <yellow>%d</>/<yellow>%d</>\n", n+1, len(issues))
-		}
 	}
 
-	if !verbose {
-		closes := 0
-		for k, n := range counts {
-			if strings.HasPrefix(k, db.ActionClose+"/") {
-				closes += n
-			}
+	closes := 0
+	for k, n := range counts {
+		if strings.HasPrefix(k, db.ActionClose+"/") {
+			closes += n
 		}
-		cout.Printf("<gray>analysed %d open issues — %d close proposals up to date</>\n", len(issues), closes)
 	}
+	cout.Printf("<gray>analysed %d open issues — %d close proposals up to date</>\n", len(issues), closes)
 	return counts, nil
 }
 
@@ -139,7 +111,7 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 	// version precedence: maintainer label > template block > body mentions
 	if major, count := triage.VersionFromLabels(i.Labels); major > 0 {
 		s.VersionMajor, s.VersionFull, s.VersionSource = major, "", "label"
-		s.VersionQuote = "labelled v/" + itoa(major) + ".x"
+		s.VersionQuote = "labelled v/" + strconv.Itoa(major) + ".x"
 		s.MultiVersionLabels = count > 1
 	} else if v := triage.ExtractProviderVersion(i.Body); v != nil {
 		s.VersionMajor, s.VersionFull, s.VersionSource, s.VersionQuote = v.Major, v.Full, v.Source, v.Quote
@@ -192,7 +164,7 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 }
 
 func printCounts(counts map[string]int) {
-	keys := sortedKeys(counts)
+	keys := text.SortedKeys(counts)
 	for _, k := range keys {
 		cout.Printf("  %-28s <yellow>%d</>\n", k, counts[k])
 	}

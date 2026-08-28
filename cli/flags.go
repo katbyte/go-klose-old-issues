@@ -7,14 +7,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
 	"github.com/katbyte/koi/lib/ai"
 	"github.com/katbyte/koi/lib/clog"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
 	"github.com/katbyte/koi/lib/ghql"
 	"github.com/katbyte/koi/lib/triage"
-	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 )
 
 type FlagData struct {
@@ -177,4 +178,14 @@ func (f *FlagData) Decider() string {
 		return u
 	}
 	return "unknown"
+}
+
+// issueURL builds the web url for an issue in the triaged repo.
+func (f *FlagData) issueURL(number int) string {
+	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, number)
+}
+
+// prURL builds the web url for a PR in the triaged repo.
+func (f *FlagData) prURL(number int) string {
+	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, number)
 }

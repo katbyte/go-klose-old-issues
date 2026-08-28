@@ -4,10 +4,12 @@ import (
 	"encoding/csv"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
 
@@ -52,7 +54,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 	counts := map[string]int{}
 	var findings []prFinding
 	unknown := 0
-	for _, pr := range sortedKeys(prVersions) {
+	for _, pr := range text.SortedKeys(prVersions) {
 		cached, ok := cache[pr]
 		if !ok {
 			unknown++ // not fetched (e.g. --no-auto-fetch with a cold cache)
@@ -69,7 +71,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 	}
 
 	cout.Printf("\n<bold>changelog check over %d cited PRs:</>\n", len(prVersions))
-	for _, k := range sortedKeys(counts) {
+	for _, k := range text.SortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
 	}
 	if unknown > 0 {
@@ -94,7 +96,7 @@ func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
 		}
 		cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(cited in the %s changelog)</> %s <darkGray>%s</>\n",
 			fdg.bucket, fdg.pr.Number, current, orDash(fdg.expected), joinVersions(fdg.versions),
-			truncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
+			text.TruncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
 	}
 	if o.Bucket == "" && len(findings) > 10 {
 		cout.Printf("<gray>(showing up to 10 per bucket — use --csv for the full list, --bucket <name> for one bucket)</>\n")
@@ -157,7 +159,7 @@ func auditChangelogPR(pr *db.MSPR, versions []string, milestones map[string]db.M
 // known (all of them with rescan), 50 per aliased query.
 func (f *FlagData) fetchChangelogPRs(d *db.DB, prVersions map[int][]string, cache map[int]db.MSPR, rescan bool) error {
 	var need []int
-	for _, pr := range sortedKeys(prVersions) {
+	for _, pr := range text.SortedKeys(prVersions) {
 		if _, ok := cache[pr]; !ok || rescan {
 			need = append(need, pr)
 		}
@@ -212,12 +214,12 @@ func printCheckedPR(pos, total int, p *db.MSPR) {
 		cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> <gray>cited number is an issue, skipping</>\n", pos, total, p.Number)
 		return
 	}
-	state := stateTag(p.State)
+	state := cout.StateTag(p.State)
 	ms := "<red>no milestone</>"
 	if p.Milestone != "" {
 		ms = "<lightMagenta>" + p.Milestone + "</>"
 	}
-	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s <gray>·</> %s\n", pos, total, p.Number, state, ms, truncateRunes(oneLine(p.Title), 60))
+	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s <gray>·</> %s\n", pos, total, p.Number, state, ms, text.TruncateRunes(text.OneLine(p.Title), 60))
 }
 
 // applyPRMilestones sets the milestone on changelog-cited PRs missing one.
@@ -260,13 +262,13 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 	for n, fdg := range todo {
 		version := normalizeMilestone(fdg.expected)
 		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
-			n+1, len(todo), fdg.pr.Number, truncateRunes(fdg.pr.Title, 90), f.prURL(fdg.pr.Number))
-		text, err := d.ChangelogTextFor(version, fdg.pr.Number)
+			n+1, len(todo), fdg.pr.Number, text.TruncateRunes(fdg.pr.Title, 90), f.prURL(fdg.pr.Number))
+		bullet, err := d.ChangelogTextFor(version, fdg.pr.Number)
 		if err != nil {
 			return err
 		}
 		cout.Printf("      cited in the <lightMagenta>%s</> changelog: <gray>%s</>\n",
-			fdg.expected, orDefault(truncateRunes(changelogBullet(text), 100), "(bullet not found)"))
+			fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
 
 		if f.DryRun {
 			cout.Printf("      <yellow>dry-run: would set milestone → %s</>\n", fdg.expected)
@@ -312,8 +314,8 @@ func (f *FlagData) writeChangelogCheckCSV(path string, findings []prFinding) err
 	for i := range findings {
 		fdg := &findings[i]
 		row := []string{
-			itoa(fdg.pr.Number), fdg.bucket, fdg.pr.State, fdg.pr.Milestone, fdg.expected,
-			joinVersions(fdg.versions), oneLine(fdg.pr.Title), f.prURL(fdg.pr.Number),
+			strconv.Itoa(fdg.pr.Number), fdg.bucket, fdg.pr.State, fdg.pr.Milestone, fdg.expected,
+			joinVersions(fdg.versions), text.OneLine(fdg.pr.Title), f.prURL(fdg.pr.Number),
 		}
 		if err := w.Write(row); err != nil {
 			return fmt.Errorf("writing csv row: %w", err)

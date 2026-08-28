@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
 
@@ -93,7 +95,7 @@ func (c *cardContext) render(pos, total int) {
 	i, s, a := c.issue, c.signals, c.action
 
 	cout.Printf("\n<gray>%s</>\n", strings.Repeat("─", 100))
-	cout.Printf("<lightBlue>[%d/%d]</> <cyan>#%d</> <bold>%s</>\n", pos, total, i.Number, truncateRunes(i.Title, 90))
+	cout.Printf("<lightBlue>[%d/%d]</> <cyan>#%d</> <bold>%s</>\n", pos, total, i.Number, text.TruncateRunes(i.Title, 90))
 
 	// labels · age · author · engagement
 	labels := strings.Join(i.Labels, " · ")
@@ -102,13 +104,13 @@ func (c *cardContext) render(pos, total int) {
 	}
 	cout.Printf("  <gray>%s</>\n", labels)
 	cout.Printf("  opened <yellow>%s</> ago by %s (%s) · 💬 <yellow>%d</> · 👍 %s · %d participants · last activity <yellow>%s</> ago%s\n",
-		humanAge(i.CreatedAt, c.now), i.Author, strings.ToLower(i.AuthorAssociation),
+		text.HumanAge(i.CreatedAt, c.now), i.Author, strings.ToLower(i.AuthorAssociation),
 		i.CommentCount, thumbsColoured(i.ThumbsUp, c.f.KeepReactions),
-		s.Participants, humanAge(s.LastActivity, c.now), maintainerTag(s.MaintainerCommented))
+		s.Participants, text.HumanAge(s.LastActivity, c.now), maintainerTag(s.MaintainerCommented))
 
 	// version evidence
 	if s.VersionMajor > 0 {
-		cout.Printf("  version: <lightMagenta>v%s</> <gray>(%s)</> — %s\n", versionText(s), s.VersionSource, truncateRunes(s.VersionQuote, 80))
+		cout.Printf("  version: <lightMagenta>v%s</> <gray>(%s)</> — %s\n", versionText(s), s.VersionSource, text.TruncateRunes(s.VersionQuote, 80))
 	} else {
 		cout.Printf("  version: <gray>undetermined</>\n")
 	}
@@ -117,10 +119,10 @@ func (c *cardContext) render(pos, total int) {
 	switch {
 	case s.NewestClaimMajor > 0 && s.NewestClaimMajor >= c.f.CurrentMajor-1:
 		cout.Printf("  claim: <red>v%d.x mentioned %s ago</> by @%s — \"%s\"\n",
-			s.NewestClaimMajor, humanAge(s.NewestClaimAt, c.now), s.NewestClaimAuthor, truncateRunes(s.NewestClaimQuote, 80))
+			s.NewestClaimMajor, text.HumanAge(s.NewestClaimAt, c.now), s.NewestClaimAuthor, text.TruncateRunes(s.NewestClaimQuote, 80))
 	case s.NewestClaimMajor > 0:
 		cout.Printf("  claim: newest version mentioned in comments is <lightMagenta>v%d.x</> (%s ago by @%s) — \"%s\"\n",
-			s.NewestClaimMajor, humanAge(s.NewestClaimAt, c.now), s.NewestClaimAuthor, truncateRunes(s.NewestClaimQuote, 70))
+			s.NewestClaimMajor, text.HumanAge(s.NewestClaimAt, c.now), s.NewestClaimAuthor, text.TruncateRunes(s.NewestClaimQuote, 70))
 	default:
 		cout.Printf("  claim: <green>no version claims found in comments</>\n")
 	}
@@ -151,8 +153,8 @@ func (c *cardContext) render(pos, total int) {
 	default:
 		cout.Printf("  <yellow>NEEDS HUMAN</> · %s\n", a.Reason)
 	}
-	for _, k := range sortedKeys(a.Evidence) {
-		cout.Printf("    <gray>%s:</> %s\n", k, truncateRunes(a.Evidence[k], 110))
+	for _, k := range text.SortedKeys(a.Evidence) {
+		cout.Printf("    <gray>%s:</> %s\n", k, text.TruncateRunes(a.Evidence[k], 110))
 	}
 }
 
@@ -170,8 +172,8 @@ func (c *cardContext) renderCommentDigest() {
 }
 
 func (c *cardContext) renderCommentLine(cm *db.Comment, width int) {
-	text := truncateRunes(oneLine(triage.CleanBody(cm.Body)), width)
-	text = triage.HighlightVersions(text, "<lightMagenta>", "</>")
+	body := text.TruncateRunes(text.OneLine(triage.CleanBody(cm.Body)), width)
+	body = triage.HighlightVersions(body, "<lightMagenta>", "</>")
 	marker := ""
 	if cm.IsMaintainer() {
 		marker = " <green>[maintainer]</>"
@@ -179,7 +181,7 @@ func (c *cardContext) renderCommentLine(cm *db.Comment, width int) {
 	if triage.HasVersionMention(cm.Body) {
 		marker += " <yellow>[version]</>"
 	}
-	cout.Printf("   <gray>%5s</> <cyan>@%s</>%s: %s\n", humanAge(cm.CreatedAt, c.now), cm.Author, marker, text)
+	cout.Printf("   <gray>%5s</> <cyan>@%s</>%s: %s\n", text.HumanAge(cm.CreatedAt, c.now), cm.Author, marker, body)
 }
 
 // renderAllComments prints the full thread (the c key).
@@ -193,7 +195,7 @@ func (c *cardContext) renderAllComments() {
 // renderBody prints the cleaned issue body (the b key).
 func (c *cardContext) renderBody() {
 	cout.Printf("\n<gray>── body of #%d ──</>\n", c.issue.Number)
-	cout.Println(truncateRunes(triage.CleanBody(c.issue.Body), 4000))
+	cout.Println(text.TruncateRunes(triage.CleanBody(c.issue.Body), 4000))
 }
 
 func (c *cardContext) renderVerdicts() {
@@ -228,7 +230,7 @@ func quoteSuffix(q string) string {
 	if q == "" {
 		return ""
 	}
-	return fmt.Sprintf(" — quoting the thread: <gray>%q</>", truncateRunes(q, 90))
+	return fmt.Sprintf(" — quoting the thread: <gray>%q</>", text.TruncateRunes(q, 90))
 }
 
 // renderLinkedPRs prints each same-repo linked PR on its own line: state, title,
@@ -245,7 +247,7 @@ func (c *cardContext) renderLinkedPRs() {
 			break
 		}
 		shown++
-		title := truncateRunes(r.Title, 70)
+		title := text.TruncateRunes(r.Title, 70)
 		switch {
 		case r.Merged:
 			shipped := ""
@@ -285,7 +287,7 @@ func (c *cardContext) renderVersionMentions() {
 			break
 		}
 		shown++
-		cout.Printf("    <lightMagenta>v%d.x</> <gray>%5s ago</> <cyan>@%s</> — %q\n", m.Major, humanAge(m.At, c.now), m.Author, truncateRunes(m.Quote, 90))
+		cout.Printf("    <lightMagenta>v%d.x</> <gray>%5s ago</> <cyan>@%s</> — %q\n", m.Major, text.HumanAge(m.At, c.now), m.Author, text.TruncateRunes(m.Quote, 90))
 		if m.URL != "" {
 			cout.Printf("          <gray>%s</>\n", m.URL)
 		}
@@ -346,7 +348,7 @@ func versionText(s *db.Signals) string {
 	if s.VersionFull != "" {
 		return s.VersionFull
 	}
-	return itoa(s.VersionMajor) + ".x"
+	return strconv.Itoa(s.VersionMajor) + ".x"
 }
 
 func maintainerTag(commented bool) string {
@@ -376,5 +378,5 @@ func thumbsColoured(n, threshold int) string {
 	if n >= threshold {
 		return fmt.Sprintf("<red>%d</>", n)
 	}
-	return itoa(n)
+	return strconv.Itoa(n)
 }

@@ -42,7 +42,6 @@ koi import report/decisions.csv --as manager
 koi apply --max 100 --dry-run   # preview a wave
 koi apply --max 100             # comment + close, throttled, staleness-guarded
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
-koi analyse            # (optional) re-run the rules verbosely — review/report/stats/classify do it automatically
 
 koi milestone                    # scan ALL issues (open+closed, light fields) + audit release milestones
 koi milestone --skip-scan --csv audit.csv   # re-audit offline, full findings to csv

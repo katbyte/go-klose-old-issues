@@ -2,8 +2,10 @@
 package cout
 
 import (
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	c "github.com/gookit/color"
 )
@@ -67,4 +69,13 @@ func Verbosef(format string, args ...any) {
 		return
 	}
 	c.Printf(format, args...)
+}
+
+// StateTag colours a github issue/PR state for list lines: green when
+// closed/merged, orange while open — padded so following text aligns.
+func StateTag(state string) string {
+	if state == "OPEN" {
+		return "<fg=208>open</>  "
+	}
+	return "<green>" + fmt.Sprintf("%-6s", strings.ToLower(state)) + "</>"
 }

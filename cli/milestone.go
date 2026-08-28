@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
 	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
 
@@ -217,7 +219,7 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 			}
 			consider(&t.Source, link)
 		}
-		for _, pr := range sortedKeys(best) {
+		for _, pr := range text.SortedKeys(best) {
 			b.Fixes = append(b.Fixes, best[pr])
 		}
 		bundles = append(bundles, b)
@@ -229,7 +231,7 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 // (green closed / orange open), title, milestone, and how its fix PRs link.
 func printScannedIssue(pos, total int, b *db.MSBundle) {
 	i := &b.Issue
-	state := stateTag(i.State)
+	state := cout.StateTag(i.State)
 	var extra strings.Builder
 	if i.Milestone != "" {
 		fmt.Fprintf(&extra, " <gray>·</> <lightMagenta>%s</>", i.Milestone)
@@ -244,7 +246,7 @@ func printScannedIssue(pos, total int, b *db.MSBundle) {
 		}
 	}
 	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
-		pos, total, i.Number, state, truncateRunes(oneLine(i.Title), 65), extra.String())
+		pos, total, i.Number, state, text.TruncateRunes(text.OneLine(i.Title), 65), extra.String())
 }
 
 // ---- audit ----
@@ -313,7 +315,7 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 	}
 
 	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", len(issues))
-	for _, k := range sortedKeys(counts) {
+	for _, k := range text.SortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
 		// only missing gets the class split: it's the bucket --apply acts on, so
 		// the split is the wave plan — the other buckets are report-only noise
@@ -508,8 +510,8 @@ func (f *FlagData) printFinding(fdg *msFinding) {
 		current = "(none)"
 	}
 	cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(%s)</> %s <darkGray>%s</>\n",
-		fdg.bucket, fdg.issue.Number, current, orDash(fdg.expected), orDefault(fdg.reason, "no changelog mapping"),
-		truncateRunes(fdg.issue.Title, 60), f.issueURL(fdg.issue.Number))
+		fdg.bucket, fdg.issue.Number, current, orDash(fdg.expected), text.OrDefault(fdg.reason, "no changelog mapping"),
+		text.TruncateRunes(fdg.issue.Title, 60), f.issueURL(fdg.issue.Number))
 }
 
 // reChangelogRef strips the trailing PR link a changelog bullet carries —
@@ -517,8 +519,8 @@ func (f *FlagData) printFinding(fdg *msFinding) {
 // already print.
 var reChangelogRef = regexp.MustCompile(`\s*\(?\[(?:GH-|#)\d+\](?:\([^)]*\))?\)?`)
 
-func changelogBullet(text string) string {
-	return strings.TrimSpace(reChangelogRef.ReplaceAllString(text, ""))
+func changelogBullet(bullet string) string {
+	return strings.TrimSpace(reChangelogRef.ReplaceAllString(bullet, ""))
 }
 
 // msLinkCited is the pseudo evidence class for "the changelog cites the issue
@@ -592,12 +594,12 @@ func (f *FlagData) writeMilestoneCSV(path string, findings []msFinding) error {
 	for _, fdg := range findings {
 		prs := make([]string, 0, len(fdg.fixPRs))
 		for _, pr := range fdg.fixPRs {
-			prs = append(prs, itoa(pr))
+			prs = append(prs, strconv.Itoa(pr))
 		}
 		row := []string{
-			itoa(fdg.issue.Number), fdg.bucket, fdg.issue.State, fdg.issue.StateReason,
+			strconv.Itoa(fdg.issue.Number), fdg.bucket, fdg.issue.State, fdg.issue.StateReason,
 			fdg.issue.Milestone, fdg.expected, strings.Join(prs, " "), fdg.reason,
-			oneLine(fdg.issue.Title),
+			text.OneLine(fdg.issue.Title),
 			f.issueURL(fdg.issue.Number),
 		}
 		if err := w.Write(row); err != nil {
@@ -652,23 +654,23 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		version := normalizeMilestone(fdg.expected)
 
 		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
-			n+1, len(todo), fdg.issue.Number, truncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
+			n+1, len(todo), fdg.issue.Number, text.TruncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
 		for i := range fdg.via {
 			fx := &fdg.via[i]
-			text, err := d.ChangelogTextFor(version, fx.PRNumber)
+			bullet, err := d.ChangelogTextFor(version, fx.PRNumber)
 			if err != nil {
 				return err
 			}
 			cout.Printf("      %s — <lightMagenta>%s</> changelog: <gray>%s</>\n",
-				linkPhraseColoured(fx), fdg.expected, orDefault(truncateRunes(changelogBullet(text), 100), "(bullet not found)"))
+				linkPhraseColoured(fx), fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
 		}
 		if fdg.cited {
-			text, err := d.ChangelogTextFor(version, fdg.issue.Number)
+			bullet, err := d.ChangelogTextFor(version, fdg.issue.Number)
 			if err != nil {
 				return err
 			}
 			cout.Printf("      cited directly in the <lightMagenta>%s</> changelog: <gray>%s</>\n",
-				fdg.expected, orDefault(truncateRunes(changelogBullet(text), 100), "(bullet not found)"))
+				fdg.expected, text.OrDefault(text.TruncateRunes(changelogBullet(bullet), 100), "(bullet not found)"))
 		}
 
 		if f.DryRun {

@@ -8,6 +8,7 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/text"
 	"github.com/katbyte/koi/lib/triage"
 )
 
@@ -140,7 +141,7 @@ func (f *FlagData) fullWalk(d *db.DB, client *ghql.Client, owner, name, cursor s
 // (green closed / orange open), title, and the facts that ride along.
 func printFetchedIssue(pos, total int, b *db.IssueBundle) {
 	i := &b.Issue
-	state := stateTag(i.State)
+	state := cout.StateTag(i.State)
 	extra := fmt.Sprintf(" <gray>· 💬 %d</>", i.CommentCount)
 	if i.ThumbsUp > 0 {
 		extra += fmt.Sprintf(" <gray>· 👍 %d</>", i.ThumbsUp)
@@ -152,7 +153,7 @@ func printFetchedIssue(pos, total int, b *db.IssueBundle) {
 		extra += fmt.Sprintf(" <gray>· %d crossref(s)</>", prs)
 	}
 	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
-		pos, total, i.Number, state, truncateRunes(oneLine(i.Title), 65), extra)
+		pos, total, i.Number, state, text.TruncateRunes(text.OneLine(i.Title), 65), extra)
 }
 
 func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string, since time.Time) error {
