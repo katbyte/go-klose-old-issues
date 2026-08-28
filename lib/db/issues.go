@@ -15,6 +15,7 @@ import (
 const (
 	IssueOpen   = "OPEN"
 	IssueClosed = "CLOSED"
+	PRMerged    = "MERGED"
 )
 
 type Issue struct {

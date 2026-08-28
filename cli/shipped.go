@@ -1,19 +1,18 @@
 package cli
 
 import (
-	"encoding/json"
-	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/katbyte/koi/assets"
-	"github.com/katbyte/koi/lib/ai"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/text"
 )
 
-const passShipped = "shipped"
+const (
+	passShipped   = "shipped"
+	promptShipped = "issue-fix-shipped"
+)
 
 // ShippedOpts configures the shipped audit.
 type ShippedOpts struct {
@@ -137,25 +136,13 @@ func (f *FlagData) Shipped(o ShippedOpts) error {
 	return nil
 }
 
-// judgeShipped scores every open-issue↔shipped-evidence pairing with the AI,
-// batched with cached verdicts (pass "shipped", model-aware) — the report-only
-// sibling of the milestone apply's judge.
+// judgeShipped scores every open-issue↔shipped-evidence pairing with the AI —
+// the shared sequential judge under pass "shipped".
 func (f *FlagData) judgeShipped(d *db.DB, findings []msFinding) (map[int]*msMatchVerdict, error) {
-	promptText, err := assets.Prompt(passShipped)
+	promptText, err := assets.Prompt(promptShipped)
 	if err != nil {
 		return nil, err
 	}
-
-	a := f.NewAI()
-	switch resolved, rerr := a.ResolveModel(); {
-	case rerr != nil:
-		cout.Errorf("<yellow>WARNING:</> resolving the AI model: %v — continuing as %q\n", rerr, aiIdent(f.AI.Cmd, f.AI.Model))
-	case resolved != "":
-		f.AI.Model = resolved
-		a = f.NewAI()
-	}
-	ident := aiIdent(f.AI.Cmd, f.AI.Model)
-
 	if err := f.fetchMatchTexts(d, findings); err != nil {
 		return nil, err
 	}
@@ -164,81 +151,13 @@ func (f *FlagData) judgeShipped(d *db.DB, findings []msFinding) (map[int]*msMatc
 		return nil, err
 	}
 
-	verdicts := map[int]*msMatchVerdict{}
-	var uncached []*msJudgeTarget
+	items := make([]judgeItem, 0, len(findings))
 	for i := range findings {
-		fdg := &findings[i]
-		block, berr := f.msMatchBlock(d, fdg, texts)
+		block, berr := f.msMatchBlock(d, &findings[i], texts)
 		if berr != nil {
 			return nil, berr
 		}
-		t := &msJudgeTarget{finding: fdg, block: block, hash: msMatchHash(promptText, block)}
-
-		if v, verr := d.GetVerdict(fdg.issue.Number, passShipped); verr != nil {
-			return nil, verr
-		} else if v != nil && v.PromptHash == t.hash && v.Model == ident {
-			var mv msMatchVerdict
-			if json.Unmarshal([]byte(v.Verdict), &mv) == nil {
-				verdicts[fdg.issue.Number] = &mv
-				continue
-			}
-		}
-		uncached = append(uncached, t)
+		items = append(items, judgeItem{number: findings[i].issue.Number, block: block})
 	}
-
-	cout.Printf("AI shipped check: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
-		len(uncached), len(verdicts), f.AI.Cmd, f.AI.Model)
-
-	consecFails := 0
-	for start := 0; start < len(uncached); start += msMatchBatchSize {
-		batch := uncached[start:min(start+msMatchBatchSize, len(uncached))]
-
-		var prompt strings.Builder
-		prompt.WriteString(promptText)
-		for _, t := range batch {
-			prompt.WriteString("\n")
-			prompt.WriteString(t.block)
-		}
-
-		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, start+len(batch), len(uncached))
-		raw, _, err := a.PromptWithModel(prompt.String())
-		var batchVerdicts []msMatchVerdict
-		if err == nil {
-			err = ai.ExtractJSON(raw, &batchVerdicts)
-		}
-		if err != nil {
-			cout.Errorf(" <red>failed:</> %v\n", err)
-			consecFails++
-			if consecFails >= maxConsecFails {
-				return nil, fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
-			}
-			continue
-		}
-		consecFails = 0
-		cout.Printf(" <green>ok</>\n")
-
-		byNumber := map[int]*msMatchVerdict{}
-		for i := range batchVerdicts {
-			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
-		}
-		for _, t := range batch {
-			v := byNumber[t.finding.issue.Number]
-			if v == nil {
-				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.finding.issue.Number)
-				continue
-			}
-			raw, merr := json.Marshal(v)
-			if merr != nil {
-				return nil, fmt.Errorf("marshalling verdict for #%d: %w", t.finding.issue.Number, merr)
-			}
-			if err := d.SaveVerdict(&db.Verdict{
-				IssueNumber: t.finding.issue.Number, Pass: passShipped, PromptHash: t.hash,
-				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
-			}); err != nil {
-				return nil, err
-			}
-			verdicts[t.finding.issue.Number] = v
-		}
-	}
-	return verdicts, nil
+	return f.judgeBlocks(d, passShipped, promptText, items)
 }

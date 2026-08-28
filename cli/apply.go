@@ -13,6 +13,9 @@ import (
 // rate limits, and a runaway apply can be ^C'd before much damage.
 const mutationThrottle = 2100 * time.Millisecond
 
+// restStateOpen is the REST API's lowercase issue/PR state.
+const restStateOpen = "open"
+
 // Apply executes approved close actions: comment from the template, then close
 // with the right state_reason. Before every mutation the issue is re-fetched and
 // skipped as stale if it changed since the decision — new activity means a human
@@ -101,7 +104,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 			failed++
 			continue
 		}
-		if live.State != "open" {
+		if live.State != restStateOpen {
 			cout.Printf("      <gray>already closed on github — skipped</>\n")
 			if err := d.MarkApplied(a.ID, db.StatusStale, "already closed"); err != nil {
 				return err

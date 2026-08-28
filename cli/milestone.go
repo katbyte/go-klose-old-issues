@@ -26,6 +26,10 @@ const (
 
 	// typePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
 	typePullRequest = "PullRequest"
+
+	// shared colour tag names for the class/score/state tag helpers.
+	tagGreen  = "green"
+	tagOrange = "fg=208"
 )
 
 // MilestoneOpts configures the milestone audit.
@@ -559,13 +563,13 @@ const msLinkCited = "cited"
 func classTag(class string) string {
 	switch class {
 	case db.LinkClosedBy:
-		return "green"
+		return tagGreen
 	case db.LinkLinked:
 		return "lightBlue"
 	case msLinkCited:
 		return "yellow"
 	default:
-		return "fg=208"
+		return tagOrange
 	}
 }
 

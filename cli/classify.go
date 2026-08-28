@@ -21,7 +21,12 @@ import (
 const (
 	passClassify  = "classify"
 	passStillOpen = "still-open"
-	passAll       = "all"
+
+	// prompt template names — specific about what each pass judges; verdict
+	// pass keys above stay short and stable so caches survive renames
+	promptClassify  = "issue-classify"
+	promptStillOpen = "issue-still-open"
+	passAll         = "all"
 
 	kindUnknown = "unknown"
 
@@ -152,7 +157,7 @@ type classifyVerdict struct {
 }
 
 func (f *FlagData) runClassify(d *db.DB, a ai.AI, limit int) error {
-	promptText, err := f.preparePrompt(passClassify)
+	promptText, err := f.preparePrompt(promptClassify)
 	if err != nil {
 		return err
 	}
@@ -292,7 +297,7 @@ type stillOpenVerdict struct {
 }
 
 func (f *FlagData) runStillOpen(d *db.DB, a ai.AI, limit int) error {
-	promptText, err := f.preparePrompt(passStillOpen)
+	promptText, err := f.preparePrompt(promptStillOpen)
 	if err != nil {
 		return err
 	}

@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	passMSMatch = "ms-match"
+	passMSMatch   = "ms-match"
+	promptMSMatch = "milestone-evidence-match"
 	// msMatchThreshold is the minimum AI confidence for --apply-with-ai to set a
 	// milestone; below it the finding is reported and skipped.
 	msMatchThreshold = 0.7
@@ -64,7 +65,7 @@ type msJudgedBatch struct {
 // time overlaps judging too. Verdicts cache in ai_verdicts so re-runs (and the
 // real apply after a dry-run) only judge what changed.
 func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
-	promptText, err := assets.Prompt(passMSMatch)
+	promptText, err := assets.Prompt(promptMSMatch)
 	if err != nil {
 		return err
 	}
@@ -336,6 +337,103 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	return nil
 }
 
+// judgeItem is one prepared block for the sequential judge.
+type judgeItem struct {
+	number int
+	block  string
+}
+
+// judgeBlocks scores prepared issue↔evidence blocks with the AI CLI in
+// sequential batches — the report-side judge shared by shipped and fixes.
+// Verdicts cache in ai_verdicts under pass, model-aware like the apply's judge.
+func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeItem) (map[int]*msMatchVerdict, error) {
+	a := f.NewAI()
+	switch resolved, rerr := a.ResolveModel(); {
+	case rerr != nil:
+		cout.Errorf("<yellow>WARNING:</> resolving the AI model: %v — continuing as %q\n", rerr, aiIdent(f.AI.Cmd, f.AI.Model))
+	case resolved != "":
+		f.AI.Model = resolved
+		a = f.NewAI()
+	}
+	ident := aiIdent(f.AI.Cmd, f.AI.Model)
+
+	verdicts := map[int]*msMatchVerdict{}
+	type target struct {
+		item judgeItem
+		hash string
+	}
+	var uncached []target
+	for _, it := range items {
+		hash := msMatchHash(promptText, it.block)
+		if v, err := d.GetVerdict(it.number, pass); err != nil {
+			return nil, err
+		} else if v != nil && v.PromptHash == hash && v.Model == ident {
+			var mv msMatchVerdict
+			if json.Unmarshal([]byte(v.Verdict), &mv) == nil {
+				verdicts[it.number] = &mv
+				continue
+			}
+		}
+		uncached = append(uncached, target{item: it, hash: hash})
+	}
+
+	cout.Printf("AI %s check: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
+		pass, len(uncached), len(verdicts), f.AI.Cmd, f.AI.Model)
+
+	consecFails := 0
+	for start := 0; start < len(uncached); start += msMatchBatchSize {
+		batch := uncached[start:min(start+msMatchBatchSize, len(uncached))]
+
+		var prompt strings.Builder
+		prompt.WriteString(promptText)
+		for _, t := range batch {
+			prompt.WriteString("\n")
+			prompt.WriteString(t.item.block)
+		}
+
+		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, start+len(batch), len(uncached))
+		raw, _, err := a.PromptWithModel(prompt.String())
+		var batchVerdicts []msMatchVerdict
+		if err == nil {
+			err = ai.ExtractJSON(raw, &batchVerdicts)
+		}
+		if err != nil {
+			cout.Errorf(" <red>failed:</> %v\n", err)
+			consecFails++
+			if consecFails >= maxConsecFails {
+				return nil, fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
+			}
+			continue
+		}
+		consecFails = 0
+		cout.Printf(" <green>ok</>\n")
+
+		byNumber := map[int]*msMatchVerdict{}
+		for i := range batchVerdicts {
+			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
+		}
+		for _, t := range batch {
+			v := byNumber[t.item.number]
+			if v == nil {
+				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.item.number)
+				continue
+			}
+			raw, merr := json.Marshal(v)
+			if merr != nil {
+				return nil, fmt.Errorf("marshalling verdict for #%d: %w", t.item.number, merr)
+			}
+			if err := d.SaveVerdict(&db.Verdict{
+				IssueNumber: t.item.number, Pass: pass, PromptHash: t.hash,
+				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
+			}); err != nil {
+				return nil, err
+			}
+			verdicts[t.item.number] = v
+		}
+	}
+	return verdicts, nil
+}
+
 // msMatchBlock renders one finding for the ms-match prompt: the issue (title +
 // full body) and every piece of changelog evidence behind its determined
 // milestone — each evidence PR's title and body alongside its raw changelog
@@ -378,26 +476,33 @@ func (f *FlagData) msMatchBlock(d *db.DB, fdg *msFinding, texts map[int]db.Text)
 }
 
 // fetchMatchTexts fills the texts cache for every candidate issue and evidence
-// PR not yet cached, 25 per aliased query. Numbers that no longer resolve are
-// cached empty so they aren't refetched forever.
+// PR behind the findings.
 func (f *FlagData) fetchMatchTexts(d *db.DB, todo []msFinding) error {
+	numbers := map[int]bool{}
+	for i := range todo {
+		fdg := &todo[i]
+		numbers[fdg.issue.Number] = true
+		for _, fx := range fdg.via {
+			numbers[fx.PRNumber] = true
+		}
+	}
+	return f.fetchTexts(d, text.SortedKeys(numbers))
+}
+
+// fetchTexts fills the texts cache for every wanted number not yet cached, 25
+// per aliased query. Numbers that no longer resolve are cached empty so they
+// aren't refetched forever.
+func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	cached, err := d.Texts()
 	if err != nil {
 		return err
 	}
-	needSet := map[int]bool{}
-	for i := range todo {
-		fdg := &todo[i]
-		if _, ok := cached[fdg.issue.Number]; !ok {
-			needSet[fdg.issue.Number] = true
-		}
-		for _, fx := range fdg.via {
-			if _, ok := cached[fx.PRNumber]; !ok {
-				needSet[fx.PRNumber] = true
-			}
+	var need []int
+	for _, n := range want {
+		if _, ok := cached[n]; !ok {
+			need = append(need, n)
 		}
 	}
-	need := text.SortedKeys(needSet)
 	if len(need) == 0 {
 		return nil
 	}
@@ -450,9 +555,9 @@ func msMatchHash(promptText, block string) string {
 func scoreTag(confidence float64) string {
 	switch {
 	case confidence >= msMatchThreshold:
-		return "green"
+		return tagGreen
 	case confidence >= 0.4:
-		return "fg=208"
+		return tagOrange
 	default:
 		return "red"
 	}

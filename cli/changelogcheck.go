@@ -247,7 +247,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		switch {
 		case fdg.bucket == msMissing:
 			todo = append(todo, fdg)
-		case fdg.bucket == msMismatch && fdg.pr.State == "MERGED" && fdg.expected != "":
+		case fdg.bucket == msMismatch && fdg.pr.State == db.PRMerged && fdg.expected != "":
 			todo = append(todo, fdg)
 		}
 	}

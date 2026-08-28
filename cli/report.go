@@ -146,7 +146,7 @@ func (f *FlagData) Report(outDir string) error {
 			case r.Merged:
 				pr.State, pr.Release = "merged", card.releases[r.RefNumber]
 			case r.State == db.IssueOpen:
-				pr.State = "open"
+				pr.State = restStateOpen
 				item.OpenPRs++
 			default:
 				pr.State = "closed"
