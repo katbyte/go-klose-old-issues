@@ -317,14 +317,16 @@ func (f *FlagData) milestoneAudit(d *db.DB, o MilestoneOpts) error {
 	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", len(issues))
 	for _, k := range sortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
-		if cc := classCounts[k]; len(cc) > 0 {
+		// only missing gets the class split: it's the bucket --apply acts on, so
+		// the split is the wave plan — the other buckets are report-only noise
+		if cc := classCounts[k]; k == msMissing && len(cc) > 0 {
 			parts := make([]string, 0, len(cc))
 			for _, class := range []string{db.LinkClosedBy, db.LinkLinked, msLinkCited, db.LinkMention} {
 				if n := cc[class]; n > 0 {
 					parts = append(parts, fmt.Sprintf("%s <yellow>%d</>", class, n))
 				}
 			}
-			cout.Printf("      <gray>by evidence:</> %s\n", strings.Join(parts, " <gray>·</> "))
+			cout.Printf("      %s\n", strings.Join(parts, " <gray>·</> "))
 		}
 	}
 
