@@ -51,7 +51,6 @@ type msJudgeTarget struct {
 // msJudgedBatch is one AI call's raw result, delivered over a channel by the
 // background judge.
 type msJudgedBatch struct {
-	start int // index into the uncached targets
 	raw   string
 	model string // the model that answered, when the CLI disclosed it
 	err   error
@@ -162,7 +161,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		ch := make(chan msJudgedBatch, 1)
 		go func() {
 			raw, respModel, err := a.PromptWithModel(prompt.String())
-			ch <- msJudgedBatch{start: start, raw: raw, model: respModel, err: err}
+			ch <- msJudgedBatch{raw: raw, model: respModel, err: err}
 		}()
 		return ch
 	}
@@ -216,12 +215,14 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		return nil
 	}
 
-	// harvest one background batch: report, parse, persist verdicts
+	// harvest one background batch: report, parse, persist verdicts. The batch
+	// line prints BEFORE blocking on the result so a still-running call shows
+	// what's being waited on, and gets its " ok" when the answer lands.
 	consecFails := 0
-	harvest := func(ch <-chan msJudgedBatch) error {
+	harvest := func(start int, ch <-chan msJudgedBatch) error {
+		end := min(start+msMatchBatchSize, len(uncached))
+		cout.Printf("batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
 		res := <-ch
-		end := min(res.start+msMatchBatchSize, len(uncached))
-		cout.Printf("batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", res.start+1, end, len(uncached))
 
 		var batchVerdicts []msMatchVerdict
 		err := res.err
@@ -248,7 +249,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		for i := range batchVerdicts {
 			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
 		}
-		for _, t := range uncached[res.start:end] {
+		for _, t := range uncached[start:end] {
 			v := byNumber[t.finding.issue.Number]
 			if v == nil {
 				continue
@@ -272,7 +273,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	// user answers while batch 2 is already judging in the background
 	var inflight <-chan msJudgedBatch
 	if len(uncached) > 0 {
-		if err := harvest(launch(0)); err != nil {
+		if err := harvest(0, launch(0)); err != nil {
 			return err
 		}
 		if len(uncached) > msMatchBatchSize {
@@ -304,7 +305,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		}
 	}
 	for start := msMatchBatchSize; start < len(uncached) && !stopped; start += msMatchBatchSize {
-		if err := harvest(inflight); err != nil {
+		if err := harvest(start, inflight); err != nil {
 			return err
 		}
 		if next := start + msMatchBatchSize; next < len(uncached) {
