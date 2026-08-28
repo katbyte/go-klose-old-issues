@@ -199,6 +199,18 @@ CREATE TABLE ms_prs (
   is_pr      INTEGER NOT NULL DEFAULT 1,
   fetched_at TEXT NOT NULL DEFAULT ''
 );
+`, `
+-- full text for the AI match check: title + body of every candidate issue and
+-- its evidence PRs, fetched on demand. issues and PRs share GitHub's number
+-- space, so one table keyed by number covers both.
+CREATE TABLE texts (
+  number     INTEGER PRIMARY KEY,
+  is_pr      INTEGER NOT NULL DEFAULT 0,
+  state      TEXT NOT NULL DEFAULT '',
+  title      TEXT NOT NULL DEFAULT '',
+  body       TEXT NOT NULL DEFAULT '',
+  fetched_at TEXT NOT NULL DEFAULT ''
+);
 `}
 
 func (d *DB) migrate() error {
@@ -249,6 +261,16 @@ func (d *DB) SetMeta(key, value string) error {
 		return fmt.Errorf("writing meta %s: %w", key, err)
 	}
 	return nil
+}
+
+// Count returns the row count of one table. The name must come from a fixed
+// in-code list, never user input.
+func (d *DB) Count(table string) (int, error) {
+	var n int
+	if err := d.QueryRow("SELECT count(*) FROM " + table).Scan(&n); err != nil {
+		return 0, fmt.Errorf("counting %s: %w", table, err)
+	}
+	return n, nil
 }
 
 // DeleteMeta removes a meta key.
