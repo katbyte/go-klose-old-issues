@@ -293,36 +293,36 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	root.AddCommand(shippedCmd)
 
-	fxRunE := func(state string) func(cmd *cobra.Command, _ []string) error {
+	fxdRunE := func(state string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return GetFlags().Fixes(FixesOpts{State: state})
+			return GetFlags().Fixed(FixedOpts{State: state})
 		}
 	}
-	fixesCmd := &cobra.Command{
-		Use:           "fixes",
+	fixedCmd := &cobra.Command{
+		Use:           "fixed",
 		Short:         "lists OPEN issues with a same-repo PR referencing them, AI-scored on whether it actually fixes them",
 		Long:          `Every open issue with a same-repository pull request referencing it — merged, still open, or closed without merging — with the AI judging whether the PR(s) actually address the issue on full text. Merged high-scorers are close candidates (a superset of koi shipped: no release required), open high-scorers have a pending fix, abandoned high-scorers show where a fix was tried and dropped. Report-only: closing goes through koi review / koi apply.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 		SilenceErrors: true,
-		RunE:          fxRunE(""),
+		RunE:          fxdRunE(""),
 	}
 	for _, sub := range []struct{ use, state, short string }{
 		{"merged", db.PRMerged, "only issues referenced by a merged PR — close candidates when the score is high"},
 		{"open", "OPEN", "only issues referenced by a still-open PR — a fix may be pending"},
 		{"abandoned", "CLOSED", "only issues referenced by a PR closed without merging — attempted fixes that died"},
 	} {
-		fixesCmd.AddCommand(&cobra.Command{
+		fixedCmd.AddCommand(&cobra.Command{
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
 			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 			SilenceErrors: true,
-			RunE:          fxRunE(sub.state),
+			RunE:          fxdRunE(sub.state),
 		})
 	}
-	root.AddCommand(fixesCmd)
+	root.AddCommand(fixedCmd)
 
 	cacheCmd := &cobra.Command{
 		Use:           "cache",

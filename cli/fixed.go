@@ -13,31 +13,31 @@ import (
 )
 
 const (
-	passFixes   = "fixes"
-	promptFixes = "issue-fixed-by-pr"
+	passFixed   = "fixed"
+	promptFixed = "issue-fixed-by-pr"
 
 	// prLabelMerged is shared between the state labels and the fixes subcommand.
 	prLabelMerged = "merged"
 )
 
-// FixesOpts configures the fixes audit.
-type FixesOpts struct {
+// FixedOpts configures the fixes audit.
+type FixedOpts struct {
 	State string // only issues with a PR in this state: MERGED | OPEN | CLOSED ("" = any)
 }
 
-// fixesFinding is one open issue with its same-repo PR crossrefs.
-type fixesFinding struct {
+// fixedFinding is one open issue with its same-repo PR crossrefs.
+type fixedFinding struct {
 	issue *db.Issue
 	prs   []db.Crossref
 }
 
-// Fixes lists every OPEN issue with a same-repo PR referencing it — merged,
+// Fixed lists every OPEN issue with a same-repo PR referencing it — merged,
 // still open, or closed without merging — and has the AI judge whether the
 // PR(s) actually address the issue. Merged high-scorers are close candidates
 // (superset of koi shipped: releases aren't required), open high-scorers have a
 // pending fix, abandoned high-scorers show where a fix was tried and dropped.
 // Report-only: closing goes through koi review / koi apply.
-func (f *FlagData) Fixes(o FixesOpts) error {
+func (f *FlagData) Fixed(o FixedOpts) error {
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -57,7 +57,7 @@ func (f *FlagData) Fixes(o FixesOpts) error {
 		return err
 	}
 
-	var findings []fixesFinding
+	var findings []fixedFinding
 	stateCounts := map[string]int{}
 	for _, i := range issues {
 		refs, cerr := d.CrossrefsFor(i.Number)
@@ -77,7 +77,7 @@ func (f *FlagData) Fixes(o FixesOpts) error {
 		if len(prs) == 0 {
 			continue
 		}
-		findings = append(findings, fixesFinding{issue: i, prs: prs})
+		findings = append(findings, fixedFinding{issue: i, prs: prs})
 		seen := map[string]bool{}
 		for _, pr := range prs {
 			if !seen[pr.State] {
@@ -99,10 +99,10 @@ func (f *FlagData) Fixes(o FixesOpts) error {
 
 	var verdicts map[int]*msMatchVerdict
 	if f.AI.Enabled {
-		if verdicts, err = f.judgeFixes(d, findings, prVersions); err != nil {
+		if verdicts, err = f.judgeFixed(d, findings, prVersions); err != nil {
 			return err
 		}
-		slices.SortStableFunc(findings, func(a, b fixesFinding) int {
+		slices.SortStableFunc(findings, func(a, b fixedFinding) int {
 			av, bv := -1.0, -1.0
 			if v := verdicts[a.issue.Number]; v != nil {
 				av = v.Confidence
@@ -129,7 +129,7 @@ func (f *FlagData) Fixes(o FixesOpts) error {
 			n+1, len(findings), fdg.issue.Number, cout.StateTag(fdg.issue.State),
 			text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
 		for i := range fdg.prs {
-			cout.Printf("      %s\n", fixesPRLine(&fdg.prs[i], prVersions))
+			cout.Printf("      %s\n", fixedPRLine(&fdg.prs[i], prVersions))
 		}
 		printMSVerdict(verdicts[fdg.issue.Number])
 	}
@@ -162,9 +162,9 @@ func prStateLabel(state string) string {
 	}
 }
 
-// fixesPRLine renders one referenced PR: state-coloured, link strength, the
+// fixedPRLine renders one referenced PR: state-coloured, link strength, the
 // shipping release when the changelog knows it, and the PR title.
-func fixesPRLine(pr *db.Crossref, prVersions map[int][]string) string {
+func fixedPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "<%s>%s</> PR <lightCyan>#%d</>", prStateTag(pr.State), prStateLabel(pr.State), pr.RefNumber)
 	if pr.WillClose {
@@ -177,11 +177,11 @@ func fixesPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 	return b.String()
 }
 
-// judgeFixes scores every issue↔referenced-PR pairing with the AI — the shared
+// judgeFixed scores every issue↔referenced-PR pairing with the AI — the shared
 // sequential judge under pass "fixes". Issue bodies come from the fetch; PR
 // bodies from the texts cache.
-func (f *FlagData) judgeFixes(d *db.DB, findings []fixesFinding, prVersions map[int][]string) (map[int]*msMatchVerdict, error) {
-	promptText, err := assets.Prompt(promptFixes)
+func (f *FlagData) judgeFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (map[int]*msMatchVerdict, error) {
+	promptText, err := assets.Prompt(promptFixed)
 	if err != nil {
 		return nil, err
 	}
@@ -223,5 +223,5 @@ func (f *FlagData) judgeFixes(d *db.DB, findings []fixesFinding, prVersions map[
 		}
 		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
 	}
-	return f.judgeBlocks(d, passFixes, promptText, items)
+	return f.judgeBlocks(d, passFixed, promptText, items)
 }
