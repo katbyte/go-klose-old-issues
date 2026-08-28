@@ -1,4 +1,4 @@
-# koi — keeper of issues
+# 🎏 koi — keeper of issues
 
 [![GitHub release](https://img.shields.io/github/v/release/katbyte/koi?color=blueviolet)](https://github.com/katbyte/koi/releases/latest)
 ![build](https://github.com/katbyte/koi/actions/workflows/build.yaml/badge.svg)
