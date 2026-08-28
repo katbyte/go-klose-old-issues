@@ -52,8 +52,8 @@ func configureFlags(root *cobra.Command) error {
 
 	// AI Flags (FlagsAI)
 	pflags.Bool("ai", true, "use an AI CLI for the classify and still-open passes")
-	pflags.String("ai-cmd", "claude", "the AI CLI binary to invoke: claude, antigravity's agy, or IBM's bob (all run as <cmd> -p)")
-	pflags.String("ai-model", "", "the model to pass to the AI CLI via --model, e.g. fable, haiku, or a full model id (blank for the CLI default, which is discovered and shown)")
+	pflags.String("ai-cmd", "", "the AI CLI binary to invoke: claude, gemini, antigravity's agy, or IBM's bob (all run as <cmd> -p) — no default, set this or KOI_AI_CMD")
+	pflags.String("ai-model", "", "the model to pass to the AI CLI via --model, e.g. fable, haiku, or a full model id — no default, set this or KOI_AI_MODEL")
 	pflags.Int("ai-timeout", 10, "timeout, in minutes, for each AI CLI invocation")
 
 	// General Flags (FlagData / Global)
@@ -157,6 +157,20 @@ func (f *FlagData) NewRepo() (gh.Repo, error) {
 		return gh.Repo{}, err
 	}
 	return gh.NewRepo(owner, name, f.GH.Token), nil
+}
+
+// RequireAI errors unless both the AI CLI and model are configured. There are
+// deliberately NO defaults for either: which CLI and which model judge is
+// always an explicit choice — verdicts are cached per model, and a silently
+// assumed model would decide real closes.
+func (f *FlagData) RequireAI() error {
+	if f.AI.Cmd == "" {
+		return errors.New("no AI CLI configured — set --ai-cmd or KOI_AI_CMD (claude, gemini, agy, or bob)")
+	}
+	if f.AI.Model == "" {
+		return errors.New("no AI model configured — set --ai-model or KOI_AI_MODEL (e.g. fable, haiku, or a full model id)")
+	}
+	return nil
 }
 
 // NewAI returns the configured AI CLI wrapper.

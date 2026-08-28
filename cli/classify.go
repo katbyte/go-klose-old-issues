@@ -55,6 +55,9 @@ func (f *FlagData) Classify(pass string, limit int) error {
 		return err
 	}
 
+	if err := f.RequireAI(); err != nil {
+		return err
+	}
 	a := f.NewAI()
 
 	if pass == passClassify || pass == passAll {

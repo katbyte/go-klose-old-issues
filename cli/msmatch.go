@@ -72,8 +72,11 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 
 	// resolve the canonical model first: a verdict is a function of the model
 	// that produced it, so the cache must not serve one model's opinions to
-	// another — blank and aliased --ai-model (fable vs claude-fable-5) both
-	// canonicalise here before the cache comparison
+	// another — an aliased --ai-model (fable vs claude-fable-5) canonicalises
+	// here before the cache comparison
+	if err := f.RequireAI(); err != nil {
+		return err
+	}
 	a := f.NewAI()
 	switch resolved, rerr := a.ResolveModel(); {
 	case rerr != nil:
@@ -364,6 +367,9 @@ type judgedTarget struct {
 func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeItem,
 	onReady func() (bool, error), onBatch func([]judgedTarget) (bool, error),
 ) (map[int]*msMatchVerdict, error) {
+	if err := f.RequireAI(); err != nil {
+		return nil, err
+	}
 	a := f.NewAI()
 	switch resolved, rerr := a.ResolveModel(); {
 	case rerr != nil:
