@@ -2,6 +2,7 @@ package db
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -80,6 +81,9 @@ func (d *DB) Milestones() (map[string]Milestone, error) {
 	}
 	defer func() { _ = rows.Close() }()
 
+	// keyed by exact title AND the canonical "v"-prefixed form: a handful of
+	// early milestones are titled without the v ("1.7.0"), and audits look up
+	// the canonical form
 	byTitle := map[string]Milestone{}
 	for rows.Next() {
 		var m Milestone
@@ -87,6 +91,7 @@ func (d *DB) Milestones() (map[string]Milestone, error) {
 			return nil, fmt.Errorf("scanning milestone: %w", err)
 		}
 		byTitle[m.Title] = m
+		byTitle["v"+strings.TrimPrefix(m.Title, "v")] = m
 	}
 	return byTitle, rows.Err()
 }
