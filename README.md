@@ -23,8 +23,6 @@ human through approving closes one evidence-packed card at a time. Nothing
 touches GitHub without an approved action, applies are throttled and capped into
 waves, and every mutation is audited and reversible (`koi reopen`).
 
-See [PLAN.md](PLAN.md) for the full design.
-
 ## The lenses
 
 Each command asks one question about an open issue, from one kind of evidence:
