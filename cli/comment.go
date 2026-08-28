@@ -14,6 +14,7 @@ type commentData struct {
 	Number        int
 	Title         string
 	CurrentMajor  int
+	PreviousMajor int // CurrentMajor - 1, for "prior to vN.0" phrasing
 	VersionMajor  int
 	VersionFull   string
 	MergedPR      int
@@ -36,7 +37,8 @@ func renderCloseComment(f *FlagData, i *db.Issue, s *db.Signals, a *db.Action) (
 	data := commentData{
 		Number:       i.Number,
 		Title:        i.Title,
-		CurrentMajor: f.CurrentMajor,
+		CurrentMajor:  f.CurrentMajor,
+		PreviousMajor: f.CurrentMajor - 1,
 		Evidence:     a.Evidence,
 	}
 	if s != nil {
