@@ -207,6 +207,10 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
+	// a file:// url so the terminal makes the path clickable
+	if abs, aerr := filepath.Abs(htmlPath); aerr == nil {
+		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
+	}
 	return nil
 }
 
