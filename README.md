@@ -34,16 +34,11 @@ Each command asks one question about an open issue, from one kind of evidence:
 | `koi comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote |
 | `koi exists` | this **request** asks for something the provider already has — did it ship? | the docs + the changelog |
 | `koi legacy` | this **bug is old** (v1–v3) and nobody says it's still alive — close as stale? | version + silence |
-| `koi deprecated` | this leans on something that has been **removed** — is it moot now? | the upgrade guides |
+| `koi deprecated` | this references something that has been **removed** — is it moot now? | the upgrade guides |
 | `koi milestone` | which release dealt with each issue/PR? (bookkeeping, not closing) | the changelog |
 
-Every check works the same way: evidence classes as subcommands (strongest
-first), an AI that judges the actual substance, and three apply modes —
-`--apply` acts on the evidence with no AI, `--apply-with-ai` shows each card
-with its score and asks you, `--apply-with-ai-auto[=t]` acts alone above a
-confidence threshold. Bare invocation is always a report; `--dry-run` previews
-any apply. The checks overlap on purpose: one issue can be seen by several, and
-whichever closes it first removes it from the others.
+Every check works the same way: evidence classes as subcommands (strongest first), an AI that judges the actual substance, and three apply modes — `--apply` acts on the evidence with no AI (combine with `--dry-run` to get a sense of the changes, `--apply-with-ai` shows each card with its score and asks you, `--apply-with-ai-auto[=t]` acts alone above a
+confidence threshold. Bare invocation is always a report; `--dry-run` previews any apply. The checks overlap on purpose: one issue can be seen by several, and whichever closes it first removes it from the others.
 
 ## Workflow
 
@@ -74,13 +69,9 @@ koi deprecated --apply-with-ai   # it leans on something that has been removed
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
 
 koi milestone                    # scan ALL issues (open+closed, light fields) + audit release milestones
-koi milestone --skip-scan --csv audit.csv   # re-audit offline, full findings to csv
-koi milestone --skip-scan --bucket open-released    # list every finding in one bucket
-koi milestone closed-by-pr --skip-scan --apply      # apply using only the strongest evidence class
 koi milestone --skip-scan --apply --max 200 # fill missing + correct mismatched milestones (closed issues only)
 koi milestone --skip-scan --apply-with-ai   # AI scores each issue↔evidence pairing, you confirm each set (a/s/o/q)
 koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI scores at/above the threshold
-koi milestone changelog-check --apply       # the PR-side audit: every changelog-cited PR carries the citing release
 
 # every check takes its evidence classes as subcommands, strongest first:
 koi fixed mentioned-by --apply-with-ai      # one class only: comments cite the fix PR + shipped version
