@@ -434,7 +434,7 @@ func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *msMatc
 	i, s := fdg.issue, fdg.signals
 	kindTag := tagOrange
 	if s.Kind == signalKindCrash {
-		kindTag = "red"
+		kindTag = tagRed
 	}
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, i.Number, cout.StateTag(i.State), text.TruncateRunes(text.OneLine(i.Title), 90), f.issueURL(i.Number))

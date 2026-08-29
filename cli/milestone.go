@@ -31,6 +31,7 @@ const (
 	tagGreen  = "green"
 	tagYellow = "yellow"
 	tagOrange = "fg=208"
+	tagRed    = "red"
 )
 
 // MilestoneOpts configures the milestone audit.

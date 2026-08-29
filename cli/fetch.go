@@ -104,6 +104,10 @@ func (f *FlagData) Fetch(full bool) error {
 		return err
 	}
 
+	if err := f.fetchRemovals(d, client, owner, name); err != nil {
+		return err
+	}
+
 	// front-load the milestone scan too: fetch does everything non-AI so every
 	// other command can run offline afterwards (incremental, so cheap when fresh)
 	if err := f.milestoneScan(d, false); err != nil {
@@ -386,6 +390,47 @@ func (f *FlagData) fetchChangelogs(d *db.DB, client *ghql.Client, owner, name st
 		return err
 	}
 	cout.Printf("parsed <yellow>%d</> changelog entries\n", len(entries))
+	return nil
+}
+
+// removalGuideMajors are the majors whose upgrade guides use the parseable
+// removed-sections format (the 3.0 guide predates it and carries little).
+var removalGuideMajors = []int{4, 5}
+
+// fetchRemovals rebuilds the removed/deprecated inventory from the upgrade
+// guides plus the changelog's DEPRECATIONS bullets. A failed guide download
+// keeps the existing table — a transient failure must not empty it.
+func (f *FlagData) fetchRemovals(d *db.DB, client *ghql.Client, owner, name string) error {
+	var removals []db.Removal
+	for _, major := range removalGuideMajors {
+		file := fmt.Sprintf("website/docs/guides/%d.0-upgrade-guide.html.markdown", major)
+		content, err := rawFileRetry(client, owner, name, file)
+		if err != nil {
+			cout.Errorf("<yellow>warning:</> upgrade guide %s: %v — keeping the existing removals table\n", file, err)
+			return nil
+		}
+		removals = append(removals, triage.ParseUpgradeGuide(content, major)...)
+	}
+
+	deprecations, err := d.ChangelogSection("DEPRECATIONS")
+	if err != nil {
+		return err
+	}
+	removals = append(removals, triage.MineChangelogDeprecations(deprecations)...)
+
+	if err := d.ReplaceRemovals(removals); err != nil {
+		return err
+	}
+	removed, deprecated := 0, 0
+	for _, r := range removals {
+		if r.Action == db.RemovalRemoved {
+			removed++
+		} else {
+			deprecated++
+		}
+	}
+	cout.Printf("parsed <yellow>%d</> removals from the upgrade guides + changelog (<red>%d removed</> · <yellow>%d deprecated</>)\n",
+		len(removals), removed, deprecated)
 	return nil
 }
 

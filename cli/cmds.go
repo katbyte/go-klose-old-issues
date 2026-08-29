@@ -125,7 +125,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the lenses see (fixed, resolved, legacy)",
+		Short:         "writes an HTML report of every close candidate the lenses see (fixed, resolved, comments, legacy, deprecated)",
 		Long:          `One page listing every close candidate each lens sees, grouped by lens with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each lens and jumps to its section. --with-ai scores every candidate with the lens's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each lens for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
@@ -379,6 +379,90 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	legacyCmd.Flags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
 	legacyCmd.Flags().Int("max", 50, "maximum closes to apply this run")
 	root.AddCommand(legacyCmd)
+
+	depRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o DeprecatedOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Deprecated(o)
+		}
+	}
+	deprecatedCmd := &cobra.Command{
+		Use:           "deprecated",
+		Short:         "these open issues lean on removed or deprecated resources/properties — moot where they stand? AI-scored, closeable",
+		Long:          `Scans every open issue against the removals inventory the fetch parses from the 4.0/5.0 upgrade guides and the changelog's DEPRECATIONS bullets: issues asking about or reporting against resources, data sources, or properties that were removed or deprecated. Classes by what the issue leans on, strongest first: removed-resource, removed-property, deprecated-resource, deprecated-property; the resource and property subcommands scope to one type. The AI judges whether each issue's substance actually centres on the dead thing or merely mentions it in passing. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with what was removed, when, and the successor to use, closed as not planned.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE:          depRunE(""),
+	}
+	deprecatedCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as not planned (the AI-less path — incidental mentions are in the list, prefer --apply-with-ai)")
+	deprecatedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores whether each issue is truly moot, you confirm each close")
+	deprecatedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	deprecatedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	deprecatedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, short string }{
+		{"resource", "only issues leaning on a removed or deprecated resource/data source (strongest evidence)"},
+		{"property", "only issues leaning on a removed or deprecated property of a living resource"},
+	} {
+		deprecatedCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			SilenceErrors: true,
+			RunE:          depRunE(sub.use),
+		})
+	}
+	root.AddCommand(deprecatedCmd)
+
+	cmtRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o CommentsOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Comments(o)
+		}
+	}
+	commentsCmd := &cobra.Command{
+		Use:           "comments",
+		Short:         "these open issues' own threads say they can be closed — \"fixed in vX\", \"can be closed\". AI-scored, closeable",
+		Long:          `Scans every open issue's comments for claims that the issue is done: "this can be closed", "fixed in v3.27.0 by #18588", "no longer an issue", a maintainer saying they will close it. Classes by who says so: maintainer-says (MEMBER/COLLABORATOR authored a claim) then community-says; subcommands scope to one class. The AI reads each claim in thread context — negations, questions, and later disputes all score low. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the claim (author, deep link, version when named) and closes as completed.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE:          cmtRunE(""),
+	}
+	commentsCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as completed")
+	commentsCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each claim in thread context, you confirm each close")
+	commentsCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	commentsCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	commentsCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, short string }{
+		{classMaintainerSays, "only issues where a maintainer's comment says it can close (strongest evidence)"},
+		{classCommunitySays, "only issues where the community says it can close (the AI earns its keep here)"},
+	} {
+		commentsCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			SilenceErrors: true,
+			RunE:          cmtRunE(sub.use),
+		})
+	}
+	root.AddCommand(commentsCmd)
 
 	cacheCmd := &cobra.Command{
 		Use:           "cache",

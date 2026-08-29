@@ -186,7 +186,15 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, legacy}
+	deprecated, err := f.deprecatedReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	comments, err := f.commentsReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, comments, legacy, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -202,8 +210,8 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · legacy %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, legacy.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · legacy %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, legacy.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -475,6 +483,160 @@ func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 			item.Evidence = append(item.Evidence, row)
 		} else {
 			item.Evidence = append(item.Evidence, []reportSpan{span("no comments at all", kindDim)})
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// commentsReportSection builds the "its own thread says it is done" section.
+func (f *FlagData) commentsReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passComments,
+		Question: "this issue's own thread says it can be closed — is the claim credible?",
+		Description: "Every open issue with a comment claiming it is done: \"this can be closed\", \"fixed in vX by #PR\", " +
+			"\"no longer an issue\", or a maintainer saying they will close it. Classes by who says so. " +
+			"Applying closes as completed with a comment citing the claim and its author.",
+		Command: "koi comments [maintainer-says|community-says] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, _, err := f.collectComments(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classMaintainerSays, counts[classMaintainerSays], kindOK},
+		{classCommunitySays, counts[classCommunitySays], kindWarn},
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.commentsJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *commentsFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.claims {
+			cl := &fdg.claims[n]
+			authorKind := kindWarn
+			assocName := ""
+			switch _, label := assocDisplay(cl.comment.AuthorAssociation); {
+			case maintainerAssoc(cl.comment.AuthorAssociation):
+				authorKind, assocName = kindOK, "("+label+") "
+			case label != "":
+				authorKind, assocName = "", "("+label+") "
+			}
+			row := []reportSpan{
+				span("@"+cl.comment.Author, authorKind),
+				span(assocName+text.HumanAge(cl.comment.CreatedAt, now)+" ago:", kindDim),
+				span("“"+cl.quote+"”", kindQuote),
+			}
+			if cl.prNumber != 0 {
+				row = append(row, linkSpan(fmt.Sprintf("PR #%d", cl.prNumber), f.prHTMLURL(cl.prNumber)),
+					span("shipped in v"+cl.prVersion, kindVer))
+			}
+			if cl.comment.URL != "" {
+				row = append(row, linkSpan("view comment", cl.comment.URL))
+			}
+			item.Evidence = append(item.Evidence, row)
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// deprecatedReportSection builds the "the thing it leans on is gone" section.
+func (f *FlagData) deprecatedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passDeprecated,
+		Question: "this issue leans on a removed or deprecated resource/property — moot where it stands?",
+		Description: "Every open issue referencing a resource, data source, or property that was removed or deprecated, " +
+			"per the 4.0/5.0 upgrade guides and the changelog's DEPRECATIONS bullets. " +
+			"Applying closes as not planned with a comment naming what is gone, when, and the successor to use.",
+		Command: "koi deprecated [removed-resource|removed-property|...] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, _, _, err := f.collectDeprecated(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classRemovedResource, counts[classRemovedResource], kindBad},
+		{classRemovedProperty, counts[classRemovedProperty], kindWarn},
+		{classDeprecatedResource, counts[classDeprecatedResource], kindMid},
+		{classDeprecatedProperty, counts[classDeprecatedProperty], kindDim},
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.deprecatedJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *deprecatedFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.matches {
+			m := &fdg.matches[n]
+			r := m.removal
+			actionKind := kindMid
+			if r.Action == db.RemovalRemoved {
+				actionKind = kindBad
+			}
+			row := make([]reportSpan, 0, 6)
+			if r.Kind == db.RemovalKindProperty {
+				row = append(row, span(r.Property, ""), span("on "+r.Resource, kindDim))
+			} else {
+				row = append(row, span(r.Resource, ""), span("("+strings.ReplaceAll(r.Kind, "-", " ")+")", kindDim))
+			}
+			if v, ok := strings.CutPrefix(r.Source, "changelog "); ok {
+				row = append(row, span(r.Action, actionKind), linkSpan("in "+v, removalURL(r)))
+			} else {
+				row = append(row, span(r.Action, actionKind), linkSpan(fmt.Sprintf("in v%d.0 (%s)", r.Major, r.Source), removalURL(r)))
+			}
+			if r.Successor != "" {
+				row = append(row, span("· use "+r.Successor, kindOK))
+			}
+			item.Evidence = append(item.Evidence, row)
+			if m.quote != "" {
+				item.Evidence = append(item.Evidence, []reportSpan{
+					span("matched:", kindDim), span("“"+m.quote+"”", kindQuote),
+				})
+			}
+		}
+		if len(fdg.alive) > 0 {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span("also references (not removed or deprecated):", kindDim),
+				span(strings.Join(fdg.alive, " · "), kindOK),
+			})
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

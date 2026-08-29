@@ -674,6 +674,6 @@ func scoreTag(confidence float64) string {
 	case confidence >= 0.4:
 		return tagOrange
 	default:
-		return "red"
+		return tagRed
 	}
 }

@@ -33,6 +33,7 @@ const (
 
 	// shared apply-mode strings and evidence keys across the closing commands.
 	modePreviewEveryClose = "<gray>previewing every close</>"
+	modeCloseEverything   = "<gray>closing everything listed</>"
 	modeConfirmEachClose  = "<gray>you confirm each close</>"
 	evidenceKeyVersion    = "version"
 )
@@ -215,7 +216,7 @@ func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding,
 
 // applyFixed is plain --apply: close everything listed, no AI involved.
 func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
-	mode := "<gray>closing everything listed</>"
+	mode := modeCloseEverything
 	if f.DryRun {
 		mode = modePreviewEveryClose
 	}

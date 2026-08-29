@@ -222,6 +222,21 @@ ALTER TABLE texts ADD COLUMN has_tail INTEGER NOT NULL DEFAULT 0;
 -- wrong side of the close split), a truncation note, and 15 comments over 8;
 -- date-only tails refetch once to pick all of that up.
 UPDATE texts SET has_tail = 0;
+`, `
+-- removed/deprecated resources, data sources, and properties, parsed from the
+-- major-version upgrade guides and changelog DEPRECATIONS bullets. Rebuilt on
+-- every fetch; koi deprecated scans open issues against it.
+CREATE TABLE removals (
+  kind      TEXT NOT NULL,
+  resource  TEXT NOT NULL,
+  property  TEXT NOT NULL DEFAULT '',
+  action    TEXT NOT NULL,
+  major     INTEGER NOT NULL DEFAULT 0,
+  successor TEXT NOT NULL DEFAULT '',
+  note      TEXT NOT NULL DEFAULT '',
+  source    TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX idx_removals_resource ON removals(resource);
 `}
 
 func (d *DB) migrate() error {

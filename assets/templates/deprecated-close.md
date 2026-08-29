@@ -1,0 +1,3 @@
+It appears this issue relates to {{ if .IsProperty }}the `{{ .Name }}` property of `{{ .OnResource }}`{{ else }}`{{ .Name }}`{{ end }}, which {{ if .Removed }}was removed in v{{ .Major }}.0{{ else }}has been deprecated{{ end }}{{ if .SuccessorMD }} in favour of {{ .SuccessorMD }}{{ end }}{{ if .SourceURL }} (see the [{{ .SourceLabel }}]({{ .SourceURL }}) for details){{ end }}, as such we are going to close this issue out as it no longer applies to the current version of the provider.
+
+If this is still relevant on the latest version of the provider (v{{ .CurrentMajor }}.x) please open a new issue{{ if .SuccessorMD }} against {{ .SuccessorMD }}{{ end }} referencing this one. Thank you!

@@ -259,7 +259,7 @@ func resolvedRank(t resolvedTarget) int {
 
 // applyResolved is plain --apply: close everything listed, no AI.
 func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
-	mode := "<gray>closing everything listed</>"
+	mode := modeCloseEverything
 	if f.DryRun {
 		mode = modePreviewEveryClose
 	}
