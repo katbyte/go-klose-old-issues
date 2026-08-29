@@ -127,7 +127,7 @@ func (f *FlagData) Fetch(full bool) error {
 	cout.Printf("<green>done:</> <yellow>%d</> issues in db (<yellow>%d</> open)\n", total, open)
 
 	// run the rules straight away so fetch is the only setup step — everything
-	// downstream (review, report, stats, classify) also re-runs this itself
+	// downstream (review, report, stats) also re-runs this itself
 	if err := f.ensureAnalysed(d); err != nil {
 		return err
 	}

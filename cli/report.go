@@ -199,7 +199,11 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, comments, exists, legacy, deprecated}
+	duplicates, err := f.duplicatesReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, duplicates, comments, exists, legacy, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -215,8 +219,8 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · exists %d · legacy %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, exists.Total, legacy.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · exists %d · legacy %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, exists.Total, legacy.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -638,6 +642,66 @@ func (f *FlagData) existsReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 			if e.quote != "" {
 				item.Evidence = append(item.Evidence, []reportSpan{span("the ask:", kindDim), span("“"+e.quote+"”", kindQuote)})
 			}
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// duplicatesReportSection builds the "this is another open issue" section.
+func (f *FlagData) duplicatesReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passDuplicates,
+		Question: "this looks like an older open issue — is it the same one?",
+		Description: "Open issues that duplicate another OPEN issue: this one references it, or nobody linked them and " +
+			"the titles say the same thing. The issue with more engagement survives, weighted towards the older one; " +
+			"applying closes this one as a duplicate pointing at it. Duplicates of already-closed issues belong to " +
+			"the resolved check.",
+		Command: "koi duplicates [linked|similar] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, _, err := f.collectDuplicates(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classDupLinked, counts[classDupLinked], kindOK},
+		{classDupSimilar, counts[classDupSimilar], kindMid},
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.duplicatesJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.targets {
+			t := &fdg.targets[n]
+			how, kind := "referenced from this issue", kindOK
+			if t.class == classDupSimilar {
+				how, kind = fmt.Sprintf("%.0f%% title match, nothing links them", t.similarity*100), kindMid
+			}
+			item.Evidence = append(item.Evidence, []reportSpan{
+				linkSpan(fmt.Sprintf("#%d", t.issue.Number), t.issue.URL),
+				span(how, kind),
+				span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.issue.CreatedAt, now), t.issue.CommentCount, t.issue.ThumbsUp), kindDim),
+			}, []reportSpan{span("“"+text.OneLine(t.issue.Title)+"”", kindQuote)})
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

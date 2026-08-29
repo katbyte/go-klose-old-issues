@@ -1,4 +1,4 @@
-// Package cli implements the koi command tree: fetch, classify, review,
+// Package cli implements the koi command tree: fetch, the checks, review,
 // report/import, apply, reopen, milestone, and stats over a shared sqlite db.
 package cli
 
@@ -82,24 +82,6 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	fetchCmd.Flags().Bool("full", false, "force a full re-walk instead of an incremental sync")
 	root.AddCommand(fetchCmd)
 
-	classifyCmd := &cobra.Command{
-		Use:           "classify",
-		Short:         "runs the AI classify and still-open passes over undecided issues",
-		Long:          `classify: batches rules-undetermined issues to the AI CLI for a kind/version/recommendation verdict. still-open: re-checks every proposed close with comment activity for credible "still an issue on a recent version" claims, flipping those to keep. Verdicts are cached; re-runs only cost for changed issues.`,
-		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"db", "ai-cmd"}),
-		SilenceErrors: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			cmd.SilenceUsage = true
-			pass, _ := cmd.Flags().GetString("pass")
-			limit, _ := cmd.Flags().GetInt("limit")
-			return GetFlags().Classify(pass, limit)
-		},
-	}
-	classifyCmd.Flags().String("pass", "all", "which pass to run: classify, still-open, or all")
-	classifyCmd.Flags().Int("limit", 0, "max issues to process this run (0 = all)")
-	root.AddCommand(classifyCmd)
-
 	reviewCmd := &cobra.Command{
 		Use:           "review",
 		Short:         "interactively review proposed actions, one card at a time",
@@ -125,7 +107,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, comments, exists, legacy, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, exists, legacy, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
@@ -505,6 +487,49 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		})
 	}
 	root.AddCommand(existsCmd)
+
+	dupRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o DuplicatesOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Duplicates(o)
+		}
+	}
+	duplicatesCmd := &cobra.Command{
+		Use:           "duplicates",
+		Aliases:       []string{"dupes"},
+		Short:         "these open issues appear to duplicate an older open issue. AI-scored, closeable",
+		Long:          `Open issues that duplicate another OPEN issue: this one references it, or nobody ever linked them and the two titles say the same thing. The older issue always survives, since it holds the history, the reactions and the maintainer discussion; the AI compares both issues in full and judges whether they are really the same ask. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments pointing at the surviving issue and closes as a duplicate. Issues with an open PR linked to them are never listed. For duplicates of issues that are already CLOSED, use koi resolved.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE:          dupRunE(""),
+	}
+	duplicatesCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as a duplicate")
+	duplicatesCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI compares both issues and scores the match, you confirm each close")
+	duplicatesCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close issues the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	duplicatesCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	duplicatesCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, short string }{
+		{classDupLinked, "only issues that reference the older issue (strongest evidence)"},
+		{classDupSimilar, "only issues nobody linked, matched on near-identical titles"},
+	} {
+		duplicatesCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			SilenceErrors: true,
+			RunE:          dupRunE(sub.use),
+		})
+	}
+	root.AddCommand(duplicatesCmd)
 
 	cacheCmd := &cobra.Command{
 		Use:           "cache",

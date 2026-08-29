@@ -28,7 +28,7 @@ type Signals struct {
 	Participants        int
 
 	// The newest provider major anyone mentions in a comment with azurerm context,
-	// with the quote so a human can judge it. AI still_open confirms semantics.
+	// with the quote so a human can judge it. The checks' judges confirm semantics.
 	NewestClaimMajor  int
 	NewestClaimAt     time.Time
 	NewestClaimQuote  string
@@ -115,7 +115,7 @@ func (d *DB) GetSignals(number int) (*Signals, error) {
 // Verdict is a cached AI judgement for one issue and pass.
 type Verdict struct {
 	IssueNumber int
-	Pass        string // classify | still_open
+	Pass        string // the check that judged it: fixed | resolved | legacy | ...
 	PromptHash  string
 	Model       string
 	Verdict     string // raw JSON verdict

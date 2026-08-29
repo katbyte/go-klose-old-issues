@@ -45,7 +45,7 @@ func (f *FlagData) Review(o ReviewOpts) error {
 		return err
 	}
 	if len(actions) == 0 {
-		cout.Printf("nothing to review with these filters — run <cyan>koi analyse</> / <cyan>koi classify</>, or loosen --reason/--action\n")
+		cout.Printf("nothing to review with these filters — run <cyan>koi fetch</>, or loosen --reason/--action\n")
 		return nil
 	}
 

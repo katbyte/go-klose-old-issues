@@ -12,7 +12,7 @@ import (
 // Claim is a provider-major mention found in a comment. The sweep is deliberately
 // conservative in the safe direction: a claim can only *block* a close (keeping an
 // issue open), never cause one, so false positives are cheap and false negatives
-// are what we tune against. AI's still_open pass and the human review refine.
+// are what we tune against. Each check's AI judge and the human confirm.
 type Claim struct {
 	Major   int
 	At      time.Time

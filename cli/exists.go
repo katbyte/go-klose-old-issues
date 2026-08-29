@@ -126,11 +126,16 @@ type existsEvidence struct {
 }
 
 // existsFinding is one open enhancement whose ask appears to exist now.
+//
+// kindUnconfirmed marks the ones the rules could not identify as enhancements:
+// the title reads as a request, so they are carried on that hypothesis and the
+// AI is asked to confirm it before anything closes.
 // evidence is sorted strongest first; the close comment cites the first.
 type existsFinding struct {
-	issue    *db.Issue
-	class    string
-	evidence []existsEvidence
+	issue           *db.Issue
+	kindUnconfirmed bool
+	class           string
+	evidence        []existsEvidence
 }
 
 // Exists finds OPEN enhancement requests whose ask already exists in the
@@ -160,7 +165,7 @@ func (f *FlagData) Exists(o ExistsOpts) error {
 		return nil
 	}
 
-	cout.Printf("\n<bold>%d of %d open enhancement requests appear to already exist in the provider:</>\n", len(findings), enh)
+	cout.Printf("\n<bold>%d of %d requests appear to already exist in the provider:</>\n", len(findings), enh)
 	for _, c := range []struct{ class, tag string }{
 		{classExistsResource, tagGreen}, {classExistsProperty, tagLightBlue},
 	} {
@@ -309,18 +314,27 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 	}
 	texts := map[int]issueText{}
 	var enhancements []*db.Issue
-	unclassified := 0
+	unclassified, unconfirmed := 0, map[int]bool{}
 	for _, i := range issues {
 		s, serr := d.GetSignals(i.Number)
 		if serr != nil {
 			return nil, nil, 0, serr
 		}
-		if s == nil || s.Kind == "" {
-			unclassified++
+		if s == nil {
 			continue
 		}
+		// the rules read kind from the labels and the issue template, and a
+		// third of recent issues carry neither. An unlabelled issue whose
+		// TITLE asks for something is carried as a probable request, with the
+		// AI confirming that before anything closes.
 		if s.Kind != "enhancement" {
-			continue
+			if s.Kind != "" || !existsAsk.MatchString(i.Title) {
+				if s.Kind == "" {
+					unclassified++
+				}
+				continue
+			}
+			unconfirmed[i.Number] = true
 		}
 		enhancements = append(enhancements, i)
 		prose := i.Title + "\n" + issueProse(i.Body)
@@ -330,8 +344,9 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 		}
 		texts[i.Number] = issueText{prose: prose, tokens: set}
 	}
-	cout.Printf("<yellow>%d</> of them are enhancement requests <gray>(%d bug/question/doc, %d undetermined — koi classify would widen this check)</>\n",
-		len(enhancements), len(issues)-len(enhancements)-unclassified, unclassified)
+	cout.Printf("<yellow>%d</> requests to check <gray>(%d labelled enhancements, %d unlabelled but ask-shaped; %d bug/question/doc and %d unlabelled non-asks skipped)</>\n",
+		len(enhancements), len(enhancements)-len(unconfirmed), len(unconfirmed),
+		len(issues)-len(enhancements)-unclassified, unclassified)
 	df := map[string]int{}
 	for _, t := range texts {
 		for tok := range t.tokens {
@@ -349,7 +364,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 			return nil, nil, 0, serr
 		}
 		t := texts[i.Number]
-		fdg := existsFinding{issue: i}
+		fdg := existsFinding{issue: i, kindUnconfirmed: unconfirmed[i.Number]}
 
 		// resource class: an ask whose prose names a thing that exists in the
 		// docs and whose arrival bullet postdates the ask. Both kinds are
@@ -526,6 +541,22 @@ func registryDocURL(kind, name string) string {
 
 // applyExists is plain --apply: close everything listed, no AI.
 func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts) error {
+	// nothing here confirms the hypothesis that an unlabelled issue is a
+	// request, so those wait for an AI mode rather than closing on a guess
+	held := 0
+	kept := findings[:0]
+	for _, fdg := range findings {
+		if fdg.kindUnconfirmed {
+			held++
+			continue
+		}
+		kept = append(kept, fdg)
+	}
+	findings = kept
+	if held > 0 {
+		cout.Printf("<gray>holding back %d unlabelled issue(s): --apply-with-ai confirms what they are</>\n", held)
+	}
+
 	mode := modeCloseEverything
 	if f.DryRun {
 		mode = modePreviewEveryClose
@@ -803,6 +834,9 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
+		if fdg.kindUnconfirmed {
+			b.WriteString("KIND UNKNOWN: nothing labels this issue. Judge first whether it is a REQUEST for something at all — a bug report, a question or a discussion is not a request and scores 0.\n")
+		}
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
 		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		if picked := digestComments(comments, 8); len(picked) > 0 {
@@ -841,6 +875,9 @@ func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *msMatc
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+	if fdg.kindUnconfirmed {
+		cout.Printf("      <yellow>unlabelled — carried as a probable request, the AI confirms it</>\n")
+	}
 	for n := range fdg.evidence {
 		e := &fdg.evidence[n]
 		var b strings.Builder

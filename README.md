@@ -49,18 +49,28 @@ whichever closes it first removes it from the others.
 
 ```sh
 export GITHUB_TOKEN=$(gh auth token)
+export KOI_AI_CMD=claude KOI_AI_MODEL=opus   # required by every --apply-with-ai mode (no default)
 
 koi fetch              # everything non-AI in one step: open issues + comments + changelogs +
-                       # the all-issues milestone scan -> issues.db, rules run automatically
-                       # (resumable; later runs sync incrementally — the only required setup step)
-koi review             # interactive card-by-card decisions (a/n/s/e/c/b/t/o/u — single keypress)
-koi stats              # the funnel: what can close, what keeps, what needs AI
-koi classify           # AI passes: classify the undetermined, double-check closes for "still an issue on 4.x/5.x" claims
-koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking
+                       # the provider docs and removals inventories + the all-issues milestone
+                       # scan -> issues.db, rules run automatically (resumable; later runs sync
+                       # incrementally — the only required setup step)
+
 koi report             # report.html: every close candidate each check sees, with its evidence, linked
 koi report --with-ai --limit 10   # AI-score a small slice per check first — cheap end-to-end test
-koi apply --max 100 --dry-run   # preview a wave
-koi apply --max 100             # comment + close, throttled, staleness-guarded
+
+# then work one check at a time. Bare is always a report; the apply modes act:
+#   --apply              act on the evidence, no AI
+#   --apply-with-ai      card + score + (a)ccept (s)kip (p)review (o)pen (q)uit per issue
+#   --apply-with-ai-auto[=t]  unattended at or above a confidence
+koi fixed --apply-with-ai        # a merged PR references it — did it fix it?
+koi resolved --apply-with-ai     # it references a CLOSED issue — was that its answer?
+koi duplicates --apply-with-ai   # it duplicates another OPEN issue, linked or by title
+koi comments --apply-with-ai     # somebody in the thread says it can be closed
+koi exists --apply-with-ai       # the request already exists in the provider
+koi legacy --apply-with-ai       # old bug on v1–v3, nobody says it is still alive
+koi deprecated --apply-with-ai   # it leans on something that has been removed
+
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
 
 koi milestone                    # scan ALL issues (open+closed, light fields) + audit release milestones
@@ -72,19 +82,23 @@ koi milestone --skip-scan --apply-with-ai   # AI scores each issue↔evidence pa
 koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI scores at/above the threshold
 koi milestone changelog-check --apply       # the PR-side audit: every changelog-cited PR carries the citing release
 
-koi fixed                        # OPEN issues a merged PR references — likely fixed, AI-scored on the match
-koi fixed mentioned-by --apply-with-ai      # confirm each close: comments cite the fix PR + shipped version
-koi fixed --apply-with-ai-auto=0.9          # auto-close the matches the AI is confident about
-
-koi resolved                     # OPEN issues referencing a CLOSED issue — duplicates of things already dealt with
-koi resolved completed --apply-with-ai      # confirm each duplicate close, pointing at the resolved issue
-
-koi legacy                       # closeable bug/crash reports against v1–v3, AI-scored on staleness
-koi legacy --major 1 --apply --dry-run      # preview the sure things one major at a time
-koi legacy --apply-with-ai                  # AI reads issue + comments, you confirm each close
+# every check takes its evidence classes as subcommands, strongest first:
+koi fixed mentioned-by --apply-with-ai      # one class only: comments cite the fix PR + shipped version
+koi duplicates similar --dry-run            # the unlinked half, preview only
+koi exists resource --apply-with-ai-auto=0.9  # only the asked-for resource now existing, above 0.90
+koi legacy --major 1 --apply --dry-run      # legacy scopes by major instead
+koi deprecated property --apply-with-ai     # removed properties, judged one at a time
 
 koi cache                        # list the local db's caches and sizes
 koi cache clear ai               # drop AI verdicts (or issues|milestones|prs|texts|changelog|all)
+
+# the older rules-only path, still there for the close reasons no check covers
+# (stale-question, no-response, upstream-core):
+koi stats                        # the funnel: what can close, what keeps
+koi review                       # interactive card-by-card decisions over rules proposals
+koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking
+koi apply --max 100 --dry-run    # preview a wave of approved actions
+koi apply --max 100              # comment + close, throttled, staleness-guarded
 ```
 
 `koi milestone` maps the PRs tied to each issue to the release that shipped them
@@ -119,7 +133,7 @@ Close proposals (each with its own comment template in `assets/templates/`):
 
 Keep protections run **before** any close rule: a credible comment claim of the
 issue on v4/v5, an open linked PR, 👍 ≥ `--keep-reactions`, or a recent version
-label all pin an issue open. The AI `still-open` pass re-checks every proposed
+label all pin an issue open. Each check's own judge re-checks every proposed
 close with comment activity as a second safety net.
 
 ## Config

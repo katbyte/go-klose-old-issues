@@ -9,6 +9,8 @@ For each request judge how likely what shipped actually DELIVERS the specific as
 - An ask that is broader than what shipped scores LOW: delivering one of three requested things is not delivery.
 - Matching words are not matching substance; judge from what the request actually wants.
 
+- Some issues are marked `KIND UNKNOWN`: nothing labels them and the rules could not tell what they are. Judge that first. Score 0 unless the issue is genuinely asking for something to be added or supported — a bug report about a broken resource, a support question or a discussion is not a request, however much its wording matches what shipped.
+
 Be conservative: when it is unclear whether the shipped change covers the ask, score low.
 
 Respond with ONLY a JSON array, one entry per issue, no other text:

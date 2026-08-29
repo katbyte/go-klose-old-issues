@@ -45,7 +45,7 @@ func (f *FlagData) Stats() error {
 		cout.Printf("\n<bold>open issues by kind × version major</> <gray>(v0 = undetermined)</>:\n")
 		printStatTable(signalStats)
 	} else {
-		cout.Printf("\nno signals yet — run <cyan>koi analyse</>\n")
+		cout.Printf("\nno signals yet — run <cyan>koi fetch</>\n")
 	}
 
 	actionStats, err := d.ActionStats()
@@ -56,7 +56,7 @@ func (f *FlagData) Stats() error {
 		cout.Printf("\n<bold>actions by proposal × status</>:\n")
 		printStatTable(actionStats)
 	} else {
-		cout.Printf("\nno proposals yet — run <cyan>koi analyse</>\n")
+		cout.Printf("\nno proposals yet — run <cyan>koi fetch</>\n")
 	}
 
 	return nil

@@ -52,7 +52,7 @@ func configureFlags(root *cobra.Command) error {
 	pflags.StringP("repo", "r", "hashicorp/terraform-provider-azurerm", "the owner/name of the repository to triage")
 
 	// AI Flags (FlagsAI)
-	pflags.Bool("ai", true, "use an AI CLI for the classify and still-open passes")
+	pflags.Bool("ai", true, "use an AI CLI to judge the candidates each check finds")
 	pflags.String("ai-cmd", "", "the AI CLI binary to invoke: claude, gemini, antigravity's agy, or IBM's bob (all run as <cmd> -p) — no default, set this or KOI_AI_CMD")
 	pflags.String("ai-model", "", "the model to pass to the AI CLI via --model, e.g. fable, haiku, or a full model id — no default, set this or KOI_AI_MODEL")
 	pflags.Int("ai-timeout", 10, "timeout, in minutes, for each AI CLI invocation")

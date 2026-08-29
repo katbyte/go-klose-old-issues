@@ -5,7 +5,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/ai"
@@ -26,8 +28,20 @@ const (
 	bulletRunesForAI = 300
 	// full-text budgets: accuracy beats cost here, so the model sees generous
 	// slices of the issue and each evidence PR.
+	// how many batches are kept in flight ahead of the one being reviewed. One
+	// is enough when reading each card takes longer than a batch; two keeps a
+	// fast reviewer off the AI's critical path, at the cost of throwing away
+	// that much judgement if the run is quit early.
+	msJudgePrefetch = 2
+
 	msIssueBodyRunes = 3000
 	msPRBodyRunes    = 2000
+
+	// how much of a single comment goes into a judge block
+	commentRunesFor = 400
+
+	// how many batches may fail in a row before a run gives up on the AI
+	maxConsecFails = 3
 	// msMatchBatchSize is pairings per AI call — blocks carry full issue and PR
 	// bodies, so batches stay small in favour of judgement quality.
 	msMatchBatchSize = 10
@@ -426,7 +440,19 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 	harvest := func(start int, ch <-chan msJudgedBatch) error {
 		end := min(start+msMatchBatchSize, len(uncached))
 		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
-		res := <-ch
+
+		// say whether the pipeline actually paid off: a batch judged while the
+		// last one was being reviewed costs nothing, one we sit and wait for is
+		// the human going faster than the AI
+		var res msJudgedBatch
+		timing := "<gray>(judged while you reviewed)</>"
+		select {
+		case res = <-ch:
+		default:
+			started := time.Now()
+			res = <-ch
+			timing = fmt.Sprintf("<gray>(waited %s on the AI)</>", time.Since(started).Round(time.Second))
+		}
 
 		var batchVerdicts []msMatchVerdict
 		err := res.err
@@ -442,7 +468,7 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 			return nil // targets stay verdict-less
 		}
 		consecFails = 0
-		cout.Printf(" <green>ok</>\n")
+		cout.Printf(" <green>ok</> %s\n", timing)
 		if res.model != "" && res.model != f.AI.Model {
 			cout.Printf("  <yellow>note: this batch was answered by %s, not %s</>\n", res.model, f.AI.Model)
 		}
@@ -505,15 +531,40 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 	}
 
 	// batch 1 in the foreground, then the confirm (auto mode's answer time
-	// overlaps batch 2), then cached + batch 1 + the pipeline
-	inflight := launch(0)
-	if err := harvest(0, inflight); err != nil {
+	// overlaps the prefetch), then cached + batch 1 + the pipeline
+	type pending struct {
+		start int
+		ch    <-chan msJudgedBatch
+	}
+	var queue []pending
+	launchAt := func(start int) {
+		if start >= len(uncached) || stopped {
+			return
+		}
+		queue = append(queue, pending{start: start, ch: launch(start)})
+		if start > 0 {
+			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
+				start+1, min(start+msMatchBatchSize, len(uncached)))
+		}
+	}
+	take := func() (pending, bool) {
+		if len(queue) == 0 {
+			return pending{}, false
+		}
+		p := queue[0]
+		queue = queue[1:]
+		return p, true
+	}
+
+	launchAt(0)
+	first, _ := take()
+	if err := harvest(first.start, first.ch); err != nil {
 		return verdicts, err
 	}
-	if len(uncached) > msMatchBatchSize {
-		inflight = launch(msMatchBatchSize)
-		cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-			msMatchBatchSize+1, min(2*msMatchBatchSize, len(uncached)))
+	// fill the pipeline: reviewing one batch should cover the next few being
+	// judged, so a fast reviewer never waits on the AI
+	for i := 1; i <= msJudgePrefetch; i++ {
+		launchAt(i * msMatchBatchSize)
 	}
 	if ok, err := ready(); err != nil || !ok {
 		return verdicts, err
@@ -525,14 +576,16 @@ func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeI
 		return verdicts, err
 	}
 	for start := msMatchBatchSize; start < len(uncached) && !stopped; start += msMatchBatchSize {
-		if err := harvest(start, inflight); err != nil {
+		next, ok := take()
+		if !ok {
+			launchAt(start)
+			next, _ = take()
+		}
+		if err := harvest(next.start, next.ch); err != nil {
 			return verdicts, err
 		}
-		if next := start + msMatchBatchSize; next < len(uncached) && !stopped {
-			inflight = launch(next)
-			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-				next+1, min(next+msMatchBatchSize, len(uncached)))
-		}
+		// top the pipeline back up to depth
+		launchAt(start + msJudgePrefetch*msMatchBatchSize)
 		if err := emit(slice(start)); err != nil {
 			return verdicts, err
 		}
@@ -676,4 +729,28 @@ func scoreTag(confidence float64) string {
 	default:
 		return tagRed
 	}
+}
+
+// preparePrompt loads a prompt template and substitutes the version
+// placeholders, so a prompt can talk about "majors 1 to 3" without the
+// current release being baked into the file.
+func (f *FlagData) preparePrompt(name string) (string, error) {
+	p, err := assets.Prompt(name)
+	if err != nil {
+		return "", err
+	}
+	recent := fmt.Sprintf("%d or %d", f.CurrentMajor-1, f.CurrentMajor)
+	p = strings.ReplaceAll(p, "{{CURRENT_MAJOR}}", strconv.Itoa(f.CurrentMajor))
+	p = strings.ReplaceAll(p, "{{LEGACY_MAX}}", strconv.Itoa(f.CurrentMajor-2))
+	p = strings.ReplaceAll(p, "{{RECENT_MAJORS}}", recent)
+	return p, nil
+}
+
+// aiIdent is how a verdict records who answered: the CLI, and the model when
+// one was set. A cached verdict only counts as a hit for the same identity.
+func aiIdent(cmd, model string) string {
+	if model == "" {
+		return cmd
+	}
+	return cmd + "/" + model
 }

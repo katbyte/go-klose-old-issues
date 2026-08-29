@@ -8,6 +8,8 @@ For each issue judge how likely closing it as a stale legacy bug is the right ca
 
 Also score LOW when the bug is clearly version-independent and likely still present in current code, when a fix is actively in flight, or when the report is really an enhancement or question mislabelled as a bug. Recent substantive discussion is a reason to be cautious. Base the judgement only on the text given, and quote-worthy evidence should be reflected in the reason.
 
+- Some issues have `kind: UNKNOWN`: nothing labels them and the rules could not tell what they are. Judge that first. Score 0 unless the text is clearly a BUG or CRASH report against the stated version — a feature request, a support question, a documentation issue or a discussion is not a legacy bug, however old it is.
+
 Respond with ONLY a JSON array, one entry per issue, no other text:
 [{"number": <int>, "confidence": <0.0 to 1.0>, "reason": "<one sentence>"}]
 

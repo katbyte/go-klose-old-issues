@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -27,7 +26,6 @@ type cardContext struct {
 	prs      []db.Crossref  // linked PRs in the triaged repo only — foreign-repo mentions are noise
 	releases map[int]string // PR number -> release that shipped it, per the changelog
 	mentions []triage.Claim // every version claim in the thread, with quote + comment url
-	verdicts map[string]*db.Verdict
 	now      time.Time
 }
 
@@ -72,21 +70,10 @@ func (f *FlagData) loadCard(d *db.DB, a *db.Action) (*cardContext, error) {
 		}
 	}
 
-	verdicts := map[string]*db.Verdict{}
-	for _, pass := range []string{passClassify, passStillOpen} {
-		v, err := d.GetVerdict(a.IssueNumber, pass)
-		if err != nil {
-			return nil, err
-		}
-		if v != nil {
-			verdicts[pass] = v
-		}
-	}
-
 	return &cardContext{
 		f: f, issue: i, signals: s, action: a, comments: comments,
 		prs: prs, releases: releases, mentions: triage.VersionMentions(comments),
-		verdicts: verdicts, now: time.Now(),
+		now: time.Now(),
 	}, nil
 }
 
@@ -140,7 +127,6 @@ func (c *cardContext) render(pos, total int) {
 	c.renderCommentDigest()
 
 	// AI verdicts
-	c.renderVerdicts()
 
 	// the proposal itself
 	cout.Printf("  <gray>%s</>\n", strings.Repeat("─", 60))
@@ -196,41 +182,6 @@ func (c *cardContext) renderAllComments() {
 func (c *cardContext) renderBody() {
 	cout.Printf("\n<gray>── body of #%d ──</>\n", c.issue.Number)
 	cout.Println(text.TruncateRunes(triage.CleanBody(c.issue.Body), 4000))
-}
-
-func (c *cardContext) renderVerdicts() {
-	for _, pass := range []string{passClassify, passStillOpen} {
-		v, ok := c.verdicts[pass]
-		if !ok {
-			continue
-		}
-		var fields map[string]any
-		if err := json.Unmarshal([]byte(v.Verdict), &fields); err != nil {
-			continue
-		}
-
-		switch pass {
-		case passClassify:
-			rec, _ := fields["recommendation"].(string)
-			quote, _ := fields["quote"].(string)
-			cout.Printf("  AI recommendation (classify pass): <bold>%s</> · confidence %s%s\n", rec, confidenceColoured(v.Confidence), quoteSuffix(quote))
-		case passStillOpen:
-			claim, _ := fields["still_claim"].(bool)
-			quote, _ := fields["quote"].(string)
-			verdict := "<green>found no recent-version claims</>"
-			if claim {
-				verdict = "<red>found a claim it still occurs</>"
-			}
-			cout.Printf("  AI still-open re-check: %s · confidence %s%s\n", verdict, confidenceColoured(v.Confidence), quoteSuffix(quote))
-		}
-	}
-}
-
-func quoteSuffix(q string) string {
-	if q == "" {
-		return ""
-	}
-	return fmt.Sprintf(" — quoting the thread: <gray>%q</>", text.TruncateRunes(q, 90))
 }
 
 // renderLinkedPRs prints each same-repo linked PR on its own line: state, title,

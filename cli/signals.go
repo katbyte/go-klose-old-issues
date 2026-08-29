@@ -42,8 +42,8 @@ func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 			return nil, err
 		}
 
-		// the classify pass enriches signals the deterministic parse can't derive;
-		// a re-run must not wipe that enrichment (the verdict cache means classify
+		// earlier AI runs enriched signals the deterministic parse can't derive;
+		// a re-run must not wipe that enrichment (the verdict cache means it
 		// wouldn't re-derive it for an unchanged issue)
 		prev, err := d.GetSignals(i.Number)
 		if err != nil {
@@ -63,7 +63,7 @@ func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 		if a := triage.Propose(i, s, cfg); a != nil {
 			// proposals refined by the AI passes or edited by a human outlive an
 			// analyse re-run: rules alone can't reproduce an ai-keep veto, and the
-			// verdict cache means classify wouldn't re-derive it either
+			// verdict cache means an AI run wouldn't re-derive it either
 			existing, err := d.GetAction(i.Number)
 			if err != nil {
 				return nil, err

@@ -18,7 +18,7 @@ type cacheDomain struct {
 }
 
 var cacheDomains = []cacheDomain{
-	{"ai", "AI verdicts (classify, still-open, ms-match) — cleared verdicts re-judge on the next run", []string{"ai_verdicts"}, nil},
+	{"ai", "AI verdicts from every check — cleared verdicts re-judge on the next run", []string{"ai_verdicts"}, nil},
 	{"issues", "fetched open issues, comments, crossrefs, and derived signals", []string{"issues", passComments, "crossrefs", "signals"}, []string{"fetch_cursor", "last_sync"}},
 	{"milestones", "the milestone scan: all-issue light rows, fix links, and the milestone list", []string{"ms_issues", "ms_fixes", "milestones"}, []string{"ms_scan_cursor", "ms_last_scan"}},
 	{"prs", "changelog-cited PR details (changelog-check's cache)", []string{"ms_prs"}, nil},

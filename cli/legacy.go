@@ -26,6 +26,12 @@ const (
 	versionSourceLabel = "label"
 )
 
+// requestLabels say outright that an issue is a request, whatever else it lacks.
+var requestLabels = map[string]bool{"new-resource": true, "new-data-source": true, "enhancement": true}
+
+// isRequestLabel reports whether a label marks the issue as a request.
+func isRequestLabel(l string) bool { return requestLabels[strings.ToLower(l)] }
+
 // LegacyOpts configures the legacy audit and its apply modes.
 type LegacyOpts struct {
 	Majors          []int   // only bugs reported against these majors (empty = every legacy major)
@@ -42,6 +48,10 @@ type legacyFinding struct {
 	issue   *db.Issue
 	signals *db.Signals
 	action  *db.Action
+
+	// the rules could not tell what this issue is, so it is here on the
+	// hypothesis that it is a bug: only the AI modes may act on it
+	kindUnconfirmed bool
 }
 
 // Legacy finds OPEN bug and crash reports against legacy majors (v1..current-2)
@@ -74,6 +84,12 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 	findings := col.findings
 
 	cout.Printf("\n<bold>%d open bugs/crashes report a legacy major (v1–v%d):</>\n", col.legacyBugs, col.maxMajor)
+	if col.unknownKind > 0 {
+		cout.Printf("  <gray>%d of them are unlabelled and carried as probable bugs — the AI confirms the kind, so plain --apply skips them</>\n", col.unknownKind)
+	}
+	if col.divertedAsks > 0 {
+		cout.Printf("  <gray>%d more are unlabelled but read as requests —</> <cyan>koi exists</> <gray>territory, not this check's</>\n", col.divertedAsks)
+	}
 	var majors []string
 	for m := 1; m <= col.maxMajor; m++ {
 		if col.byMajor[m] > 0 {
@@ -146,13 +162,15 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 // legacyCollection is everything the legacy sweep learns: the close-cleared
 // findings plus the counts that explain what was NOT cleared.
 type legacyCollection struct {
-	findings   []legacyFinding
-	byMajor    map[int]int
-	protected  map[string]int // keep reason → count
-	diverted   int            // fixed-merged-pr, koi fixed territory
-	legacyBugs int            // every open bug/crash on a legacy major
-	maxMajor   int            // newest legacy major (current-2)
-	open       int            // open-issue total
+	findings     []legacyFinding
+	byMajor      map[int]int
+	protected    map[string]int // keep reason → count
+	diverted     int            // fixed-merged-pr, koi fixed territory
+	legacyBugs   int            // every open bug/crash on a legacy major
+	unknownKind  int            // of those, ones the rules could not identify
+	divertedAsks int            // unlabelled but request-shaped: koi exists territory
+	maxMajor     int            // newest legacy major (current-2)
+	open         int            // open-issue total
 }
 
 // collectLegacy builds the legacy findings: open bug/crash reports on legacy
@@ -171,12 +189,37 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 		if serr != nil {
 			return col, serr
 		}
-		if s == nil || (s.Kind != signalKindBug && s.Kind != signalKindCrash) || s.VersionMajor < 1 || s.VersionMajor > col.maxMajor {
+		if s == nil || s.VersionMajor < 1 || s.VersionMajor > col.maxMajor {
 			continue
 		}
+		// the rules read kind from the labels and the issue template, and a
+		// third of recent issues carry neither. Rather than leaving those
+		// invisible, an old-version issue with NO kind is carried on the
+		// hypothesis that it is a bug and the AI is asked to confirm that
+		// before anything closes; a known question or docs issue still isn't
+		// a legacy bug and is dropped here.
+		rules, unconfirmed := s, false
+		if s.Kind != signalKindBug && s.Kind != signalKindCrash {
+			if s.Kind != "" {
+				continue
+			}
+			// an unlabelled issue that READS as a request is not this check's
+			// problem: koi exists takes those on the same hypothesis, and a
+			// feature request closed as a stale bug is the wrong close
+			if existsAsk.MatchString(i.Title) || slices.ContainsFunc(i.Labels, isRequestLabel) {
+				col.divertedAsks++
+				continue
+			}
+			hypothesis := *s
+			hypothesis.Kind = signalKindBug
+			rules, unconfirmed = &hypothesis, true
+		}
 		col.legacyBugs++
+		if unconfirmed {
+			col.unknownKind++
+		}
 
-		a := triage.Propose(i, s, cfg)
+		a := triage.Propose(i, rules, cfg)
 		switch {
 		case a == nil:
 			continue
@@ -192,7 +235,7 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 		if len(onlyMajors) > 0 && !slices.Contains(onlyMajors, s.VersionMajor) {
 			continue
 		}
-		col.findings = append(col.findings, legacyFinding{issue: i, signals: s, action: a})
+		col.findings = append(col.findings, legacyFinding{issue: i, signals: s, action: a, kindUnconfirmed: unconfirmed})
 		col.byMajor[s.VersionMajor]++
 	}
 	return col, nil
@@ -200,6 +243,22 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 
 // applyLegacy is plain --apply: close every rules-cleared candidate, no AI.
 func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts) error {
+	// nothing here confirms the hypothesis that an unlabelled issue is a bug,
+	// so those wait for an AI mode rather than being closed on a guess
+	held := 0
+	kept := findings[:0]
+	for _, fdg := range findings {
+		if fdg.kindUnconfirmed {
+			held++
+			continue
+		}
+		kept = append(kept, fdg)
+	}
+	findings = kept
+	if held > 0 {
+		cout.Printf("<gray>holding back %d unlabelled issue(s): --apply-with-ai confirms what they are</>\n", held)
+	}
+
 	mode := "<gray>closing everything the rules cleared</>"
 	if f.DryRun {
 		mode = modePreviewEveryClose
@@ -416,14 +475,17 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 // engagement, and the AI's staleness score when judged.
 func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *msMatchVerdict) {
 	i, s := fdg.issue, fdg.signals
-	kindTag := tagOrange
+	kindTag, kind := tagOrange, s.Kind
 	if s.Kind == signalKindCrash {
 		kindTag = tagRed
+	}
+	if fdg.kindUnconfirmed {
+		kindTag, kind = tagYellow, "unlabelled, probably a bug"
 	}
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, i.Number, cout.StateTag(i.State), text.TruncateRunes(text.OneLine(i.Title), 90), f.issueURL(i.Number))
 	cout.Printf("      <%s>%s</> <gray>on</> <lightMagenta>v%s</> <gray>(%s)</> <gray>· opened %s · last activity %s · 💬 %d · 👍 %d</>\n",
-		kindTag, s.Kind, text.OrDefault(s.VersionFull, fmt.Sprintf("%d.x", s.VersionMajor)), s.VersionSource,
+		kindTag, kind, text.OrDefault(s.VersionFull, fmt.Sprintf("%d.x", s.VersionMajor)), s.VersionSource,
 		i.CreatedAt.Format("2006-01-02"), s.LastActivity.Format("2006-01-02"), i.CommentCount, i.ThumbsUp)
 	if s.VersionQuote != "" {
 		cout.Printf("      <gray>version evidence:</> %s\n", text.TruncateRunes(text.OneLine(s.VersionQuote), 100))
@@ -453,8 +515,12 @@ func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string,
 		fmt.Fprintf(&b, "reported version: v%s (%s): %s\n",
 			text.OrDefault(fdg.signals.VersionFull, fmt.Sprintf("%d.x", fdg.signals.VersionMajor)),
 			fdg.signals.VersionSource, text.OneLine(fdg.signals.VersionQuote))
+		kind := fdg.signals.Kind
+		if fdg.kindUnconfirmed {
+			kind = "UNKNOWN — nothing labels this issue, so judge whether it is a bug or crash report at all"
+		}
 		fmt.Fprintf(&b, "kind: %s · opened %s · last activity %s\n",
-			fdg.signals.Kind, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.signals.LastActivity.Format("2006-01-02"))
+			kind, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.signals.LastActivity.Format("2006-01-02"))
 		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 
 		picked := digestComments(comments, 8)

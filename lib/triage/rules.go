@@ -22,7 +22,7 @@ const (
 	ReasonHighEngagement  = "high-engagement"  // too many reactions to robo-close
 	ReasonRecentVersion   = "recent-version"   // reported against a recent major
 	ReasonEnhancement     = "enhancement"      // FR: shipped/dupes passes handle these later
-	ReasonUndetermined    = "undetermined"     // rules can't decide; AI classify next
+	ReasonUndetermined    = "undetermined"     // rules can't decide what this issue is
 	ReasonAIKeep          = "ai-keep"          // AI recommends keeping despite legacy signals
 )
 
