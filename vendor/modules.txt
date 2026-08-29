@@ -40,8 +40,8 @@ github.com/remyoudompheng/bigfft
 # github.com/sagikazarmark/locafero v0.11.0
 ## explicit; go 1.23.0
 github.com/sagikazarmark/locafero
-# github.com/sirupsen/logrus v1.9.4
-## explicit; go 1.17
+# github.com/sirupsen/logrus v1.10.1
+## explicit; go 1.23
 github.com/sirupsen/logrus
 # github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8
 ## explicit; go 1.20
@@ -132,7 +132,7 @@ modernc.org/mathutil
 # modernc.org/memory v1.11.0
 ## explicit; go 1.23.0
 modernc.org/memory
-# modernc.org/sqlite v1.56.0
+# modernc.org/sqlite v1.57.0
 ## explicit; go 1.25.0
 modernc.org/sqlite
 modernc.org/sqlite/lib
