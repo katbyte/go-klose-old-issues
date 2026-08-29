@@ -194,7 +194,11 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, comments, legacy, deprecated}
+	exists, err := f.existsReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, comments, exists, legacy, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -210,8 +214,8 @@ func (f *FlagData) Report(o ReportOpts) error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · legacy %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, legacy.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · exists %d · legacy %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, exists.Total, legacy.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -554,6 +558,85 @@ func (f *FlagData) commentsReportSection(d *db.DB, o ReportOpts, now time.Time) 
 				row = append(row, linkSpan("view comment", cl.comment.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// existsReportSection builds the "the ask already exists" section.
+func (f *FlagData) existsReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passExists,
+		Question: "this enhancement request appears to already exist in the provider — did it ship?",
+		Description: "Open enhancement requests whose ask already exists: the requested resource or data source is in the " +
+			"provider docs today and arrived after the request, or a property the request's prose names shipped for one of " +
+			"its resources in a later release. Applying closes as completed with the good news and a documentation link.",
+		Command: "koi exists [resource|property] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, counts, _, err := f.collectExists(d, "")
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classExistsResource, counts[classExistsResource], kindOK},
+		{classExistsProperty, counts[classExistsProperty], kindMid},
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*msMatchVerdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.existsJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *existsFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for n := range fdg.evidence {
+			e := &fdg.evidence[n]
+			// evidence is dated when a changelog bullet names it and undated
+			// when only the docs do — the row must not claim a release either
+			// way it does not have
+			var row []reportSpan
+			if e.kind == db.RemovalKindProperty {
+				row = []reportSpan{span(e.name, ""), span("on "+e.resource, kindDim)}
+				if e.version != "" {
+					row = append(row, span("shipped in v"+e.version, kindVer), linkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
+				} else {
+					row = append(row, span("in the docs today", kindOK),
+						linkSpan("docs", registryDocURL(db.DocKindResource, e.resource)))
+				}
+			} else {
+				row = []reportSpan{
+					span(e.name, kindOK), span("("+strings.ReplaceAll(e.kind, "-", " ")+")", kindDim),
+					span("now exists", kindOK),
+				}
+				if e.version != "" {
+					row = append(row, span("arrived in v"+e.version, kindVer), linkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
+				} else {
+					row = append(row, span("— arrival not dated", kindDim))
+				}
+				row = append(row, linkSpan("docs", registryDocURL(e.kind, e.name)))
+			}
+			item.Evidence = append(item.Evidence, row,
+				[]reportSpan{span("changelog:", kindDim), span("“"+e.bullet+"”", kindQuote)})
+			if e.quote != "" {
+				item.Evidence = append(item.Evidence, []reportSpan{span("the ask:", kindDim), span("“"+e.quote+"”", kindQuote)})
+			}
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

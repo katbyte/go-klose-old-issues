@@ -237,6 +237,25 @@ CREATE TABLE removals (
   source    TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX idx_removals_resource ON removals(resource);
+`, `
+-- every resource and data source that exists in the provider RIGHT NOW, from
+-- the website/docs listing. Rebuilt on every fetch; koi exists checks asked-for
+-- things against it.
+CREATE TABLE provider_docs (
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  PRIMARY KEY (kind, name)
+) WITHOUT ROWID;
+`, `
+-- every argument/attribute each resource's documentation lists TODAY, parsed
+-- from the doc pages (refetched only when the docs tree changes). koi exists
+-- checks asked-for properties against it.
+CREATE TABLE provider_doc_args (
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL,
+  arg  TEXT NOT NULL,
+  PRIMARY KEY (kind, name, arg)
+) WITHOUT ROWID;
 `}
 
 func (d *DB) migrate() error {

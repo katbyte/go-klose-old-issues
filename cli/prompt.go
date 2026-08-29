@@ -70,3 +70,51 @@ func confirm(prompt string) (bool, error) {
 	}
 	return strings.EqualFold(answer, "y"), nil
 }
+
+// askAccept is askClose's go-ahead — distinct from every msApply* code.
+const askAccept = -1
+
+// askClose is the per-candidate confirmation every close lens shares:
+// (a)ccept the close, (s)kip it, (p)review the comment that would be posted,
+// (o)pen the issue, (q)uit the run. Preview and open loop back to the prompt so
+// the human answers after seeing what they asked for; with no comment to show
+// (the milestone setter) the preview key drops out of the offer.
+func askClose(question, comment, url string) (int, error) {
+	// magenta, not lightMagenta — that one belongs to milestones and versions
+	keys := "<green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit"
+	if comment != "" {
+		keys = "<green>(a)</>ccept <red>(s)</>kip <magenta>(p)</>review (o)pen (q)uit"
+	}
+	for {
+		ans, err := promptKey(fmt.Sprintf("      %s %s <gray>></> ", question, keys))
+		if err != nil {
+			return msApplyFailed, err
+		}
+		switch strings.ToLower(ans) {
+		case "a", "y":
+			return askAccept, nil
+		case "s", "n", "":
+			return msApplySkipped, nil
+		case "p":
+			printCommentPreview(comment)
+		case "o":
+			openIssueInBrowser(url)
+		case "q":
+			return msApplyQuit, nil
+		}
+	}
+}
+
+// printCommentPreview shows the comment exactly as it would land on the issue.
+// The body goes to the writer unparsed — close comments are markdown, and an
+// angle-bracketed url in one is not a colour tag.
+func printCommentPreview(comment string) {
+	if comment == "" {
+		return
+	}
+	cout.Printf("\n      <magenta>the comment that would be posted:</>\n")
+	for line := range strings.SplitSeq(comment, "\n") {
+		_, _ = fmt.Fprintf(cout.Writer(), "        %s\n", line)
+	}
+	cout.Printf("\n")
+}

@@ -533,3 +533,78 @@ func (c *Client) RawFile(owner, name, branch, path string) (string, error) {
 	}
 	return string(body), nil
 }
+
+const treeEntriesQuery = `
+query($owner: String!, $name: String!, $expr: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    object(expression: $expr) {
+      ... on Tree { oid entries { name } }
+    }
+  }
+}`
+
+// TreeEntries lists the file names under one repo path on main, plus the
+// tree's oid so callers can skip re-reading unchanged trees.
+func (c *Client) TreeEntries(owner, name, path string) (entries []string, oid string, err error) {
+	vars := map[string]any{"owner": owner, "name": name, "expr": "main:" + path}
+	var resp struct {
+		RateLimit  RateLimit `json:"rateLimit"`
+		Repository struct {
+			Object struct {
+				OID     string `json:"oid"`
+				Entries []struct {
+					Name string `json:"name"`
+				} `json:"entries"`
+			} `json:"object"`
+		} `json:"repository"`
+	}
+	if err := c.Do(treeEntriesQuery, vars, &resp); err != nil {
+		return nil, "", fmt.Errorf("listing %s: %w", path, err)
+	}
+	out := make([]string, 0, len(resp.Repository.Object.Entries))
+	for _, e := range resp.Repository.Object.Entries {
+		out = append(out, e.Name)
+	}
+	resp.RateLimit.WaitIfLow()
+	return out, resp.Repository.Object.OID, nil
+}
+
+// BlobTexts fetches file contents for the given repo paths on main, batched
+// via aliased blob expressions. progress (nil ok) is called after each batch.
+func (c *Client) BlobTexts(owner, name string, paths []string, progress func(done, total int)) (map[string]string, error) {
+	out := make(map[string]string, len(paths))
+	for start := 0; start < len(paths); start += 50 {
+		batch := paths[start:min(start+50, len(paths))]
+		var fields strings.Builder
+		for i, p := range batch {
+			fmt.Fprintf(&fields, "b%d: object(expression: %q) { ... on Blob { text } }\n", i, "main:"+p)
+		}
+		query := fmt.Sprintf(`
+query($owner: String!, $name: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+%s  }
+}`, fields.String())
+
+		var resp struct {
+			RateLimit  RateLimit `json:"rateLimit"`
+			Repository map[string]*struct {
+				Text string `json:"text"`
+			} `json:"repository"`
+		}
+		if err := c.DoTolerant(query, repoVars(owner, name, ""), &resp); err != nil {
+			return nil, fmt.Errorf("fetching doc blobs: %w", err)
+		}
+		for i, p := range batch {
+			if b := resp.Repository[fmt.Sprintf("b%d", i)]; b != nil {
+				out[p] = b.Text
+			}
+		}
+		if progress != nil {
+			progress(min(start+50, len(paths)), len(paths))
+		}
+		resp.RateLimit.WaitIfLow()
+	}
+	return out, nil
+}

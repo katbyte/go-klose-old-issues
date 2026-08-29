@@ -103,7 +103,7 @@ func assocDisplay(assoc string) (tag, label string) {
 	case "MEMBER", "OWNER", "COLLABORATOR":
 		return tagGreen, strings.ToLower(assoc)
 	case "CONTRIBUTOR":
-		return "lightBlue", "contributor"
+		return tagLightBlue, "contributor"
 	case "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER":
 		return "white", "first-time"
 	default:
@@ -467,25 +467,9 @@ func (f *FlagData) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding
 	}
 
 	if ask {
-		for {
-			ans, perr := promptKey(fmt.Sprintf("      close <cyan>#%d</> as its thread says? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.issue.Number))
-			if perr != nil {
-				return msApplyFailed, perr
-			}
-			done := false
-			switch strings.ToLower(ans) {
-			case "a", "y":
-				done = true
-			case "s", "n", "":
-				return msApplySkipped, nil
-			case "o":
-				openIssueInBrowser(fdg.issue.URL)
-			case "q":
-				return msApplyQuit, nil
-			}
-			if done {
-				break
-			}
+		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as its thread says?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != askAccept {
+			return res, perr
 		}
 	}
 

@@ -10,8 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/pkg/browser"
-
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
@@ -28,10 +26,11 @@ const (
 	typePullRequest = "PullRequest"
 
 	// shared colour tag names for the class/score/state tag helpers.
-	tagGreen  = "green"
-	tagYellow = "yellow"
-	tagOrange = "fg=208"
-	tagRed    = "red"
+	tagGreen     = "green"
+	tagYellow    = "yellow"
+	tagOrange    = "fg=208"
+	tagRed       = "red"
+	tagLightBlue = "lightBlue"
 )
 
 // MilestoneOpts configures the milestone audit.
@@ -567,7 +566,7 @@ func classTag(class string) string {
 	case db.LinkClosedBy:
 		return tagGreen
 	case db.LinkLinked:
-		return "lightBlue"
+		return tagLightBlue
 	case msLinkCited:
 		return tagYellow
 	default:
@@ -847,24 +846,9 @@ func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, mil
 	}
 
 	if ask {
-	prompt:
-		for {
-			ans, err := promptKey(fmt.Sprintf("      set → <lightMagenta>%s</>? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.expected))
-			if err != nil {
-				return msApplyFailed, err
-			}
-			switch strings.ToLower(ans) {
-			case "a", "y":
-				break prompt
-			case "s", "n", "":
-				return msApplySkipped, nil
-			case "o":
-				if err := browser.OpenURL(f.issueURL(fdg.issue.Number)); err != nil {
-					cout.Errorf("      <yellow>WARNING:</> opening browser: %v\n", err)
-				}
-			case "q":
-				return msApplyQuit, nil
-			}
+		res, err := askClose(fmt.Sprintf("set → <lightMagenta>%s</>?", fdg.expected), "", f.issueURL(fdg.issue.Number))
+		if err != nil || res != askAccept {
+			return res, err
 		}
 	}
 

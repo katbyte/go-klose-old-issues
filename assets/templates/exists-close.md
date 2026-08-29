@@ -1,0 +1,3 @@
+Good news, {{ if .IsProperty }}{{ if .Version }}support for `{{ .Name }}` on `{{ .OnResource }}` appears to have shipped in v{{ .Version }}{{ if .PR }} via #{{ .PR }}{{ end }}{{ else }}`{{ .Name }}` on `{{ .OnResource }}` is available per the [documentation]({{ .DocsURL }}){{ end }}{{ else }}`{{ .Name }}` now exists in the provider{{ if .Version }} as of v{{ .Version }}{{ end }}{{ if .PR }} (#{{ .PR }}){{ end }} ([documentation]({{ .DocsURL }})){{ end }}, as such we are going to close this request out as completed.
+
+If this does not cover your use case on the latest version of the provider (v{{ .CurrentMajor }}.x) please let us know with a comment or open a new issue referencing this one. Thank you!

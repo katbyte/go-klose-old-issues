@@ -464,6 +464,48 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	root.AddCommand(commentsCmd)
 
+	exsRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			var o ExistsOpts
+			o.Link = link
+			o.Apply, _ = cmd.Flags().GetBool("apply")
+			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
+			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
+			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
+			o.Max, _ = cmd.Flags().GetInt("max")
+			return GetFlags().Exists(o)
+		}
+	}
+	existsCmd := &cobra.Command{
+		Use:           "exists",
+		Short:         "these enhancement requests appear to already exist in the provider — good news closes. AI-scored, closeable",
+		Long:          `Open enhancement requests whose ask already exists: the requested resource or data source is in the provider docs today and arrived after the request (per the changelog's New Resource bullets), or a property the request's prose names shipped for one of its resources in a later release. The AI judges whether what shipped actually delivers the specific ask. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with what exists, since when, and the documentation link, closed as completed.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		SilenceErrors: true,
+		RunE:          exsRunE(""),
+	}
+	existsCmd.PersistentFlags().Bool("apply", false, "comment and close every listed request as completed")
+	existsCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI judges whether what shipped delivers each ask, you confirm each close")
+	existsCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close requests the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
+	existsCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
+	existsCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	for _, sub := range []struct{ use, short string }{
+		{classExistsResource, "only requests whose asked-for resource/data source now exists (strongest evidence)"},
+		{classExistsProperty, "only requests whose asked-for property shipped in a later release"},
+	} {
+		existsCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			SilenceErrors: true,
+			RunE:          exsRunE(sub.use),
+		})
+	}
+	root.AddCommand(existsCmd)
+
 	cacheCmd := &cobra.Command{
 		Use:           "cache",
 		Short:         "lists the local db's clearable caches and their sizes",

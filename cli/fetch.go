@@ -2,7 +2,9 @@ package cli
 
 import (
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/katbyte/koi/lib/clog"
@@ -105,6 +107,10 @@ func (f *FlagData) Fetch(full bool) error {
 	}
 
 	if err := f.fetchRemovals(d, client, owner, name); err != nil {
+		return err
+	}
+
+	if err := f.fetchProviderDocs(d, client, owner, name); err != nil {
 		return err
 	}
 
@@ -432,6 +438,79 @@ func (f *FlagData) fetchRemovals(d *db.DB, client *ghql.Client, owner, name stri
 	cout.Printf("parsed <yellow>%d</> removals from the upgrade guides + changelog (<red>%d removed</> · <yellow>%d deprecated</>)\n",
 		len(removals), removed, deprecated)
 	return nil
+}
+
+// docArgBullet spots "* `arg` -" documentation bullets naming an argument or
+// attribute.
+var docArgBullet = regexp.MustCompile("(?m)^\\s*[*-]\\s+`([a-z0-9_.]+)`")
+
+// fetchProviderDocs rebuilds the what-exists-now inventory from the website
+// docs: the resource/data source listings, and every argument each doc page
+// names TODAY. Page contents are only refetched when the docs trees actually
+// changed (their oids are remembered). A failed listing keeps existing data.
+func (f *FlagData) fetchProviderDocs(d *db.DB, client *ghql.Client, owner, name string) error {
+	kinds := map[string]string{db.DocKindResource: "website/docs/r", db.DocKindDataSource: "website/docs/d"}
+	byKind := map[string][]string{}
+	paths := map[string][]string{}
+	var oids []string
+	for _, kind := range []string{db.DocKindResource, db.DocKindDataSource} {
+		path := kinds[kind]
+		entries, oid, err := client.TreeEntries(owner, name, path)
+		if err != nil || len(entries) == 0 {
+			cout.Errorf("<yellow>warning:</> listing %s: %v — keeping the existing provider docs inventory\n", path, err)
+			return nil
+		}
+		oids = append(oids, oid)
+		for _, e := range entries {
+			if n, ok := strings.CutSuffix(e, ".html.markdown"); ok {
+				byKind[kind] = append(byKind[kind], "azurerm_"+n)
+				paths[kind] = append(paths[kind], path+"/"+e)
+			}
+		}
+	}
+	if err := d.ReplaceProviderDocs(byKind); err != nil {
+		return err
+	}
+	cout.Printf("listed <yellow>%d</> resources + <yellow>%d</> data sources that exist in the provider\n",
+		len(byKind[db.DocKindResource]), len(byKind[db.DocKindDataSource]))
+
+	sha := strings.Join(oids, "|")
+	// the argument inventory needs every doc page's contents — only re-read
+	// them when the docs trees changed since last time
+	if last, err := d.GetMeta("docs_args_sha"); err != nil {
+		return err
+	} else if last == sha {
+		cout.Printf("<gray>provider doc pages unchanged — keeping the documented-argument inventory</>\n")
+		return nil
+	}
+
+	var args []db.DocArg
+	for _, kind := range []string{db.DocKindResource, db.DocKindDataSource} {
+		cout.Printf("reading <yellow>%d</> %s doc pages for their documented arguments...\n", len(paths[kind]), strings.ReplaceAll(kind, "-", " "))
+		texts, err := client.BlobTexts(owner, name, paths[kind], func(done, total int) {
+			cout.Printf("  <gray>%d/%d pages read</>\n", done, total)
+		})
+		if err != nil {
+			cout.Errorf("<yellow>warning:</> reading doc pages: %v — keeping the existing argument inventory\n", err)
+			return nil
+		}
+		for p, content := range texts {
+			base := strings.TrimSuffix(p[strings.LastIndex(p, "/")+1:], ".html.markdown")
+			seen := map[string]bool{}
+			for _, m := range docArgBullet.FindAllStringSubmatch(content, -1) {
+				if seen[m[1]] {
+					continue
+				}
+				seen[m[1]] = true
+				args = append(args, db.DocArg{Kind: kind, Name: "azurerm_" + base, Arg: m[1]})
+			}
+		}
+	}
+	if err := d.ReplaceDocArgs(args); err != nil {
+		return err
+	}
+	cout.Printf("parsed <yellow>%d</> documented arguments across the provider docs\n", len(args))
+	return d.SetMeta("docs_args_sha", sha)
 }
 
 // nodeToBundle converts a GraphQL issue node into db rows.

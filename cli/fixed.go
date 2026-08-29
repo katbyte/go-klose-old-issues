@@ -399,12 +399,9 @@ func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *m
 	}
 
 	if ask {
-		res, perr := promptFixedClose(fdg)
-		if perr != nil {
-			return msApplyFailed, perr
-		}
-		if res != msApplySet {
-			return res, nil
+		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as fixed?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != askAccept {
+			return res, perr
 		}
 	}
 
@@ -433,26 +430,6 @@ func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *m
 	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
 	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, triage.ReasonFixedMergedPR)
 	return msApplySet, f.recordFixedClose(d, fdg, v)
-}
-
-// promptFixedClose asks the human about one candidate close.
-func promptFixedClose(fdg *fixedFinding) (int, error) {
-	for {
-		ans, err := promptKey(fmt.Sprintf("      close <cyan>#%d</> as fixed? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.issue.Number))
-		if err != nil {
-			return msApplyFailed, err
-		}
-		switch strings.ToLower(ans) {
-		case "a", "y":
-			return msApplySet, nil
-		case "s", "n", "":
-			return msApplySkipped, nil
-		case "o":
-			openIssueInBrowser(fdg.issue.URL)
-		case "q":
-			return msApplyQuit, nil
-		}
-	}
 }
 
 // printFixedCard is one finding: the open issue, its merged PR references, the

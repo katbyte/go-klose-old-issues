@@ -253,7 +253,7 @@ func (f *FlagData) collectDeprecated(d *db.DB, link string) (findings []deprecat
 		// properties match against PROSE only — a removed property sitting in
 		// somebody's pasted config says nothing about what the issue is about,
 		// which an -with-ai session over the property class proved emphatically
-		t := i.Title + "\n" + deprecatedProse(i.Body)
+		t := i.Title + "\n" + issueProse(i.Body)
 		texts[i.Number] = t
 		set := map[string]bool{}
 		for _, tok := range reToken.FindAllString(t, -1) {
@@ -498,25 +498,9 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 	}
 
 	if ask {
-		for {
-			ans, perr := promptKey(fmt.Sprintf("      close <cyan>#%d</> as moot? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.issue.Number))
-			if perr != nil {
-				return msApplyFailed, perr
-			}
-			done := false
-			switch strings.ToLower(ans) {
-			case "a", "y":
-				done = true
-			case "s", "n", "":
-				return msApplySkipped, nil
-			case "o":
-				openIssueInBrowser(fdg.issue.URL)
-			case "q":
-				return msApplyQuit, nil
-			}
-			if done {
-				break
-			}
+		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as moot?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != askAccept {
+			return res, perr
 		}
 	}
 
@@ -682,14 +666,15 @@ func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) 
 	return promptText, items, nil
 }
 
-// deprecatedHCLAssign spots config-looking lines: `prop = value`, block
+// issueHCLAssign spots config-looking lines: `prop = value`, block
 // openers, and comment lines — pasted HCL that escaped a code fence.
-var deprecatedHCLAssign = regexp.MustCompile(`^[a-z0-9_."\[\]]+\s*[={]|^[a-z0-9_]+\s*\{$`)
+var issueHCLAssign = regexp.MustCompile(`^[a-z0-9_."\[\]]+\s*[={]|^[a-z0-9_]+\s*\{$`)
 
-// deprecatedProse strips fenced code blocks, bare HCL lines, and #-comment
+// issueProse strips fenced code blocks, bare HCL lines, and #-comment
 // lines from a body, leaving the sentences where someone talks ABOUT a
-// property rather than merely uses it.
-func deprecatedProse(body string) string {
+// property rather than merely uses it. Shared by the deprecated and exists
+// lenses — config dumps are not intent.
+func issueProse(body string) string {
 	var b strings.Builder
 	inFence := false
 	for line := range strings.SplitSeq(body, "\n") {
@@ -698,7 +683,7 @@ func deprecatedProse(body string) string {
 			inFence = !inFence
 			continue
 		}
-		if inFence || trimmed == "" || strings.HasPrefix(trimmed, "#") || deprecatedHCLAssign.MatchString(trimmed) {
+		if inFence || trimmed == "" || strings.HasPrefix(trimmed, "#") || issueHCLAssign.MatchString(trimmed) {
 			continue
 		}
 		b.WriteString(line)

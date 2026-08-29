@@ -425,25 +425,9 @@ func (f *FlagData) closeOneResolved(d *db.DB, repo gh.Repo, fdg *resolvedFinding
 	}
 
 	if ask {
-		for {
-			ans, perr := promptKey(fmt.Sprintf("      close <cyan>#%d</> as a duplicate of <cyan>#%d</>? <green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit <gray>></> ", fdg.issue.Number, fdg.best.ref.RefNumber))
-			if perr != nil {
-				return msApplyFailed, perr
-			}
-			done := false
-			switch strings.ToLower(ans) {
-			case "a", "y":
-				done = true
-			case "s", "n", "":
-				return msApplySkipped, nil
-			case "o":
-				openIssueInBrowser(fdg.issue.URL)
-			case "q":
-				return msApplyQuit, nil
-			}
-			if done {
-				break
-			}
+		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as a duplicate of <cyan>#%d</>?", fdg.issue.Number, fdg.best.ref.RefNumber), comment, fdg.issue.URL)
+		if perr != nil || res != askAccept {
+			return res, perr
 		}
 	}
 

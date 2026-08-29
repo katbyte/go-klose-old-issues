@@ -1,0 +1,866 @@
+package cli
+
+import (
+	"errors"
+	"fmt"
+	"regexp"
+	"slices"
+	"strings"
+	"text/template"
+
+	"github.com/katbyte/koi/assets"
+	"github.com/katbyte/koi/lib/cout"
+	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/text"
+	"github.com/katbyte/koi/lib/triage"
+)
+
+const (
+	passExists          = "exists"
+	promptExists        = "enhancement-request-exists"
+	templateExistsClose = "exists-close"
+	reasonExists        = "request-exists"
+
+	// classes by what the ask was, strongest first: the asked-for resource now
+	// exists outright, or a property the ask names shipped after the ask.
+	classExistsResource = "resource"
+	classExistsProperty = "property"
+)
+
+// existsAsk is the title shape of a new-thing request — the resource class
+// only fires on asks, not on bug reports that happen to name a resource.
+var existsAsk = regexp.MustCompile(`(?i)\b(new (resource|data ?source)|support for|add(ing)? (support|resource|data ?source)|feature request|request.*resource|resource.*request)\b`)
+
+// existsWord tokenises a title into lowercase words.
+var existsWord = regexp.MustCompile(`[a-z][a-z0-9_]*`)
+
+// existsAskFiller is what a title may trail after the thing it asks for
+// without that thing ceasing to be the whole ask.
+var existsAskFiller = map[string]bool{
+	"resource": true, "resources": true, "data": true, "source": true, "sources": true,
+	"datasource": true, "datasources": true, "support": true, "for": true, "to": true,
+	"in": true, "the": true, "of": true, "a": true, "an": true, "azure": true,
+	"azurerm": true, "terraform": true, "provider": true, "please": true, "new": true,
+	"request": true, "feature": true,
+}
+
+// existsWholeAsk reports whether the title asks for name ITSELF — "New
+// Resource: azurerm_x", "Support for azurerm_x" — with nothing substantive
+// after it. A trailing qualifier ("Support for azurerm_monitor_action_group
+// use AAD auth secure webhook") means the ask is that qualifier on a resource
+// that already existed, and the resource being in the docs proves nothing.
+func existsWholeAsk(title, name string) bool {
+	lower := strings.ToLower(title)
+	re := regexp.MustCompile("(?:new (?:resource|data ?source)s?:?|support (?:for|of)|add(?:ing)?(?: a| an| new)?(?: support for)?)\\s+(?:the )?`?" + regexp.QuoteMeta(name) + "`?\\b")
+	m := re.FindStringIndex(lower)
+	if m == nil {
+		return false
+	}
+	for _, w := range existsWord.FindAllString(lower[m[1]:], -1) {
+		if !existsAskFiller[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// existsTitleWords is the title's vocabulary for matching documented
+// arguments, singulars included and the azurerm_* tokens left out.
+func existsTitleWords(title string) map[string]bool {
+	words := map[string]bool{}
+	for _, w := range existsWord.FindAllString(strings.ToLower(title), -1) {
+		if strings.HasPrefix(w, "azurerm_") {
+			continue
+		}
+		words[w] = true
+		words[strings.TrimSuffix(w, "s")] = true
+	}
+	return words
+}
+
+// existsArgAsked reports whether a documented argument is what the title asks
+// for — named outright, or spelled out in words ("use AAD auth secure webhook"
+// asks for aad_auth). Single-word arguments are too loose to match on words.
+func existsArgAsked(arg string, words map[string]bool) bool {
+	parts := strings.Split(arg, "_")
+	if len(parts) < 2 {
+		// a one-word argument matches any title that happens to say the word —
+		// "tags", "size", "delete" are in every other request and prove nothing
+		return false
+	}
+	if words[arg] {
+		return true
+	}
+	long := false
+	for _, p := range parts {
+		if !words[p] {
+			return false
+		}
+		if len(p) >= 4 {
+			long = true
+		}
+	}
+	return long
+}
+
+// ExistsOpts configures the exists audit and its apply modes.
+type ExistsOpts struct {
+	Link            string  // resource | property ("" = both classes)
+	Apply           bool    // close the listed requests as completed, no AI
+	ApplyWithAI     bool    // AI judges whether what shipped delivers the ask, the human confirms
+	ApplyWithAIAuto bool    // AI scores and delivered asks (>= Threshold) close without asking
+	Threshold       float64 // auto-close confidence floor (0 = the default)
+	Max             int     // cap on closes per run
+}
+
+// existsEvidence is one shipped thing that appears to deliver the ask.
+type existsEvidence struct {
+	kind     string // resource | data-source | property
+	name     string // azurerm_* or the property token
+	resource string // owning resource for properties
+	version  string // release it arrived in
+	pr       int    // changelog PR
+	bullet   string // the changelog bullet text
+	quote    string // the issue prose line the property matched ("" for resources)
+}
+
+// existsFinding is one open enhancement whose ask appears to exist now.
+// evidence is sorted strongest first; the close comment cites the first.
+type existsFinding struct {
+	issue    *db.Issue
+	class    string
+	evidence []existsEvidence
+}
+
+// Exists finds OPEN enhancement requests whose ask already exists in the
+// provider: the requested resource or data source is in the docs today and
+// arrived after the ask, or a property the request names shipped in a later
+// release. The AI judges whether what shipped actually delivers the specific
+// request; the apply modes close as completed with the good news.
+func (f *FlagData) Exists(o ExistsOpts) error {
+	if !f.NoAutoFetch {
+		if err := f.Fetch(false); err != nil {
+			return err
+		}
+	}
+
+	d, err := f.OpenDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+
+	findings, counts, enh, err := f.collectExists(d, o.Link)
+	if err != nil {
+		return err
+	}
+	if enh == 0 {
+		cout.Printf("nothing to check — run <cyan>koi fetch</> first\n")
+		return nil
+	}
+
+	cout.Printf("\n<bold>%d of %d open enhancement requests appear to already exist in the provider:</>\n", len(findings), enh)
+	for _, c := range []struct{ class, tag string }{
+		{classExistsResource, tagGreen}, {classExistsProperty, tagLightBlue},
+	} {
+		if n := counts[c.class]; n > 0 {
+			cout.Printf("  <%s>%-10s</> <yellow>%d</>\n", c.tag, c.class, n)
+		}
+	}
+	if len(findings) == 0 {
+		return nil
+	}
+
+	switch {
+	case o.ApplyWithAI || o.ApplyWithAIAuto:
+		if !f.AI.Enabled {
+			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
+		}
+		return f.applyExistsAI(d, findings, o)
+	case o.Apply:
+		return f.applyExists(d, findings, o)
+	}
+
+	// report: score everything (pipelined, cached) and list surest first
+	var verdicts map[int]*msMatchVerdict
+	if f.AI.Enabled {
+		promptText, items, jerr := f.existsJudgeItems(d, findings)
+		if jerr != nil {
+			return jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
+			return err
+		}
+		slices.SortStableFunc(findings, func(a, b existsFinding) int {
+			av, bv := -1.0, -1.0
+			if v := verdicts[a.issue.Number]; v != nil {
+				av = v.Confidence
+			}
+			if v := verdicts[b.issue.Number]; v != nil {
+				bv = v.Confidence
+			}
+			switch {
+			case av > bv:
+				return -1
+			case av < bv:
+				return 1
+			default:
+				return 0
+			}
+		})
+	} else {
+		cout.Printf("<gray>--ai=false: listing without delivered scores</>\n")
+	}
+
+	for n := range findings {
+		f.printExistsCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
+	}
+	cout.Printf("\nnext: <cyan>koi exists --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	return nil
+}
+
+// collectExists builds the findings: open enhancements whose asked-for
+// resource exists in the docs today and arrived after the ask, or whose prose
+// names a property a later release shipped.
+// The third return is how many open ENHANCEMENT requests were considered —
+// the lens only ever looks at those, so every open issue is the wrong
+// denominator to report findings against.
+func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFinding, counts map[string]int, enh int, err error) {
+	issues, err := d.OpenIssues()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	docs, err := d.ProviderDocs()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	docArgs, err := d.DocArgs()
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	if len(docs) == 0 {
+		cout.Printf("<yellow>no provider docs inventory — run koi fetch to list what exists</>\n")
+		return nil, map[string]int{}, 0, nil
+	}
+
+	// when each resource/data source arrived, per the changelog's New
+	// Resource/Data Source bullets — earliest PR wins
+	type arrival struct {
+		version string
+		pr      int
+		bullet  string
+	}
+	arrivals := map[string]arrival{}
+	newThings, err := d.ChangelogLike("%New %ource%")
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	// a real arrival bullet STARTS with "New (Beta) Resource/Data Source" and
+	// its first backticked token is the arriving thing — prose like "creates a
+	// new resource" and secondary mentions must not count, and v0.x bullets
+	// cite foreign-repo PR numbers so they cannot date anything. Arrivals key
+	// by kind|name: the resource existing forever while its DATA SOURCE
+	// arrived recently must not read as the resource being new.
+	reNewBullet := regexp.MustCompile("^\\**New (?:Beta )?(Resource|Data ?Source)s?[\\s:*]*`(?:data\\.)?(azurerm_[a-z0-9_]+)`")
+	for _, e := range newThings {
+		if e.Major == 0 {
+			continue
+		}
+		m := reNewBullet.FindStringSubmatch(strings.TrimSpace(e.Text))
+		if m == nil {
+			continue
+		}
+		kind := db.DocKindResource
+		if strings.HasPrefix(strings.ToLower(m[1]), "data") {
+			kind = db.DocKindDataSource
+		}
+		key := kind + "|" + m[2]
+		if a, ok := arrivals[key]; !ok || e.PRNumber < a.pr {
+			arrivals[key] = arrival{version: e.Version, pr: e.PRNumber, bullet: text.TruncateRunes(text.OneLine(e.Text), 200)}
+		}
+	}
+
+	// post-ask feature bullets grouped by resource, for the property class
+	featureBullets := map[string][]db.ChangelogEntry{}
+	all, err := d.ChangelogLike("%")
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	for _, e := range all {
+		if e.Resource == "" {
+			continue
+		}
+		switch e.Section {
+		case "ENHANCEMENTS", "FEATURES", "IMPROVEMENTS":
+			featureBullets[e.Resource] = append(featureBullets[e.Resource], e)
+		}
+	}
+
+	cout.Printf("scanning <yellow>%d</> open issues for enhancement requests against <yellow>%d</> existing resources/data sources...\n", len(issues), len(docs))
+	reToken := regexp.MustCompile(`\b[a-z][a-z0-9_]*\b`)
+	reBacktickTok := regexp.MustCompile("`([a-z0-9_.]+)`")
+
+	// document frequency over enhancement prose, so generic property tokens
+	// can't flood the property class (same cap as the deprecated lens)
+	type issueText struct {
+		prose  string
+		tokens map[string]bool
+	}
+	texts := map[int]issueText{}
+	var enhancements []*db.Issue
+	unclassified := 0
+	for _, i := range issues {
+		s, serr := d.GetSignals(i.Number)
+		if serr != nil {
+			return nil, nil, 0, serr
+		}
+		if s == nil || s.Kind == "" {
+			unclassified++
+			continue
+		}
+		if s.Kind != "enhancement" {
+			continue
+		}
+		enhancements = append(enhancements, i)
+		prose := i.Title + "\n" + issueProse(i.Body)
+		set := map[string]bool{}
+		for _, tok := range reToken.FindAllString(prose, -1) {
+			set[tok] = true
+		}
+		texts[i.Number] = issueText{prose: prose, tokens: set}
+	}
+	cout.Printf("<yellow>%d</> of them are enhancement requests <gray>(%d bug/question/doc, %d undetermined — koi classify would widen this lens)</>\n",
+		len(enhancements), len(issues)-len(enhancements)-unclassified, unclassified)
+	df := map[string]int{}
+	for _, t := range texts {
+		for tok := range t.tokens {
+			df[tok]++
+		}
+	}
+	tooGeneric := func(tok string) bool {
+		return float64(df[tok]) > float64(len(enhancements))*deprecatedDFCap
+	}
+
+	counts = map[string]int{}
+	for _, i := range enhancements {
+		s, serr := d.GetSignals(i.Number)
+		if serr != nil {
+			return nil, nil, 0, serr
+		}
+		t := texts[i.Number]
+		fdg := existsFinding{issue: i}
+
+		// resource class: an ask whose prose names a thing that exists in the
+		// docs and whose arrival bullet postdates the ask. Both kinds are
+		// checked and labelled honestly — the data source arriving while the
+		// resource was asked for is weak evidence the AI weighs. Ubiquitous
+		// names (everyone's config has a resource_group) are capped out.
+		if existsAsk.MatchString(i.Title) {
+			// data-source arrivals only count when the ask talks about a data
+			// source — data sources for long-existing resources arrive all the
+			// time and say nothing about resource-shaped asks
+			lowerProse := strings.ToLower(t.prose)
+			wantsDS := strings.Contains(lowerProse, "data source") || strings.Contains(lowerProse, "datasource")
+			kinds := []string{db.DocKindResource}
+			if wantsDS {
+				kinds = append(kinds, db.DocKindDataSource)
+			}
+			for _, r := range s.Resources {
+				// the resource must be the whole ask, not the thing a property
+				// is being asked for ON — otherwise every "support for
+				// azurerm_x <property>" reads as the resource itself shipping,
+				// which it did long before the request was filed
+				if tooGeneric(r) || !t.tokens[r] || !existsWholeAsk(i.Title, r) {
+					continue
+				}
+				evidenced := false
+				for _, kind := range kinds {
+					key := kind + "|" + r
+					a, arrived := arrivals[key]
+					if !docs[key] || !arrived || a.pr <= i.Number {
+						continue
+					}
+					fdg.evidence = append(fdg.evidence, existsEvidence{
+						kind: kind, name: r, version: a.version, pr: a.pr, bullet: a.bullet,
+					})
+					fdg.class = classExistsResource
+					evidenced = true
+				}
+				// docs-only: the docs listing is existence proof even without a
+				// dateable arrival — including things that already existed when
+				// the request was filed, which is still the ask being available.
+				if !evidenced {
+					for _, kind := range kinds {
+						if docs[kind+"|"+r] {
+							fdg.evidence = append(fdg.evidence, existsEvidence{
+								kind: kind, name: r, bullet: "listed in the provider documentation (arrival not dated)",
+							})
+							fdg.class = classExistsResource
+							break
+						}
+					}
+				}
+			}
+		}
+
+		// property class: a post-ask feature bullet whose property token the
+		// issue's prose asks about
+		propSeen := map[string]bool{}
+		for _, r := range s.Resources {
+			for _, e := range featureBullets[r] {
+				if e.PRNumber <= i.Number {
+					continue
+				}
+				for _, m := range reBacktickTok.FindAllStringSubmatch(e.Text, -1) {
+					tok := m[1]
+					if !strings.Contains(tok, "_") || strings.HasPrefix(tok, "azurerm_") || tooGeneric(tok) || !t.tokens[tok] {
+						continue
+					}
+					quote := matchLine(t.prose, regexp.MustCompile(`\b`+regexp.QuoteMeta(tok)+`\b`))
+					propSeen[tok] = true
+					fdg.evidence = append(fdg.evidence, existsEvidence{
+						kind: db.RemovalKindProperty, name: tok, resource: r,
+						version: e.Version, pr: e.PRNumber,
+						bullet: text.TruncateRunes(text.OneLine(e.Text), 200), quote: quote,
+					})
+					if fdg.class == "" {
+						fdg.class = classExistsProperty
+					}
+					break
+				}
+				if len(fdg.evidence) >= 6 {
+					break
+				}
+			}
+		}
+
+		// property-in-docs: the property the TITLE asks for, as the resource's
+		// documentation lists it today. Requests spell it out in prose ("use
+		// AAD auth secure webhook") rather than naming the token, so match the
+		// documented argument's own words — that is what makes the finding cite
+		// aad_auth instead of the parent resource merely existing. Dated when a
+		// post-ask feature bullet names it, cited as documented today otherwise.
+		titleWords := existsTitleWords(i.Title)
+		for _, r := range s.Resources {
+			if !t.tokens[r] || tooGeneric(r) {
+				continue
+			}
+			var matched []string
+			for _, kind := range []string{db.DocKindResource, db.DocKindDataSource} {
+				for arg := range docArgs[kind+"|"+r] {
+					if !propSeen[arg] && !tooGeneric(arg) && existsArgAsked(arg, titleWords) {
+						propSeen[arg] = true
+						matched = append(matched, arg)
+					}
+				}
+			}
+			slices.Sort(matched)
+			for _, arg := range matched {
+				if len(fdg.evidence) >= 6 {
+					break
+				}
+				ev := existsEvidence{
+					kind: db.RemovalKindProperty, name: arg, resource: r,
+					bullet: "listed in the documentation for " + r + " today (arrival not dated)",
+					quote:  text.TruncateRunes(text.OneLine(i.Title), 120),
+				}
+				// earliest post-ask bullet naming it: the closest thing the
+				// changelog has to when the argument arrived, rather than a
+				// later tweak to it
+				for _, e := range featureBullets[r] {
+					if e.PRNumber <= i.Number || !strings.Contains(e.Text, "`"+arg+"`") {
+						continue
+					}
+					if ev.pr == 0 || e.PRNumber < ev.pr {
+						ev.version, ev.pr = e.Version, e.PRNumber
+						ev.bullet = text.TruncateRunes(text.OneLine(e.Text), 200)
+					}
+				}
+				fdg.evidence = append(fdg.evidence, ev)
+				if fdg.class == "" {
+					fdg.class = classExistsProperty
+				}
+			}
+		}
+
+		if len(fdg.evidence) == 0 {
+			continue
+		}
+		// resource evidence first — it is what the close comment cites
+		slices.SortStableFunc(fdg.evidence, func(a, b existsEvidence) int {
+			ar, br := 0, 0
+			if a.kind != db.RemovalKindProperty {
+				ar = 1
+			}
+			if b.kind != db.RemovalKindProperty {
+				br = 1
+			}
+			return br - ar
+		})
+		if link != "" && fdg.class != link {
+			continue
+		}
+		findings = append(findings, fdg)
+		counts[fdg.class]++
+	}
+
+	rank := map[string]int{classExistsResource: 1, classExistsProperty: 0}
+	slices.SortStableFunc(findings, func(a, b existsFinding) int {
+		if d := rank[b.class] - rank[a.class]; d != 0 {
+			return d
+		}
+		return a.issue.Number - b.issue.Number
+	})
+	return findings, counts, len(enhancements), nil
+}
+
+// registryDocURL links a resource/data source to its registry documentation.
+func registryDocURL(kind, name string) string {
+	section := "resources"
+	if kind == db.DocKindDataSource {
+		section = "data-sources"
+	}
+	return fmt.Sprintf("https://registry.terraform.io/providers/hashicorp/azurerm/latest/docs/%s/%s", section, strings.TrimPrefix(name, "azurerm_"))
+}
+
+// applyExists is plain --apply: close everything listed, no AI.
+func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts) error {
+	mode := modeCloseEverything
+	if f.DryRun {
+		mode = modePreviewEveryClose
+	}
+	cout.Printf("closing <yellow>%d</> delivered requests in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
+
+	if !f.DryRun && !f.Yes {
+		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> requests as completed in %s?", len(findings), f.repoTag()))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			cout.Printf("aborted\n")
+			return nil
+		}
+	}
+
+	repo, err := f.NewRepo()
+	if err != nil {
+		return err
+	}
+	throttle := newThrottle()
+
+	closed, failed, previewed, skipped := 0, 0, 0, 0
+	for n := range findings {
+		res, err := f.closeOneExists(d, repo, &findings[n], nil, n+1, len(findings), throttle, false)
+		if err != nil {
+			return err
+		}
+		switch res {
+		case msApplySet:
+			closed++
+		case msApplyFailed:
+			failed++
+		case msApplyPreviewed:
+			previewed++
+		case msApplySkipped:
+			skipped++
+		}
+		if !f.DryRun && o.Max > 0 && closed >= o.Max {
+			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
+			break
+		}
+	}
+	return f.fixedSummary(closed, skipped, 0, failed, previewed)
+}
+
+// applyExistsAI is --apply-with-ai[-auto], pipelined on the shared judge.
+func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpts) error {
+	threshold := o.Threshold
+	if threshold <= 0 {
+		threshold = msMatchThreshold
+	}
+	auto := o.ApplyWithAIAuto
+	interactive := !auto && !f.DryRun
+
+	mode := modeConfirmEachClose
+	switch {
+	case f.DryRun:
+		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
+	case auto:
+		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
+	}
+	cout.Printf("closing up to <yellow>%d</> delivered requests in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
+
+	promptText, items, err := f.existsJudgeItems(d, findings)
+	if err != nil {
+		return err
+	}
+	byNumber := map[int]*existsFinding{}
+	for i := range findings {
+		byNumber[findings[i].issue.Number] = &findings[i]
+	}
+
+	repo, err := f.NewRepo()
+	if err != nil {
+		return err
+	}
+	throttle := newThrottle()
+
+	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
+	process := func(ts []judgedTarget) (bool, error) {
+		for _, t := range ts {
+			pos++
+			fdg, v := byNumber[t.number], t.verdict
+			switch {
+			case v == nil:
+				unanswered++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <yellow>no verdict</> %s\n",
+					pos, len(findings), fdg.issue.Number, text.TruncateRunes(text.OneLine(fdg.issue.Title), 70))
+			case !interactive && v.Confidence < threshold:
+				below++
+				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <%s>%.2f</> %s <darkGray>%s</>\n",
+					pos, len(findings), fdg.issue.Number, scoreTag(v.Confidence), v.Confidence,
+					text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
+				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+			default:
+				res, cerr := f.closeOneExists(d, repo, fdg, v, pos, len(findings), throttle, interactive)
+				if cerr != nil {
+					return true, cerr
+				}
+				switch res {
+				case msApplySet:
+					closed++
+				case msApplyFailed:
+					failed++
+				case msApplyPreviewed:
+					previewed++
+				case msApplySkipped:
+					if interactive {
+						humanSkipped++
+					} else {
+						skipped++
+					}
+				case msApplyQuit:
+					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
+					return true, nil
+				}
+				if !f.DryRun && o.Max > 0 && closed >= o.Max {
+					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
+					return true, nil
+				}
+			}
+		}
+		return false, nil
+	}
+	onReady := func() (bool, error) {
+		if !auto || f.DryRun || f.Yes {
+			return true, nil
+		}
+		ok, err := confirm(fmt.Sprintf("comment and close requests the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		if err == nil && !ok {
+			cout.Printf("aborted\n")
+		}
+		return ok, err
+	}
+
+	if _, err := f.judgeBlocks(d, passExists, promptText, items, onReady, process); err != nil {
+		return err
+	}
+	if below+unanswered > 0 {
+		cout.Printf("\nAI delivered gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", below, threshold, unanswered)
+	}
+	return f.fixedSummary(closed, skipped, humanSkipped, failed, previewed)
+}
+
+// closeOneExists handles one candidate: card, the good-news comment, and the
+// close as completed (or preview under dry-run, or the a/s ask).
+func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+	f.printExistsCard(fdg, pos, total, v)
+
+	comment, err := f.renderExistsComment(fdg)
+	if err != nil {
+		return msApplyFailed, err
+	}
+	if f.DryRun {
+		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
+			len(comment), templateExistsClose, triage.StateCompleted)
+		return msApplyPreviewed, nil
+	}
+
+	if ask {
+		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as delivered?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != askAccept {
+			return res, perr
+		}
+	}
+
+	throttle()
+	live, err := repo.GetIssue(fdg.issue.Number)
+	if err != nil {
+		cout.Errorf("      <red>fetching live state: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	if live.State != restStateOpen {
+		cout.Printf("      <gray>already closed on github — skipped</>\n")
+		return msApplySkipped, nil
+	}
+
+	throttle()
+	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
+		cout.Errorf("      <red>comment failed: %v</>\n", err)
+		return msApplyFailed, nil
+	}
+	throttle()
+	if err := repo.CloseIssue(fdg.issue.Number, triage.StateCompleted); err != nil {
+		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
+		return msApplyFailed, nil
+	}
+
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
+	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, reasonExists)
+
+	best := fdg.evidence[0]
+	what := best.name
+	if best.kind == db.RemovalKindProperty {
+		what = best.name + " on " + best.resource
+	}
+	a := &db.Action{
+		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonExists,
+		StateReason: triage.StateCompleted, Template: templateExistsClose,
+		Evidence:       map[string]string{"what": what, evidenceKeyVersion: best.version, "pr": fmt.Sprintf("#%d", best.pr)},
+		Source:         passExists,
+		IssueUpdatedAt: fdg.issue.UpdatedAt,
+	}
+	if v != nil {
+		a.Confidence = v.Confidence
+		a.Evidence["ai"] = v.Reason
+	}
+	if _, err := d.ProposeAction(a); err != nil {
+		return msApplyFailed, err
+	}
+	row, err := d.GetAction(fdg.issue.Number)
+	if err != nil || row == nil {
+		return msApplyFailed, err
+	}
+	if row.Status == db.StatusProposed {
+		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
+			return msApplyFailed, err
+		}
+	}
+	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+}
+
+// renderExistsComment renders the good-news close citing the best evidence.
+func (f *FlagData) renderExistsComment(fdg *existsFinding) (string, error) {
+	tt, err := assets.CommentTemplate(templateExistsClose)
+	if err != nil {
+		return "", err
+	}
+	tmpl, err := template.New(templateExistsClose).Parse(tt)
+	if err != nil {
+		return "", fmt.Errorf("parsing template %s: %w", templateExistsClose, err)
+	}
+	best := fdg.evidence[0]
+	data := struct {
+		IsProperty   bool
+		Name         string
+		OnResource   string
+		Version      string
+		PR           int
+		DocsURL      string
+		CurrentMajor int
+	}{
+		IsProperty: best.kind == db.RemovalKindProperty, Name: best.name, OnResource: best.resource,
+		Version: best.version, PR: best.pr, CurrentMajor: f.CurrentMajor,
+	}
+	if data.IsProperty {
+		data.DocsURL = registryDocURL(db.DocKindResource, best.resource)
+	} else {
+		data.DocsURL = registryDocURL(best.kind, best.name)
+	}
+	var b strings.Builder
+	if err := tmpl.Execute(&b, data); err != nil {
+		return "", fmt.Errorf("rendering template %s: %w", templateExistsClose, err)
+	}
+	return strings.TrimSpace(b.String()), nil
+}
+
+// existsJudgeItems renders one judge block per finding: the request's
+// substance and everything that shipped which appears to deliver it.
+func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string, []judgeItem, error) {
+	promptText, err := assets.Prompt(promptExists)
+	if err != nil {
+		return "", nil, err
+	}
+
+	items := make([]judgeItem, 0, len(findings))
+	for i := range findings {
+		fdg := &findings[i]
+		comments, cerr := d.CommentsFor(fdg.issue.Number)
+		if cerr != nil {
+			return "", nil, cerr
+		}
+
+		var b strings.Builder
+		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
+		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
+		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		if picked := digestComments(comments, 8); len(picked) > 0 {
+			fmt.Fprintf(&b, "REQUEST COMMENTS (%d of %d):\n", len(picked), len(comments))
+			for _, c := range picked {
+				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
+					text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+			}
+		}
+		b.WriteString("WHAT SHIPPED AFTER THE ASK THAT APPEARS TO DELIVER IT:\n")
+		for _, e := range fdg.evidence {
+			switch {
+			case e.kind == db.RemovalKindProperty && e.version != "":
+				fmt.Fprintf(&b, "- property `%s` on `%s`, shipped in v%s (PR #%d): %s\n", e.name, e.resource, e.version, e.pr, e.bullet)
+			case e.kind == db.RemovalKindProperty:
+				fmt.Fprintf(&b, "- property `%s` on `%s` is in the documentation TODAY (arrival not dated — it may have existed when the request was filed): %s\n", e.name, e.resource, registryDocURL(db.DocKindResource, e.resource))
+			case e.version != "":
+				fmt.Fprintf(&b, "- %s `%s` now EXISTS (arrived in v%s, PR #%d): %s\n  DOCS: %s\n",
+					strings.ReplaceAll(e.kind, "-", " "), e.name, e.version, e.pr, e.bullet, registryDocURL(e.kind, e.name))
+			default:
+				fmt.Fprintf(&b, "- %s `%s` is in the provider documentation TODAY (arrival not dated — it may have existed when the request was filed)\n  DOCS: %s\n",
+					strings.ReplaceAll(e.kind, "-", " "), e.name, registryDocURL(e.kind, e.name))
+			}
+			if e.quote != "" {
+				fmt.Fprintf(&b, "  THE REQUEST'S PROSE MENTIONING IT: %s\n", e.quote)
+			}
+		}
+		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+	}
+	return promptText, items, nil
+}
+
+// printExistsCard is one candidate: the request and everything that shipped
+// which appears to deliver it, with the AI's score when judged.
+func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *msMatchVerdict) {
+	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
+		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+	for n := range fdg.evidence {
+		e := &fdg.evidence[n]
+		var b strings.Builder
+		switch {
+		case e.kind == db.RemovalKindProperty && e.version != "":
+			fmt.Fprintf(&b, "<lightBlue>%s</> <gray>on</> %s <green>shipped in</> <lightMagenta>v%s</> <gray>via</> PR <lightCyan>#%d</>", e.name, e.resource, e.version, e.pr)
+		case e.kind == db.RemovalKindProperty:
+			fmt.Fprintf(&b, "<lightBlue>%s</> <gray>on</> %s <green>in the docs today</> <darkGray>%s</>", e.name, e.resource, registryDocURL(db.DocKindResource, e.resource))
+		case e.version != "":
+			fmt.Fprintf(&b, "<green>%s</> <gray>(%s)</> <green>now exists</> <gray>— arrived in</> <lightMagenta>v%s</> <gray>via</> PR <lightCyan>#%d</> <darkGray>%s</>",
+				e.name, strings.ReplaceAll(e.kind, "-", " "), e.version, e.pr, registryDocURL(e.kind, e.name))
+		default:
+			fmt.Fprintf(&b, "<green>%s</> <gray>(%s)</> <green>in the docs today</> <gray>— arrival not dated</> <darkGray>%s</>",
+				e.name, strings.ReplaceAll(e.kind, "-", " "), registryDocURL(e.kind, e.name))
+		}
+		cout.Printf("      %s\n", b.String())
+		cout.Printf("        <gray>changelog:</> %s\n", text.TruncateRunes(e.bullet, 110))
+		if e.quote != "" {
+			cout.Printf("        <gray>the ask:</> %s\n", e.quote)
+		}
+	}
+	printMSVerdict(v)
+}
