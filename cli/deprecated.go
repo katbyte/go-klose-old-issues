@@ -332,7 +332,7 @@ func (f *FlagData) collectDeprecated(d *db.DB, link string) (findings []deprecat
 }
 
 // applyDeprecated is plain --apply: close everything listed, no AI. On this
-// lens the raw evidence includes incidental mentions, so --apply-with-ai is
+// check the raw evidence includes incidental mentions, so --apply-with-ai is
 // the recommended path; plain apply exists for pattern consistency.
 func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o DeprecatedOpts) error {
 	mode := modeCloseEverything
@@ -673,7 +673,7 @@ var issueHCLAssign = regexp.MustCompile(`^[a-z0-9_."\[\]]+\s*[={]|^[a-z0-9_]+\s*
 // issueProse strips fenced code blocks, bare HCL lines, and #-comment
 // lines from a body, leaving the sentences where someone talks ABOUT a
 // property rather than merely uses it. Shared by the deprecated and exists
-// lenses — config dumps are not intent.
+// checks — config dumps are not intent.
 func issueProse(body string) string {
 	var b strings.Builder
 	inFence := false

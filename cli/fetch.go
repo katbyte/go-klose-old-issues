@@ -131,7 +131,7 @@ func (f *FlagData) Fetch(full bool) error {
 	if err := f.ensureAnalysed(d); err != nil {
 		return err
 	}
-	cout.Printf("next: <cyan>koi report</> for every close candidate with its evidence, or act on a lens: <cyan>koi fixed</> · <cyan>koi resolved</> · <cyan>koi legacy</>\n")
+	cout.Printf("next: <cyan>koi report</> for every close candidate with its evidence, or act on one check: <cyan>koi fixed</> · <cyan>koi resolved</> · <cyan>koi comments</> · <cyan>koi exists</> · <cyan>koi legacy</> · <cyan>koi deprecated</>\n")
 	return nil
 }
 

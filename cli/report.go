@@ -19,11 +19,11 @@ import (
 	"github.com/katbyte/koi/lib/triage"
 )
 
-// ReportOpts configures the lens report.
+// ReportOpts configures the report.
 type ReportOpts struct {
 	Out    string // directory to write report.html into
 	WithAI bool   // AI-score every candidate and sort surest first
-	Limit  int    // cap candidates per lens, for cheap test runs (0 = all)
+	Limit  int    // cap candidates per check, for cheap test runs (0 = all)
 }
 
 // Span colour kinds, matching css classes in the report template.
@@ -65,14 +65,14 @@ type reportClass struct {
 	Kind  string
 }
 
-// reportSection is one lens: what it asks, what it found, and how to act on it.
+// reportSection is one check: what it asks, what it found, and how to act on it.
 type reportSection struct {
 	Slug        string
 	Question    string
 	Description string
 	Note        string // extra context line, e.g. what the rules protected
 	Command     string // the CLI commands that act on this section
-	Total       int    // every candidate the lens found
+	Total       int    // every candidate the check found
 	Classes     []reportClass
 	Items       []reportItem
 	Truncated   bool // --limit cut the item list short
@@ -108,7 +108,7 @@ func reportAIKind(c float64) string {
 	}
 }
 
-// limitFindings caps a lens's candidates for cheap test runs — applied BEFORE
+// limitFindings caps a check's candidates for cheap test runs — applied BEFORE
 // any AI judging so --limit 10 costs ten verdicts, not the full set.
 func limitFindings[T any](findings []T, limit int) ([]T, bool) {
 	if limit > 0 && len(findings) > limit {
@@ -149,12 +149,13 @@ func attachVerdict(item *reportItem, v *msMatchVerdict) {
 	item.AIReason = text.OneLine(v.Reason)
 }
 
-// Report writes report.html: every close candidate each lens sees (fixed,
-// resolved, legacy), with the evidence for why it is listed and links to
-// everything cited. --with-ai scores each candidate with the lens's judge
+// Report writes report.html: every close candidate each check sees (fixed,
+// resolved, comments, exists, legacy, deprecated), with the evidence for why it
+// is listed and links to
+// everything cited. --with-ai scores each candidate with the check's judge
 // (cached verdicts are reused) and sorts surest first; --limit N keeps test
 // runs cheap. The old analyse-based report and its decisions.csv are gone —
-// the lens apply modes are the review flow now.
+// the checks' apply modes are the review flow now.
 func (f *FlagData) Report(o ReportOpts) error {
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
@@ -203,7 +204,7 @@ func (f *FlagData) Report(o ReportOpts) error {
 		data.Total += s.Total
 	}
 	if data.Total == 0 {
-		cout.Printf("no close candidates in any lens — is the db fetched? (<cyan>koi fetch</>)\n")
+		cout.Printf("no close candidates in any check — is the db fetched? (<cyan>koi fetch</>)\n")
 		return nil
 	}
 
@@ -226,7 +227,7 @@ func (f *FlagData) Report(o ReportOpts) error {
 	return nil
 }
 
-// fixedReportSection builds the "a merged PR touches this" lens section.
+// fixedReportSection builds the "a merged PR touches this" check section.
 func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passFixed,
@@ -295,7 +296,7 @@ func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (re
 	return s, nil
 }
 
-// resolvedReportSection builds the "a linked issue was dealt with" lens section.
+// resolvedReportSection builds the "a linked issue was dealt with" check section.
 func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passResolved,
@@ -369,7 +370,7 @@ func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) 
 	return s, nil
 }
 
-// legacyReportSection builds the "this bug is old and unconfirmed" lens section.
+// legacyReportSection builds the "this bug is old and unconfirmed" check section.
 func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
 	col, err := f.collectLegacy(d, nil)
 	if err != nil {

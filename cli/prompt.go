@@ -74,7 +74,7 @@ func confirm(prompt string) (bool, error) {
 // askAccept is askClose's go-ahead — distinct from every msApply* code.
 const askAccept = -1
 
-// askClose is the per-candidate confirmation every close lens shares:
+// askClose is the per-candidate confirmation every close check shares:
 // (a)ccept the close, (s)kip it, (p)review the comment that would be posted,
 // (o)pen the issue, (q)uit the run. Preview and open loop back to the prompt so
 // the human answers after seeing what they asked for; with no comment to show

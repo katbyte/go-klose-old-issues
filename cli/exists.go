@@ -224,7 +224,7 @@ func (f *FlagData) Exists(o ExistsOpts) error {
 // resource exists in the docs today and arrived after the ask, or whose prose
 // names a property a later release shipped.
 // The third return is how many open ENHANCEMENT requests were considered —
-// the lens only ever looks at those, so every open issue is the wrong
+// the check only ever looks at those, so every open issue is the wrong
 // denominator to report findings against.
 func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFinding, counts map[string]int, enh int, err error) {
 	issues, err := d.OpenIssues()
@@ -302,7 +302,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 	reBacktickTok := regexp.MustCompile("`([a-z0-9_.]+)`")
 
 	// document frequency over enhancement prose, so generic property tokens
-	// can't flood the property class (same cap as the deprecated lens)
+	// can't flood the property class (same cap as the deprecated check)
 	type issueText struct {
 		prose  string
 		tokens map[string]bool
@@ -330,7 +330,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 		}
 		texts[i.Number] = issueText{prose: prose, tokens: set}
 	}
-	cout.Printf("<yellow>%d</> of them are enhancement requests <gray>(%d bug/question/doc, %d undetermined — koi classify would widen this lens)</>\n",
+	cout.Printf("<yellow>%d</> of them are enhancement requests <gray>(%d bug/question/doc, %d undetermined — koi classify would widen this check)</>\n",
 		len(enhancements), len(issues)-len(enhancements)-unclassified, unclassified)
 	df := map[string]int{}
 	for _, t := range texts {

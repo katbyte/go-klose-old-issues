@@ -8,8 +8,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 )
 
-// TestAskClose pins the one interactive path every close lens runs through:
-// accept must be distinguishable from every msApply* code (a lens comparing it
+// TestAskClose pins the one interactive path every close check runs through:
+// accept must be distinguishable from every msApply* code (a check comparing it
 // to the wrong one silently skips the close), and preview must loop back for a
 // real answer rather than deciding anything itself. Not parallel — it swaps the
 // package's stdin reader.

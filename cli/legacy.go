@@ -17,7 +17,7 @@ const (
 	passLegacy   = "legacy"
 	promptLegacy = "legacy-bug-close"
 
-	// signal kinds the legacy lens cares about (crash colours differently).
+	// signal kinds the legacy check cares about (crash colours differently).
 	signalKindBug   = "bug"
 	signalKindCrash = "crash"
 

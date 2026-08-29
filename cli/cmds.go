@@ -125,8 +125,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the lenses see (fixed, resolved, comments, legacy, deprecated)",
-		Long:          `One page listing every close candidate each lens sees, grouped by lens with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each lens and jumps to its section. --with-ai scores every candidate with the lens's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each lens for a cheap test run.`,
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, comments, exists, legacy, deprecated)",
+		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
 		SilenceErrors: true,
@@ -146,7 +146,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	reportCmd.Flags().String("out", "report", "directory to write report.html into")
 	reportCmd.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
-	reportCmd.Flags().Int("limit", 0, "cap candidates per lens for a cheap test run (0 = all)")
+	reportCmd.Flags().Int("limit", 0, "cap candidates per check for a cheap test run (0 = all)")
 	root.AddCommand(reportCmd)
 
 	root.AddCommand(&cobra.Command{
