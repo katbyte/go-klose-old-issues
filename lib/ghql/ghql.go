@@ -342,6 +342,91 @@ func (c *Client) OpenIssues(owner, name, cursor string) (*OpenIssuesPage, error)
 	}, nil
 }
 
+const openNumbersQuery = `
+query($owner: String!, $name: String!, $cursor: String) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+    issues(first: 100, after: $cursor, states: [OPEN]) {
+      totalCount
+      pageInfo { endCursor hasNextPage }
+      nodes { number }
+    }
+  }
+}`
+
+// OpenIssueNumbers pages just the number of every open issue. The repository
+// connection is ground truth — unlike search, whose index lags — so this is
+// what the local open set reconciles against. progress (nil ok) is called
+// after every page with the running and total counts.
+func (c *Client) OpenIssueNumbers(owner, name string, progress func(fetched, total int)) (map[int]bool, error) {
+	open := map[int]bool{}
+	cursor := ""
+	for {
+		var resp struct {
+			RateLimit  RateLimit `json:"rateLimit"`
+			Repository struct {
+				Issues struct {
+					TotalCount int      `json:"totalCount"`
+					PageInfo   PageInfo `json:"pageInfo"`
+					Nodes      []struct {
+						Number int `json:"number"`
+					} `json:"nodes"`
+				} `json:"issues"`
+			} `json:"repository"`
+		}
+		if err := c.Do(openNumbersQuery, repoVars(owner, name, cursor), &resp); err != nil {
+			return nil, fmt.Errorf("fetching open issue numbers: %w", err)
+		}
+		for _, n := range resp.Repository.Issues.Nodes {
+			open[n.Number] = true
+		}
+		if progress != nil {
+			progress(len(open), resp.Repository.Issues.TotalCount)
+		}
+		resp.RateLimit.WaitIfLow()
+		if !resp.Repository.Issues.PageInfo.HasNextPage {
+			return open, nil
+		}
+		cursor = resp.Repository.Issues.PageInfo.EndCursor
+	}
+}
+
+// IssuesByNumber fetches the given issues in full (same fields as the walks,
+// comments and crossrefs included), batched via aliased queries. Numbers that
+// no longer resolve are skipped. At most 10 per call — the issue selection is
+// heavy.
+func (c *Client) IssuesByNumber(owner, name string, numbers []int) ([]IssueNode, error) {
+	var out []IssueNode
+	for start := 0; start < len(numbers); start += 10 {
+		batch := numbers[start:min(start+10, len(numbers))]
+		var fields strings.Builder
+		for _, n := range batch {
+			fmt.Fprintf(&fields, "i%d: issue(number: %d) {%s}\n", n, n, issueFields)
+		}
+		query := fmt.Sprintf(`
+query($owner: String!, $name: String!) {
+  rateLimit { cost remaining resetAt }
+  repository(owner: $owner, name: $name) {
+%s  }
+}`, fields.String())
+
+		var resp struct {
+			RateLimit  RateLimit             `json:"rateLimit"`
+			Repository map[string]*IssueNode `json:"repository"`
+		}
+		if err := c.DoTolerant(query, repoVars(owner, name, ""), &resp); err != nil {
+			return nil, fmt.Errorf("fetching issues by number: %w", err)
+		}
+		for _, n := range batch {
+			if node := resp.Repository[fmt.Sprintf("i%d", n)]; node != nil {
+				out = append(out, *node)
+			}
+		}
+		resp.RateLimit.WaitIfLow()
+	}
+	return out, nil
+}
+
 const updatedIssuesQuery = `
 query($query: String!, $cursor: String) {
   rateLimit { cost remaining resetAt }

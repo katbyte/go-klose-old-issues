@@ -65,7 +65,7 @@
 <body>
 <header id="top">
   <h1>🎏 koi — {{ .Repo }}</h1>
-  <p>{{ .Total }} close candidates across {{ len .Sections }} lenses · generated {{ .GeneratedAt }}{{ if .WithAI }} · AI-scored, surest first{{ end }}</p>
+  <p>{{ .Total }} close candidates across {{ len .Sections }} lenses · generated {{ .GeneratedAt }}{{ if .WithAI }} · scored, surest first{{ end }}</p>
 </header>
 <main>
   <div class="toc">
@@ -94,7 +94,7 @@
         <h3><a href="{{ .URL }}" target="_blank" rel="noopener">#{{ .Number }}</a> {{ .Title }}</h3>
         <div class="meta">{{ .Meta }}</div>
         {{ range .Evidence }}<div class="ev">{{ range . }}{{ if .URL }}<a class="{{ .Kind }}" href="{{ .URL }}" target="_blank" rel="noopener">{{ .Text }}</a>{{ else }}<span class="{{ .Kind }}">{{ .Text }}</span>{{ end }} {{ end }}</div>{{ end }}
-        {{ if .AIScore }}<div class="ai"><span class="dim">AI:</span> <span class="score {{ .AIKind }}">{{ .AIScore }}</span> <span class="dim">—</span> {{ .AIReason }}</div>{{ end }}
+        {{ if .AIScore }}<div class="ai"><span class="score {{ .AIKind }}">{{ .AIScore }}</span> <span class="dim">—</span> {{ .AIReason }}</div>{{ end }}
       </div>
       {{ end }}
     </div>

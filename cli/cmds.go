@@ -135,7 +135,13 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			out, _ := cmd.Flags().GetString("out")
 			withAI, _ := cmd.Flags().GetBool("with-ai")
 			limit, _ := cmd.Flags().GetInt("limit")
-			return GetFlags().Report(ReportOpts{Out: out, WithAI: withAI, Limit: limit})
+			f := GetFlags()
+			// the report is what someone reviews and acts from, so its open set
+			// must be true — reconcile by default unless explicitly turned off
+			if !cmd.Flags().Changed("auto-reconcile") {
+				f.AutoReconcile = true
+			}
+			return f.Report(ReportOpts{Out: out, WithAI: withAI, Limit: limit})
 		},
 	}
 	reportCmd.Flags().String("out", "report", "directory to write report.html into")

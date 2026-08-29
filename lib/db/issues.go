@@ -272,6 +272,27 @@ func (d *DB) CrossrefsFor(number int) ([]Crossref, error) {
 	return refs, rows.Err()
 }
 
+// IssueStates returns every known issue number and its state — the local half
+// of the open-set reconcile against github.
+func (d *DB) IssueStates() (map[int]string, error) {
+	rows, err := d.Query("SELECT number, state FROM issues")
+	if err != nil {
+		return nil, fmt.Errorf("querying issue states: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	states := map[int]string{}
+	for rows.Next() {
+		var number int
+		var state string
+		if err := rows.Scan(&number, &state); err != nil {
+			return nil, fmt.Errorf("scanning issue state: %w", err)
+		}
+		states[number] = state
+	}
+	return states, rows.Err()
+}
+
 // CountIssues returns total and open issue counts.
 func (d *DB) CountIssues() (total, open int, err error) {
 	if err = d.QueryRow("SELECT COUNT(*), COALESCE(SUM(state = 'OPEN'), 0) FROM issues").Scan(&total, &open); err != nil {

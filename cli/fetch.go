@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/katbyte/koi/lib/clog"
@@ -13,8 +14,14 @@ import (
 )
 
 const (
-	metaFetchCursor = "fetch_cursor"
-	metaLastSync    = "last_sync"
+	metaFetchCursor   = "fetch_cursor"
+	metaLastSync      = "last_sync"
+	metaLastReconcile = "last_reconcile"
+
+	// reconcileEvery is how stale the open-set verification may get before a
+	// fetch redoes it. It exists to catch closes the search-index lag swallowed
+	// — a rare, slow drift — so back-to-back auto-fetches skip the ~33 requests.
+	reconcileEvery = 15 * time.Minute
 )
 
 // Fetch pulls issues (with all comments), cross-referenced PRs, and changelogs
@@ -76,6 +83,19 @@ func (f *FlagData) Fetch(full bool) error {
 		return err
 	}
 
+	// neither path above can be trusted with state flips: the full walk only
+	// sees OPEN issues, and the incremental rides the search API, whose index
+	// lags — a close landing in that lag window would be missed forever once
+	// the cursor moves past it. Reconciling against github's real open set
+	// catches those, but costs ~35 requests, so it's opt-in: the report turns
+	// it on by default (its accuracy IS the product), while apply paths are
+	// already guarded by a live-state check before every close.
+	if f.AutoReconcile {
+		if err := f.reconcileOpenSet(d, client, owner, name); err != nil {
+			return err
+		}
+	}
+
 	if err := f.fetchRemainingComments(d, client, owner, name); err != nil {
 		return err
 	}
@@ -101,7 +121,7 @@ func (f *FlagData) Fetch(full bool) error {
 	if err := f.ensureAnalysed(d); err != nil {
 		return err
 	}
-	cout.Printf("next: <cyan>koi review</> or <cyan>koi report</> to decide, <cyan>koi classify</> to spend AI on the undetermined\n")
+	cout.Printf("next: <cyan>koi report</> for every close candidate with its evidence, or act on a lens: <cyan>koi fixed</> · <cyan>koi resolved</> · <cyan>koi legacy</>\n")
 	return nil
 }
 
@@ -185,10 +205,72 @@ func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string
 		page.RateLimit.WaitIfLow()
 
 		if !page.PageInfo.HasNextPage {
+			if fetched == 0 {
+				cout.Printf("  <gray>nothing changed</>\n")
+			}
 			return nil
 		}
 		cursor = page.PageInfo.EndCursor
 	}
+}
+
+// reconcileOpenSet diffs the db's open set against the repository's actual
+// open issue numbers (the repository connection is ground truth; search is
+// not) and refetches every issue whose state disagrees: closes the sync
+// missed, reopens, and brand-new issues alike.
+func (f *FlagData) reconcileOpenSet(d *db.DB, client *ghql.Client, owner, name string) error {
+	if last, err := d.GetMeta(metaLastReconcile); err != nil {
+		return err
+	} else if at, terr := time.Parse(time.RFC3339, last); terr == nil && time.Since(at) < reconcileEvery {
+		cout.Printf("<gray>open set verified against github %dm ago — skipping</>\n", int(time.Since(at).Minutes()))
+		return nil
+	}
+
+	cout.Printf("verifying the local open set against github (numbers only, the sync's search index can lag)...\n")
+	live, err := client.OpenIssueNumbers(owner, name, func(fetched, total int) {
+		cout.Printf("  <gray>%d/%d open on github</>\n", fetched, total)
+	})
+	if err != nil {
+		return err
+	}
+	states, err := d.IssueStates()
+	if err != nil {
+		return err
+	}
+
+	var stale []int
+	for number, state := range states {
+		if state == db.IssueOpen && !live[number] {
+			stale = append(stale, number) // closed (or deleted) on github, open here
+		}
+	}
+	for number := range live {
+		if states[number] != db.IssueOpen {
+			stale = append(stale, number) // reopened or never fetched, closed/absent here
+		}
+	}
+	if len(stale) == 0 {
+		cout.Printf("  <gray>open set matches github (%d open)</>\n", len(live))
+		return d.SetMeta(metaLastReconcile, db.Now().Format(time.RFC3339))
+	}
+
+	slices.Sort(stale)
+	cout.Printf("<yellow>%d</> issue(s) out of sync with github (the search index lags) — refetching...\n", len(stale))
+	nodes, err := client.IssuesByNumber(owner, name, stale)
+	if err != nil {
+		return err
+	}
+	bundles := make([]db.IssueBundle, 0, len(nodes))
+	for i := range nodes {
+		bundles = append(bundles, nodeToBundle(&nodes[i]))
+	}
+	if err := d.SaveIssues(bundles, "", ""); err != nil {
+		return err
+	}
+	for i := range bundles {
+		printFetchedIssue(i+1, len(bundles), &bundles[i])
+	}
+	return d.SetMeta(metaLastReconcile, db.Now().Format(time.RFC3339))
 }
 
 // fetchRemainingComments pages in the tail comments of issues whose comment count

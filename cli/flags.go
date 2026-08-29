@@ -29,6 +29,7 @@ type FlagData struct {
 	DryRun        bool   `mapstructure:"dry-run"`
 	Yes           bool   `mapstructure:"yes"`
 	NoAutoFetch   bool   `mapstructure:"no-auto-fetch"`
+	AutoReconcile bool   `mapstructure:"auto-reconcile"`
 }
 
 type FlagsGitHub struct {
@@ -64,6 +65,7 @@ func configureFlags(root *cobra.Command) error {
 	pflags.Bool("dry-run", false, "show what would happen without changing anything on GitHub")
 	pflags.BoolP("yes", "y", false, "skip confirmation prompts")
 	pflags.Bool("no-auto-fetch", false, "never touch the network for freshness — run against the local db as-is")
+	pflags.Bool("auto-reconcile", false, "verify the local open set against github's real open issues during fetch — catches closes the search-index lag hides (report defaults this on; applies are guarded live instead)")
 
 	// Output Flags
 	pflags.Bool("quiet", false, "minimal machine-readable output")
@@ -85,6 +87,7 @@ func configureFlags(root *cobra.Command) error {
 		"dry-run":        {},
 		"yes":            {},
 		"no-auto-fetch":  {"KOI_NO_AUTO_FETCH"},
+		"auto-reconcile": {"KOI_AUTO_RECONCILE"},
 		"quiet":          {"KOI_OUTPUT_QUIET"},
 		"silent":         {"KOI_OUTPUT_SILENT"},
 		"verbose":        {},
