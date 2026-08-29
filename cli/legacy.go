@@ -34,12 +34,8 @@ func isRequestLabel(l string) bool { return requestLabels[strings.ToLower(l)] }
 
 // LegacyOpts configures the legacy audit and its apply modes.
 type LegacyOpts struct {
-	Majors          []int   // only bugs reported against these majors (empty = every legacy major)
-	Apply           bool    // close the candidates the rules cleared, no AI
-	ApplyWithAI     bool    // AI reads issue + comments and scores, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and likely-stale ones (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Majors     []int // only bugs reported against these majors (empty = every legacy major)
+	applyModes       // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // legacyFinding is one closeable legacy bug: the issue, its signals, and the
@@ -454,7 +450,7 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 
 	if v != nil {
 		fdg.action.Confidence = v.Confidence
-		fdg.action.Evidence["ai"] = v.Reason
+		fdg.action.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(fdg.action); err != nil {
 		return msApplyFailed, err

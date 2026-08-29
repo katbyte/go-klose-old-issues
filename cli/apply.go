@@ -193,7 +193,7 @@ func (f *FlagData) Reopen(number int, comment string) error {
 	if a, err := d.GetAction(number); err != nil {
 		return err
 	} else if a != nil {
-		if err := d.MarkApplied(a.ID, "reopened", ""); err != nil {
+		if err := d.MarkApplied(a.ID, db.StatusReopened, ""); err != nil {
 			return err
 		}
 	}

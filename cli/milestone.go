@@ -35,16 +35,12 @@ const (
 
 // MilestoneOpts configures the milestone audit.
 type MilestoneOpts struct {
-	SkipScan        bool    // audit existing data without re-scanning
-	Rescan          bool    // force a full re-walk
-	Apply           bool    // set the determined milestones (missing and mismatched)
-	ApplyWithAI     bool    // AI scores each issue↔evidence pairing, the human confirms each set
-	ApplyWithAIAuto bool    // AI scores and likely matches (≥ Threshold) apply without asking
-	Threshold       float64 // auto-apply confidence floor (0 = the default, msMatchThreshold)
-	Max             int     // cap on applies per run
-	CSV             string  // write the full audit to this csv ("" = don't)
-	Bucket          string  // list every finding in this bucket instead of the 10-per-bucket sample
-	Link            string  // determine milestones from this evidence class only ("" = strongest available)
+	SkipScan   bool   // audit existing data without re-scanning
+	Rescan     bool   // force a full re-walk
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	CSV        string // write the full audit to this csv ("" = don't)
+	Bucket     string // list every finding in this bucket instead of the 10-per-bucket sample
+	Link       string // determine milestones from this evidence class only ("" = strongest available)
 }
 
 // Milestone audits every issue in the repo — open AND closed — against the

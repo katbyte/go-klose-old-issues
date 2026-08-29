@@ -126,7 +126,7 @@ applies everything at or above the threshold without asking (bare flag = 0.70).
 
 ## What closes, what keeps
 
-Close proposals (each with its own comment template in `assets/templates/`):
+Close proposals (each with its own comment template in `assets/comments/`):
 `legacy-bug` (reported against v1–v3, no recent repro claim), `fixed-merged-pr`
 (a merged PR references it), `no-response`, `stale-question`, `upstream-core`,
 `retired-service`.

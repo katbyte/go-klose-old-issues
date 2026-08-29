@@ -106,12 +106,8 @@ func existsArgAsked(arg string, words map[string]bool) bool {
 
 // ExistsOpts configures the exists audit and its apply modes.
 type ExistsOpts struct {
-	Link            string  // resource | property ("" = both classes)
-	Apply           bool    // close the listed requests as completed, no AI
-	ApplyWithAI     bool    // AI judges whether what shipped delivers the ask, the human confirms
-	ApplyWithAIAuto bool    // AI scores and delivered asks (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // resource | property ("" = both classes)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // existsEvidence is one shipped thing that appears to deliver the ask.
@@ -764,7 +760,7 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return msApplyFailed, err

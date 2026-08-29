@@ -126,9 +126,23 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			return f.Report(ReportOpts{Out: out, WithAI: withAI, Limit: limit})
 		},
 	}
-	reportCmd.Flags().String("out", "report", "directory to write report.html into")
+	reportCmd.PersistentFlags().String("out", "report", "directory to write the report files into")
 	reportCmd.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
 	reportCmd.Flags().Int("limit", 0, "cap candidates per check for a cheap test run (0 = all)")
+	reportCmd.AddCommand(&cobra.Command{
+		Use:           "actions-taken",
+		Short:         "writes the ledger of everything koi has closed, with the AI decision behind each one",
+		Long:          `Writes actions-taken.html and actions-taken.csv: every issue koi has acted on — closed, failed, skipped as stale, or reopened — grouped by why it was closed. Each entry carries the evidence the check recorded, who decided it, and the AI's score, reasoning, and model. Reads the local db only; nothing is fetched and nothing on GitHub is touched.`,
+		Aliases:       []string{"actions"},
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{"db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			out, _ := cmd.Flags().GetString("out")
+			return GetFlags().ActionsTaken(out)
+		},
+	})
 	root.AddCommand(reportCmd)
 
 	root.AddCommand(&cobra.Command{
@@ -185,11 +199,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			var o MilestoneOpts
 			o.SkipScan, _ = cmd.Flags().GetBool("skip-scan")
 			o.Rescan, _ = cmd.Flags().GetBool("rescan")
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			o.CSV, _ = cmd.Flags().GetString("csv")
 			o.Bucket, _ = cmd.Flags().GetString("bucket")
 			o.Link = link
@@ -208,11 +218,9 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 	milestoneCmd.PersistentFlags().Bool("skip-scan", false, "audit the existing scan data without re-fetching")
 	milestoneCmd.PersistentFlags().Bool("rescan", false, "force a full re-walk instead of an incremental scan")
-	milestoneCmd.PersistentFlags().Bool("apply", false, "set the determined milestones on closed issues — filling missing ones and correcting mismatches")
-	milestoneCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each issue↔evidence pairing, you confirm each set interactively")
-	milestoneCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-apply pairings the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	milestoneCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	milestoneCmd.PersistentFlags().Int("max", 200, "maximum milestone sets to apply this run")
+	addApplyFlags(milestoneCmd,
+		"set the determined milestones on closed issues — filling missing ones and correcting mismatches",
+		"the AI scores each issue↔evidence pairing", "milestone sets", 200)
 	milestoneCmd.PersistentFlags().String("csv", "", "write the full audit findings to this csv file")
 	milestoneCmd.PersistentFlags().String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
 	for _, sub := range []struct{ use, link, short string }{
@@ -255,11 +263,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o FixedOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Fixed(o)
 		}
 	}
@@ -272,11 +276,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          fxdRunE(""),
 	}
-	fixedCmd.PersistentFlags().Bool("apply", false, "comment and close everything listed as completed")
-	fixedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each pairing, you confirm each close interactively")
-	fixedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close pairings the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	fixedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	fixedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(fixedCmd, "comment and close everything listed as completed",
+		"the AI scores each issue↔PR pairing", "closes", 50)
 	for _, sub := range []struct{ use, link, short string }{
 		{"fixed-by", classFixedBy, "only issues a merged PR references with a closing keyword (strongest evidence)"},
 		{"mentioned-by", classMentionedBy, "only issues a merged PR merely mentions (the AI earns its keep here)"},
@@ -297,11 +298,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o ResolvedOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Resolved(o)
 		}
 	}
@@ -314,11 +311,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          rsRunE(""),
 	}
-	resolvedCmd.PersistentFlags().Bool("apply", false, "comment and close everything listed as a duplicate")
-	resolvedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI compares both issues and scores, you confirm each close")
-	resolvedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close duplicates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	resolvedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	resolvedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(resolvedCmd, "comment and close everything listed as a duplicate",
+		"the AI compares both issues and scores", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{"completed", "only issues whose linked issue was resolved (strongest evidence)"},
 		{"duplicate", "only issues whose linked issue was itself closed as a duplicate"},
@@ -346,20 +340,13 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o LegacyOpts
 			o.Majors, _ = cmd.Flags().GetIntSlice("major")
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Legacy(o)
 		},
 	}
 	legacyCmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
-	legacyCmd.Flags().Bool("apply", false, "comment and close every rules-cleared candidate as not planned")
-	legacyCmd.Flags().Bool("apply-with-ai", false, "the AI scores each candidate from issue + comments, you confirm each close")
-	legacyCmd.Flags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	legacyCmd.Flags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	legacyCmd.Flags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(legacyCmd, "comment and close every rules-cleared candidate as not planned",
+		"the AI scores each candidate from issue + comments", "closes", 50)
 	root.AddCommand(legacyCmd)
 
 	depRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
@@ -367,11 +354,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o DeprecatedOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Deprecated(o)
 		}
 	}
@@ -384,11 +367,9 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          depRunE(""),
 	}
-	deprecatedCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as not planned (the AI-less path — incidental mentions are in the list, prefer --apply-with-ai)")
-	deprecatedCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores whether each issue is truly moot, you confirm each close")
-	deprecatedCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	deprecatedCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	deprecatedCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(deprecatedCmd,
+		"comment and close every listed issue as not planned (the AI-less path — incidental mentions are in the list, prefer --apply-with-ai)",
+		"the AI scores whether each issue is truly moot", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{"resource", "only issues leaning on a removed or deprecated resource/data source (strongest evidence)"},
 		{"property", "only issues leaning on a removed or deprecated property of a living resource"},
@@ -409,11 +390,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o CommentsOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Comments(o)
 		}
 	}
@@ -426,11 +403,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          cmtRunE(""),
 	}
-	commentsCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as completed")
-	commentsCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI scores each claim in thread context, you confirm each close")
-	commentsCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close candidates the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	commentsCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	commentsCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(commentsCmd, "comment and close every listed issue as completed",
+		"the AI scores each claim in thread context", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classMaintainerSays, "only issues where a maintainer's comment says it can close (strongest evidence)"},
 		{classCommunitySays, "only issues where the community says it can close (the AI earns its keep here)"},
@@ -451,11 +425,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o ExistsOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Exists(o)
 		}
 	}
@@ -468,11 +438,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          exsRunE(""),
 	}
-	existsCmd.PersistentFlags().Bool("apply", false, "comment and close every listed request as completed")
-	existsCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI judges whether what shipped delivers each ask, you confirm each close")
-	existsCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close requests the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	existsCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	existsCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(existsCmd, "comment and close every listed request as completed",
+		"the AI judges whether what shipped delivers each ask", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classExistsResource, "only requests whose asked-for resource/data source now exists (strongest evidence)"},
 		{classExistsProperty, "only requests whose asked-for property shipped in a later release"},
@@ -493,11 +460,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			var o DuplicatesOpts
 			o.Link = link
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.ApplyWithAI, _ = cmd.Flags().GetBool("apply-with-ai")
-			o.ApplyWithAIAuto = cmd.Flags().Changed("apply-with-ai-auto")
-			o.Threshold, _ = cmd.Flags().GetFloat64("apply-with-ai-auto")
-			o.Max, _ = cmd.Flags().GetInt("max")
+			o.applyModes = applyModesFrom(cmd)
 			return GetFlags().Duplicates(o)
 		}
 	}
@@ -511,11 +474,8 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          dupRunE(""),
 	}
-	duplicatesCmd.PersistentFlags().Bool("apply", false, "comment and close every listed issue as a duplicate")
-	duplicatesCmd.PersistentFlags().Bool("apply-with-ai", false, "the AI compares both issues and scores the match, you confirm each close")
-	duplicatesCmd.PersistentFlags().Float64("apply-with-ai-auto", 0.7, "auto-close issues the AI scores at or above this confidence (bare flag = 0.70, or --apply-with-ai-auto=0.85)")
-	duplicatesCmd.PersistentFlags().Lookup("apply-with-ai-auto").NoOptDefVal = "0.7"
-	duplicatesCmd.PersistentFlags().Int("max", 50, "maximum closes to apply this run")
+	addApplyFlags(duplicatesCmd, "comment and close every listed issue as a duplicate",
+		"the AI compares both issues and scores the match", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classDupLinked, "only issues that reference the older issue (strongest evidence)"},
 		{classDupSimilar, "only issues nobody linked, matched on near-identical titles"},

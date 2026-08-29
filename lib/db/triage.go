@@ -138,23 +138,52 @@ func (d *DB) SaveVerdict(v *Verdict) error {
 	return nil
 }
 
-// GetVerdict returns the cached verdict for (issue, pass), or nil.
-func (d *DB) GetVerdict(number int, pass string) (*Verdict, error) {
-	row := d.QueryRow(
-		"SELECT issue_number, pass, prompt_hash, model, verdict, confidence, created_at FROM ai_verdicts WHERE issue_number = ? AND pass = ?",
-		number, pass)
+const verdictCols = "issue_number, pass, prompt_hash, model, verdict, confidence, created_at"
 
+func scanVerdict(row interface{ Scan(...any) error }) (*Verdict, error) {
 	var v Verdict
 	var created string
-	err := row.Scan(&v.IssueNumber, &v.Pass, &v.PromptHash, &v.Model, &v.Verdict, &v.Confidence, &created)
+	if err := row.Scan(&v.IssueNumber, &v.Pass, &v.PromptHash, &v.Model, &v.Verdict, &v.Confidence, &created); err != nil {
+		return nil, err
+	}
+	v.CreatedAt = fromDBTime(created)
+	return &v, nil
+}
+
+// GetVerdict returns the cached verdict for (issue, pass), or nil.
+func (d *DB) GetVerdict(number int, pass string) (*Verdict, error) {
+	row := d.QueryRow("SELECT "+verdictCols+" FROM ai_verdicts WHERE issue_number = ? AND pass = ?", number, pass)
+	v, err := scanVerdict(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("reading %s verdict for #%d: %w", pass, number, err)
 	}
-	v.CreatedAt = fromDBTime(created)
-	return &v, nil
+	return v, nil
+}
+
+// Verdicts returns every cached verdict keyed by pass, then issue number — what
+// the actions report needs to name the model behind each close.
+func (d *DB) Verdicts() (map[string]map[int]*Verdict, error) {
+	rows, err := d.Query("SELECT " + verdictCols + " FROM ai_verdicts")
+	if err != nil {
+		return nil, fmt.Errorf("querying verdicts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	byPass := map[string]map[int]*Verdict{}
+	for rows.Next() {
+		v, err := scanVerdict(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning verdict: %w", err)
+		}
+		if byPass[v.Pass] == nil {
+			byPass[v.Pass] = map[int]*Verdict{}
+		}
+		byPass[v.Pass][v.IssueNumber] = v
+	}
+	return byPass, rows.Err()
 }
 
 // Action statuses.
@@ -166,6 +195,7 @@ const (
 	StatusFailed   = "failed"
 	StatusStale    = "stale"
 	StatusSkipped  = "skipped"
+	StatusReopened = "reopened"
 )
 
 // Action kinds.

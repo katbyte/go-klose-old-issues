@@ -793,7 +793,7 @@ func (f *FlagData) deprecatedReportSection(d *db.DB, o ReportOpts, now time.Time
 }
 
 func writeReportHTML(path string, data *reportData) error {
-	tmpl, err := template.New("report").Parse(assets.ReportHTML())
+	tmpl, err := template.New("report").Parse(assets.Styles() + assets.ReportHTML())
 	if err != nil {
 		return fmt.Errorf("parsing report template: %w", err)
 	}

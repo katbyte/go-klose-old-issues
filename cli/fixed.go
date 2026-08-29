@@ -40,12 +40,8 @@ const (
 
 // FixedOpts configures the fixed audit and its apply modes.
 type FixedOpts struct {
-	Link            string  // fixed-by | mentioned-by ("" = both)
-	Apply           bool    // close the listed issues (comment + close as completed), no AI
-	ApplyWithAI     bool    // AI scores each pairing, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and likely matches (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // fixed-by | mentioned-by ("" = both)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // fixedFinding is one open issue with the merged same-repo PRs referencing it.
@@ -458,7 +454,7 @@ func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *msMatchVerdi
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return err

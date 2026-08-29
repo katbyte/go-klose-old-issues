@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🎏 koi actions — {{ .Repo }}</title>
+{{ template "styles" . }}
+{{ template "actions-styles" . }}
+</head>
+<body>
+<header id="top">
+  <h1>🎏 koi actions taken — {{ .Repo }}</h1>
+  <p>{{ .Total }} issues acted on{{ if .Span }} between {{ .Span }}{{ end }} · generated {{ .GeneratedAt }}</p>
+</header>
+<main>
+  <div class="tally">
+    <div class="card"><b>{{ .Total }}</b><span>actions taken</span></div>
+    <div class="card"><b>{{ .Judged }}</b><span>AI-judged</span></div>
+    {{ if .AvgConfidence }}<div class="card"><b>{{ .AvgConfidence }}</b><span>mean confidence</span></div>{{ end }}
+    {{ range .Models }}<div class="card"><b>{{ .Count }}</b><span>{{ .Name }}</span></div>{{ end }}
+  </div>
+
+  <div class="toc">
+    {{ range .Sections }}
+    <a class="lens" href="#{{ .Slug }}">
+      <h2><span class="n">koi {{ .Check }}</span> <span class="count">— {{ len .Items }} {{ .Verb }}</span></h2>
+      <p class="q">{{ .Reason }} → closed as {{ .StateReason }}</p>
+      {{ range .Classes }}{{ if .Count }}<span class="pill"><span class="{{ .Kind }}">{{ .Name }}</span> <span class="c">{{ .Count }}</span></span>{{ end }}{{ end }}
+    </a>
+    {{ end }}
+  </div>
+
+  {{ range .Sections }}
+  <section id="{{ .Slug }}">
+    <h2><span class="n">koi {{ .Check }}</span> <span class="count">— {{ len .Items }} {{ .Verb }}</span></h2>
+    <p class="q">{{ .Reason }} → closed as {{ .StateReason }}</p>
+    <p class="cmd">undo one with <code>koi reopen &lt;number&gt;</code></p>
+    <div class="items">
+      {{ range .Items }}
+      <div class="item">
+        <h3><span class="t"><a href="{{ .URL }}" target="_blank" rel="noopener">#{{ .Number }}</a> {{ .Title }}</span>
+          <span class="state {{ .StatusKind }}">{{ .Status }}</span></h3>
+        <div class="meta">closed as {{ .StateReason }} · {{ .AppliedAt }}{{ if .DecidedBy }} · by {{ .DecidedBy }}{{ end }}{{ if .Model }} · judged by {{ .Model }}{{ end }} · template {{ .Template }}</div>
+        {{ if .Evidence }}<div class="chips">{{ range .Evidence }}<span class="chip"><b>{{ .Key }}</b> {{ .Value }}</span>{{ end }}</div>{{ end }}
+        {{ if .AIScore }}<div class="ai"><span class="score {{ .AIKind }}">{{ .AIScore }}</span> <span class="dim">—</span> {{ .AIReason }}</div>{{ end }}
+        {{ if .Error }}<div class="ev"><span class="bad">{{ .Error }}</span></div>{{ end }}
+      </div>
+      {{ end }}
+    </div>
+    <a class="top" href="#top">↑ back to top</a>
+  </section>
+  {{ end }}
+</main>
+</body>
+</html>

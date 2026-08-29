@@ -33,12 +33,8 @@ const (
 
 // ResolvedOpts configures the resolved audit and its apply modes.
 type ResolvedOpts struct {
-	Link            string  // completed | duplicate | not-planned ("" = every class)
-	Apply           bool    // close the listed issues as duplicates, no AI
-	ApplyWithAI     bool    // AI compares both issues and scores, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and likely duplicates (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // completed | duplicate | not-planned ("" = every class)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // resolvedTarget is one closed linked issue with everything known about how it
@@ -465,7 +461,7 @@ func (f *FlagData) closeOneResolved(d *db.DB, repo gh.Repo, fdg *resolvedFinding
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return msApplyFailed, err

@@ -67,12 +67,8 @@ var commentsNegation = regexp.MustCompile(`(?:can'?t|can\s?not|cannot|shouldn'?t
 
 // CommentsOpts configures the closeable audit and its apply modes.
 type CommentsOpts struct {
-	Link            string  // maintainer-says | community-says ("" = both)
-	Apply           bool    // close the listed issues, no AI
-	ApplyWithAI     bool    // AI reads the thread and scores each claim, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and credible claims (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // maintainer-says | community-says ("" = both)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // commentsClaim is one comment asserting the issue can be closed.
@@ -510,7 +506,7 @@ func (f *FlagData) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return msApplyFailed, err

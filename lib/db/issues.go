@@ -293,6 +293,27 @@ func (d *DB) IssueStates() (map[int]string, error) {
 	return states, rows.Err()
 }
 
+// IssueTitles returns every known issue number and its title — the light half
+// of the issues table, for reports that only need to name an issue.
+func (d *DB) IssueTitles() (map[int]string, error) {
+	rows, err := d.Query("SELECT number, title FROM issues")
+	if err != nil {
+		return nil, fmt.Errorf("querying issue titles: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	titles := map[int]string{}
+	for rows.Next() {
+		var number int
+		var title string
+		if err := rows.Scan(&number, &title); err != nil {
+			return nil, fmt.Errorf("scanning issue title: %w", err)
+		}
+		titles[number] = title
+	}
+	return titles, rows.Err()
+}
+
 // CountIssues returns total and open issue counts.
 func (d *DB) CountIssues() (total, open int, err error) {
 	if err = d.QueryRow("SELECT COUNT(*), COALESCE(SUM(state = 'OPEN'), 0) FROM issues").Scan(&total, &open); err != nil {

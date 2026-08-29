@@ -37,12 +37,8 @@ const (
 
 // DeprecatedOpts configures the deprecated audit and its apply modes.
 type DeprecatedOpts struct {
-	Link            string  // resource | property ("" = both types)
-	Apply           bool    // close the listed issues as not planned, no AI
-	ApplyWithAI     bool    // AI scores whether each issue is truly moot, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and likely-moot ones (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // resource | property ("" = both types)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // deprecatedMatch is one removal the issue leans on, with the issue line that
@@ -543,7 +539,7 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return msApplyFailed, err

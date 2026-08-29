@@ -54,12 +54,8 @@ var dupWord = regexp.MustCompile(`[a-z][a-z0-9_]*`)
 
 // DuplicatesOpts configures the duplicates audit and its apply modes.
 type DuplicatesOpts struct {
-	Link            string  // linked | similar ("" = both classes)
-	Apply           bool    // close the listed issues as duplicates, no AI
-	ApplyWithAI     bool    // AI compares both issues and scores, the human confirms each close
-	ApplyWithAIAuto bool    // AI scores and likely duplicates (>= Threshold) close without asking
-	Threshold       float64 // auto-close confidence floor (0 = the default)
-	Max             int     // cap on closes per run
+	Link       string // linked | similar ("" = both classes)
+	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // duplicateTarget is the older open issue this one appears to duplicate.
@@ -665,7 +661,7 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
-		a.Evidence["ai"] = v.Reason
+		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
 		return msApplyFailed, err
