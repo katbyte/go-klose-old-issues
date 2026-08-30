@@ -8,21 +8,17 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
-	"github.com/katbyte/koi/lib/triage"
+	"github.com/katbyte/koi/lib/issue"
 )
-
-// ReviewOpts filters which proposals are reviewed.
-type ReviewOpts struct {
-	Reason        string
-	Action        string // close (default) | keep | human | "" for all
-	MinConfidence float64
-	Limit         int
-	ApproveAll    bool
-}
 
 // Review walks proposals one card at a time. Every card carries the full
 // decision context; a decision should take seconds, not clicks.
-func (f *FlagData) Review(o ReviewOpts) error {
+func (f *FlagData) Review() error {
+	o := f.Cmd.Review
+	if o.Action == "all" {
+		o.Action = ""
+	}
+
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -71,7 +67,7 @@ func (f *FlagData) Review(o ReviewOpts) error {
 
 	prompt:
 		for {
-			ans, err := promptKey(fmt.Sprintf(
+			ans, err := issue.PromptKey(fmt.Sprintf(
 				"  <gray>[a:%d r:%d s:%d]</> <green>(a)</>pprove <red>(n)</>reject (s)kip (e)dit (c)omments (b)ody (t)emplate (o)pen (u)ndo (?)help (q)uit <gray>></> ",
 				approved, rejected, skipped))
 			if err != nil {
@@ -187,12 +183,12 @@ func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
 	reasons := []struct {
 		reason, stateReason string
 	}{
-		{triage.ReasonLegacyBug, triage.StateNotPlanned},
-		{triage.ReasonFixedMergedPR, triage.StateCompleted},
-		{triage.ReasonNoResponse, triage.StateNotPlanned},
-		{triage.ReasonStaleQuestion, triage.StateNotPlanned},
-		{triage.ReasonUpstreamCore, triage.StateNotPlanned},
-		{triage.ReasonRetiredService, triage.StateNotPlanned},
+		{issue.ReasonLegacyBug, issue.StateNotPlanned},
+		{issue.ReasonFixedMergedPR, issue.StateCompleted},
+		{issue.ReasonNoResponse, issue.StateNotPlanned},
+		{issue.ReasonStaleQuestion, issue.StateNotPlanned},
+		{issue.ReasonUpstreamCore, issue.StateNotPlanned},
+		{issue.ReasonRetiredService, issue.StateNotPlanned},
 	}
 
 	cout.Printf("  close as:")
@@ -201,7 +197,7 @@ func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
 	}
 	cout.Printf("  or <cyan>k</>) keep <cyan>h</>) human <cyan>a</>) abort\n")
 
-	ans, err := promptInput("  <gray>></> ")
+	ans, err := issue.PromptInput("  <gray>></> ")
 	if err != nil {
 		return err
 	}
@@ -213,7 +209,7 @@ func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
 	case "k":
 		return d.ReviseAction(a.ID, db.ActionKeep, "human-keep", "", "")
 	case "h":
-		return d.ReviseAction(a.ID, db.ActionHuman, triage.ReasonUndetermined, "", "")
+		return d.ReviseAction(a.ID, db.ActionHuman, issue.ReasonUndetermined, "", "")
 	default:
 		n := int(ans[0] - '0')
 		if n < 1 || n > len(reasons) {
@@ -230,7 +226,7 @@ func (f *FlagData) previewTemplate(card *cardContext) {
 		cout.Printf("  <gray>no template: not a close proposal</>\n")
 		return
 	}
-	text, err := renderCloseComment(f, card.issue, card.signals, card.action)
+	text, err := issue.RenderCloseComment(card.issue, card.signals, card.action, f.CurrentMajor)
 	if err != nil {
 		cout.Errorf("  <red>rendering template:</> %v\n", err)
 		return
@@ -248,7 +244,7 @@ func (f *FlagData) approveAll(d *db.DB, actions []*db.Action) error {
 	printCounts(counts)
 
 	if !f.Yes {
-		ok, err := confirm(fmt.Sprintf("approve all %d?", len(actions)))
+		ok, err := issue.Confirm(fmt.Sprintf("approve all %d?", len(actions)))
 		if err != nil {
 			return err
 		}

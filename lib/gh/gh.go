@@ -1,6 +1,7 @@
-// Package gh is a minimal GitHub REST client for the handful of mutations koi
-// performs (comment, close, reopen, label) plus the pre-mutation staleness check.
-// Reads are done in bulk via lib/ghql; this package deliberately stays tiny.
+// Package gh talks to GitHub both ways: a minimal REST client (this file) for
+// the handful of mutations koi performs (comment, close, reopen, milestone,
+// label) plus the pre-mutation staleness check, and a GraphQL v4 client (the
+// graphql*.go files) for the bulk reads everything else rides on.
 package gh
 
 import (

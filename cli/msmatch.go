@@ -1,20 +1,16 @@
 package cli
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/katbyte/koi/assets"
-	"github.com/katbyte/koi/lib/ai"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -28,81 +24,39 @@ const (
 	bulletRunesForAI = 300
 	// full-text budgets: accuracy beats cost here, so the model sees generous
 	// slices of the issue and each evidence PR.
-	// how many batches are kept in flight ahead of the one being reviewed. One
-	// is enough when reading each card takes longer than a batch; two keeps a
-	// fast reviewer off the AI's critical path, at the cost of throwing away
-	// that much judgement if the run is quit early.
-	msJudgePrefetch = 2
-
 	msIssueBodyRunes = 3000
 	msPRBodyRunes    = 2000
 
 	// how much of a single comment goes into a judge block
 	commentRunesFor = 400
-
-	// how many batches may fail in a row before a run gives up on the AI
-	maxConsecFails = 3
-	// msMatchBatchSize is pairings per AI call — blocks carry full issue and PR
-	// bodies, so batches stay small in favour of judgement quality.
-	msMatchBatchSize = 10
 )
 
-// msMatchVerdict is the AI's judgement of one issue↔evidence pairing: how likely
-// the changelog evidence actually resolves the issue, rjg-style.
-type msMatchVerdict struct {
-	Number     int     `json:"number"`
-	Confidence float64 `json:"confidence"`
-	Reason     string  `json:"reason"`
+// judgeBlocks runs the shared judge (issue.Judge) configured from the flags.
+// The model canonicalises inside NewJudge; it is copied back so every later
+// display matches the identity verdicts are cached under.
+func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []issue.JudgeItem,
+	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
+) (map[int]*issue.Verdict, error) {
+	if err := f.RequireAI(); err != nil {
+		return nil, err
+	}
+	j := issue.NewJudge(d, f.AI.Cmd, f.AI.Model, time.Duration(f.AI.TimeoutMinutes)*time.Minute)
+	f.AI.Model = j.Model()
+	return j.Blocks(pass, promptText, items, onReady, onBatch)
 }
 
-// msJudgeTarget is one finding queued for AI judgement.
-type msJudgeTarget struct {
-	finding *msFinding
-	block   string
-	hash    string
-	verdict *msMatchVerdict // from cache, or filled as batches come back
-}
-
-// msJudgedBatch is one AI call's raw result, delivered over a channel by the
-// background judge.
-type msJudgedBatch struct {
-	raw   string
-	model string // the model that answered, when the CLI disclosed it
-	err   error
-}
-
-// applyMilestonesWithAI is --apply-with-ai: every issue↔evidence pairing is
-// scored by the AI CLI, and only likely matches (≥ threshold) get their
-// milestone set. Judging and applying are pipelined — while batch N's results
-// are reviewed and applied, batch N+1 is already off being scored in the
-// background, and the confirmation prompt comes right after batch 1 so answer
-// time overlaps judging too. Verdicts cache in ai_verdicts so re-runs (and the
-// real apply after a dry-run) only judge what changed.
+// applyMilestonesWithAI is --apply-with-ai[-auto], pipelined on the shared
+// judge: every issue↔evidence pairing is scored by the AI CLI, and only likely
+// matches (≥ threshold) get their milestone set. While batch N's results are
+// reviewed and applied, batch N+1 is already off being scored in the
+// background, and auto mode's confirmation prompt comes right after batch 1 so
+// answer time overlaps judging too. Verdicts cache in ai_verdicts so re-runs
+// (and the real apply after a dry-run) only judge what changed.
 func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
 	promptText, err := assets.Prompt(promptMSMatch)
 	if err != nil {
 		return err
 	}
-
-	// resolve the canonical model first: a verdict is a function of the model
-	// that produced it, so the cache must not serve one model's opinions to
-	// another — an aliased --ai-model (fable vs claude-fable-5) canonicalises
-	// here before the cache comparison
-	if err := f.RequireAI(); err != nil {
-		return err
-	}
-	a := f.NewAI()
-	switch resolved, rerr := a.ResolveModel(); {
-	case rerr != nil:
-		cout.Errorf("<yellow>WARNING:</> resolving the AI model: %v — continuing as %q\n", rerr, aiIdent(f.AI.Cmd, f.AI.Model))
-	case resolved != "":
-		if f.AI.Model != "" && f.AI.Model != resolved {
-			cout.Printf("<gray>model %s resolves to %s</>\n", f.AI.Model, resolved)
-		}
-		f.AI.Model = resolved
-		a = f.NewAI()
-	}
-	ident := aiIdent(f.AI.Cmd, f.AI.Model)
 
 	// the model judges on full text: fetch title + body for every candidate
 	// issue and its evidence PRs not yet cached
@@ -114,28 +68,16 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 		return err
 	}
 
-	// build every target up front, pulling cached verdicts — a hit needs the
-	// same evidence AND the same model
-	var cachedTargets, uncached []*msJudgeTarget
+	items := make([]issue.JudgeItem, 0, len(todo))
+	byNumber := map[int]*msFinding{}
 	for i := range todo {
 		fdg := &todo[i]
 		block, berr := f.msMatchBlock(d, fdg, texts)
 		if berr != nil {
 			return berr
 		}
-		t := &msJudgeTarget{finding: fdg, block: block, hash: msMatchHash(promptText, block)}
-
-		if v, err := d.GetVerdict(fdg.issue.Number, passMSMatch); err != nil {
-			return err
-		} else if v != nil && v.PromptHash == t.hash && v.Model == ident {
-			var mv msMatchVerdict
-			if json.Unmarshal([]byte(v.Verdict), &mv) == nil {
-				t.verdict = &mv
-				cachedTargets = append(cachedTargets, t)
-				continue
-			}
-		}
-		uncached = append(uncached, t)
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: block})
+		byNumber[fdg.issue.Number] = fdg
 	}
 
 	auto := o.ApplyWithAIAuto
@@ -146,10 +88,6 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	// interactive: the AI's score advises, the human confirms every set
 	interactive := !auto && !f.DryRun
 
-	model := f.AI.Model
-	if model == "" {
-		model = "CLI default"
-	}
 	mode := "<gray>you confirm each set</>"
 	switch {
 	case f.DryRun:
@@ -157,8 +95,7 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	case auto:
 		mode = fmt.Sprintf("<gray>auto-applying ≥</> <green>%.2f</>", threshold)
 	}
-	cout.Printf("AI match check on <yellow>%d</> candidates in %s: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</> <gray>·</> %s\n",
-		len(todo), f.repoTag(), len(uncached), len(cachedTargets), f.AI.Cmd, model, mode)
+	cout.Printf("AI match check on <yellow>%d</> candidates in %s <gray>·</> %s\n", len(todo), f.repoTag(), mode)
 
 	repo, err := f.NewRepo()
 	if err != nil {
@@ -166,35 +103,13 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	}
 	throttle := newThrottle()
 
-	// launch fires one batch's AI call in the background; parsing and verdict
-	// persistence stay on the main goroutine at harvest time
-	launch := func(start int) <-chan msJudgedBatch {
-		batch := uncached[start:min(start+msMatchBatchSize, len(uncached))]
-		var prompt strings.Builder
-		prompt.WriteString(promptText)
-		for _, t := range batch {
-			prompt.WriteString("\n")
-			prompt.WriteString(t.block)
-		}
-		ch := make(chan msJudgedBatch, 1)
-		go func() {
-			raw, respModel, err := a.PromptWithModel(prompt.String())
-			ch <- msJudgedBatch{raw: raw, model: respModel, err: err}
-		}()
-		return ch
-	}
-
 	pos, applied, failed, previewed, below, unanswered, humanSkipped := 0, 0, 0, 0, 0, 0, 0
-	stopped := false
 	// process gates and applies one slice of judged targets; interactive mode
 	// shows every scored candidate and asks, auto/dry-run gate on the threshold
-	process := func(targets []*msJudgeTarget) error {
-		for _, t := range targets {
-			if stopped {
-				return nil
-			}
+	process := func(ts []issue.Judged) (bool, error) {
+		for _, t := range ts {
 			pos++
-			fdg, v := t.finding, t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -207,133 +122,45 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 					text.TruncateRunes(fdg.issue.Title, 80), f.issueURL(fdg.issue.Number))
 				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
 			default:
-				res, err := f.applyOneMilestone(d, repo, fdg, milestones, pos, len(todo), throttle, v, interactive)
-				if err != nil {
-					return err
+				res, aerr := f.applyOneMilestone(d, repo, fdg, milestones, pos, len(todo), throttle, v, interactive)
+				if aerr != nil {
+					return true, aerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					applied++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					humanSkipped++
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(todo)-pos)
-					stopped = true
+					return true, nil
 				}
 				if !f.DryRun && o.Max > 0 && applied >= o.Max {
 					cout.Printf("<gray>--max reached: %d applied, skipping the rest (dry-run shows all)</>\n", o.Max)
-					stopped = true
+					return true, nil
 				}
 			}
 		}
-		return nil
+		return false, nil
 	}
-
-	// harvest one background batch: report, parse, persist verdicts. The batch
-	// line prints BEFORE blocking on the result so a still-running call shows
-	// what's being waited on, and gets its " ok" when the answer lands.
-	consecFails := 0
-	harvest := func(start int, ch <-chan msJudgedBatch) error {
-		end := min(start+msMatchBatchSize, len(uncached))
-		cout.Printf("batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
-		res := <-ch
-
-		var batchVerdicts []msMatchVerdict
-		err := res.err
-		if err == nil {
-			err = ai.ExtractJSON(res.raw, &batchVerdicts)
-		}
-		if err != nil {
-			cout.Errorf(" <red>failed:</> %v\n", err)
-			consecFails++
-			if consecFails >= maxConsecFails {
-				return fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
-			}
-			return nil // targets stay verdict-less and gate as unanswered
-		}
-		consecFails = 0
-		cout.Printf(" <green>ok</>\n")
-		// the model resolved up front; flag any mid-run drift (e.g. a CLI
-		// fallback) since those verdicts would be another model's opinions
-		if res.model != "" && res.model != f.AI.Model {
-			cout.Printf("  <yellow>note: this batch was answered by %s, not %s</>\n", res.model, f.AI.Model)
-		}
-
-		byNumber := map[int]*msMatchVerdict{}
-		for i := range batchVerdicts {
-			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
-		}
-		for _, t := range uncached[start:end] {
-			v := byNumber[t.finding.issue.Number]
-			if v == nil {
-				continue
-			}
-			raw, err := json.Marshal(v)
-			if err != nil {
-				return fmt.Errorf("marshalling verdict for #%d: %w", t.finding.issue.Number, err)
-			}
-			if err := d.SaveVerdict(&db.Verdict{
-				IssueNumber: t.finding.issue.Number, Pass: passMSMatch, PromptHash: t.hash,
-				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
-			}); err != nil {
-				return err
-			}
-			t.verdict = v
-		}
-		return nil
-	}
-
-	// batch 1 runs in the foreground; the confirmation prompt follows it so the
-	// user answers while batch 2 is already judging in the background
-	var inflight <-chan msJudgedBatch
-	if len(uncached) > 0 {
-		if err := harvest(0, launch(0)); err != nil {
-			return err
-		}
-		if len(uncached) > msMatchBatchSize {
-			inflight = launch(msMatchBatchSize)
-			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-				msMatchBatchSize+1, min(2*msMatchBatchSize, len(uncached)))
-		}
-	}
-
 	// interactive mode asks per item; the up-front confirm is auto mode's gate
-	if auto && !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("auto-apply milestone sets the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(todo), f.repoTag()))
-		if err != nil {
-			return err
+	onReady := func() (bool, error) {
+		if !auto || f.DryRun || f.Yes {
+			return true, nil
 		}
-		if !ok {
+		ok, cerr := issue.Confirm(fmt.Sprintf("auto-apply milestone sets the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(todo), f.repoTag()))
+		if cerr == nil && !ok {
 			cout.Printf("aborted\n")
-			return nil
 		}
+		return ok, cerr
 	}
 
-	// cached verdicts first (no AI wait), then batch 1, then the pipeline
-	if err := process(cachedTargets); err != nil {
+	if _, err := f.judgeBlocks(d, passMSMatch, promptText, items, onReady, process); err != nil {
 		return err
-	}
-	if len(uncached) > 0 {
-		if err := process(uncached[:min(msMatchBatchSize, len(uncached))]); err != nil {
-			return err
-		}
-	}
-	for start := msMatchBatchSize; start < len(uncached) && !stopped; start += msMatchBatchSize {
-		if err := harvest(start, inflight); err != nil {
-			return err
-		}
-		if next := start + msMatchBatchSize; next < len(uncached) {
-			inflight = launch(next)
-			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-				next+1, min(next+msMatchBatchSize, len(uncached)))
-		}
-		if err := process(uncached[start:min(start+msMatchBatchSize, len(uncached))]); err != nil {
-			return err
-		}
 	}
 
 	if interactive {
@@ -354,245 +181,6 @@ func (f *FlagData) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones 
 	return nil
 }
 
-// judgeItem is one prepared block for the shared judge.
-type judgeItem struct {
-	number int
-	block  string
-}
-
-// judgedTarget is one judged item handed to the caller's onBatch hook.
-type judgedTarget struct {
-	number  int
-	verdict *msMatchVerdict // nil when the batch failed or omitted it
-}
-
-// judgeBlocks scores prepared issue↔evidence blocks with the AI CLI, pipelined
-// one batch ahead exactly like the milestone apply: the batch line prints
-// before blocking on the result, and while a batch's verdicts are handled the
-// next batch is already off being judged in the background. Verdicts cache in
-// ai_verdicts under pass, model-aware.
-//
-// The hooks make it serve both reports and applies: onReady runs once after
-// the first batch lands (the natural place for an auto-mode confirm, so answer
-// time overlaps batch two; return false to abort), and onBatch receives each
-// slice of judged items as it becomes ready — cached verdicts first, then
-// batch by batch — for interleaved review/apply (return true to stop). Both
-// may be nil.
-func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []judgeItem,
-	onReady func() (bool, error), onBatch func([]judgedTarget) (bool, error),
-) (map[int]*msMatchVerdict, error) {
-	if err := f.RequireAI(); err != nil {
-		return nil, err
-	}
-	a := f.NewAI()
-	switch resolved, rerr := a.ResolveModel(); {
-	case rerr != nil:
-		cout.Errorf("<yellow>WARNING:</> resolving the AI model: %v — continuing as %q\n", rerr, aiIdent(f.AI.Cmd, f.AI.Model))
-	case resolved != "":
-		f.AI.Model = resolved
-		a = f.NewAI()
-	}
-	ident := aiIdent(f.AI.Cmd, f.AI.Model)
-
-	verdicts := map[int]*msMatchVerdict{}
-	type target struct {
-		item    judgeItem
-		hash    string
-		verdict *msMatchVerdict
-	}
-	var cached []judgedTarget
-	var uncached []*target
-	for _, it := range items {
-		hash := msMatchHash(promptText, it.block)
-		if v, err := d.GetVerdict(it.number, pass); err != nil {
-			return nil, err
-		} else if v != nil && v.PromptHash == hash && v.Model == ident {
-			var mv msMatchVerdict
-			if json.Unmarshal([]byte(v.Verdict), &mv) == nil {
-				verdicts[it.number] = &mv
-				cached = append(cached, judgedTarget{number: it.number, verdict: &mv})
-				continue
-			}
-		}
-		uncached = append(uncached, &target{item: it, hash: hash})
-	}
-
-	cout.Printf("AI %s check: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
-		pass, len(uncached), len(cached), f.AI.Cmd, f.AI.Model)
-
-	launch := func(start int) <-chan msJudgedBatch {
-		batch := uncached[start:min(start+msMatchBatchSize, len(uncached))]
-		var prompt strings.Builder
-		prompt.WriteString(promptText)
-		for _, t := range batch {
-			prompt.WriteString("\n")
-			prompt.WriteString(t.item.block)
-		}
-		ch := make(chan msJudgedBatch, 1)
-		go func() {
-			raw, respModel, err := a.PromptWithModel(prompt.String())
-			ch <- msJudgedBatch{raw: raw, model: respModel, err: err}
-		}()
-		return ch
-	}
-
-	consecFails := 0
-	harvest := func(start int, ch <-chan msJudgedBatch) error {
-		end := min(start+msMatchBatchSize, len(uncached))
-		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
-
-		// say whether the pipeline actually paid off: a batch judged while the
-		// last one was being reviewed costs nothing, one we sit and wait for is
-		// the human going faster than the AI
-		var res msJudgedBatch
-		timing := "<gray>(judged while you reviewed)</>"
-		select {
-		case res = <-ch:
-		default:
-			started := time.Now()
-			res = <-ch
-			timing = fmt.Sprintf("<gray>(waited %s on the AI)</>", time.Since(started).Round(time.Second))
-		}
-
-		var batchVerdicts []msMatchVerdict
-		err := res.err
-		if err == nil {
-			err = ai.ExtractJSON(res.raw, &batchVerdicts)
-		}
-		if err != nil {
-			cout.Errorf(" <red>failed:</> %v\n", err)
-			consecFails++
-			if consecFails >= maxConsecFails {
-				return fmt.Errorf("%d consecutive AI failures, aborting", consecFails)
-			}
-			return nil // targets stay verdict-less
-		}
-		consecFails = 0
-		cout.Printf(" <green>ok</> %s\n", timing)
-		if res.model != "" && res.model != f.AI.Model {
-			cout.Printf("  <yellow>note: this batch was answered by %s, not %s</>\n", res.model, f.AI.Model)
-		}
-
-		byNumber := map[int]*msMatchVerdict{}
-		for i := range batchVerdicts {
-			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
-		}
-		for _, t := range uncached[start:end] {
-			v := byNumber[t.item.number]
-			if v == nil {
-				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.item.number)
-				continue
-			}
-			raw, merr := json.Marshal(v)
-			if merr != nil {
-				return fmt.Errorf("marshalling verdict for #%d: %w", t.item.number, merr)
-			}
-			if err := d.SaveVerdict(&db.Verdict{
-				IssueNumber: t.item.number, Pass: pass, PromptHash: t.hash,
-				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
-			}); err != nil {
-				return err
-			}
-			t.verdict = v
-			verdicts[t.item.number] = v
-		}
-		return nil
-	}
-
-	stopped := false
-	emit := func(ts []judgedTarget) error {
-		if onBatch == nil || stopped || len(ts) == 0 {
-			return nil
-		}
-		stop, err := onBatch(ts)
-		stopped = stopped || stop
-		return err
-	}
-	ready := func() (bool, error) {
-		if onReady == nil {
-			return true, nil
-		}
-		return onReady()
-	}
-	slice := func(start int) []judgedTarget {
-		end := min(start+msMatchBatchSize, len(uncached))
-		out := make([]judgedTarget, 0, end-start)
-		for _, t := range uncached[start:end] {
-			out = append(out, judgedTarget{number: t.item.number, verdict: t.verdict})
-		}
-		return out
-	}
-
-	if len(uncached) == 0 {
-		if ok, err := ready(); err != nil || !ok {
-			return verdicts, err
-		}
-		return verdicts, emit(cached)
-	}
-
-	// batch 1 in the foreground, then the confirm (auto mode's answer time
-	// overlaps the prefetch), then cached + batch 1 + the pipeline
-	type pending struct {
-		start int
-		ch    <-chan msJudgedBatch
-	}
-	var queue []pending
-	launchAt := func(start int) {
-		if start >= len(uncached) || stopped {
-			return
-		}
-		queue = append(queue, pending{start: start, ch: launch(start)})
-		if start > 0 {
-			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-				start+1, min(start+msMatchBatchSize, len(uncached)))
-		}
-	}
-	take := func() (pending, bool) {
-		if len(queue) == 0 {
-			return pending{}, false
-		}
-		p := queue[0]
-		queue = queue[1:]
-		return p, true
-	}
-
-	launchAt(0)
-	first, _ := take()
-	if err := harvest(first.start, first.ch); err != nil {
-		return verdicts, err
-	}
-	// fill the pipeline: reviewing one batch should cover the next few being
-	// judged, so a fast reviewer never waits on the AI
-	for i := 1; i <= msJudgePrefetch; i++ {
-		launchAt(i * msMatchBatchSize)
-	}
-	if ok, err := ready(); err != nil || !ok {
-		return verdicts, err
-	}
-	if err := emit(cached); err != nil {
-		return verdicts, err
-	}
-	if err := emit(slice(0)); err != nil {
-		return verdicts, err
-	}
-	for start := msMatchBatchSize; start < len(uncached) && !stopped; start += msMatchBatchSize {
-		next, ok := take()
-		if !ok {
-			launchAt(start)
-			next, _ = take()
-		}
-		if err := harvest(next.start, next.ch); err != nil {
-			return verdicts, err
-		}
-		// top the pipeline back up to depth
-		launchAt(start + msJudgePrefetch*msMatchBatchSize)
-		if err := emit(slice(start)); err != nil {
-			return verdicts, err
-		}
-	}
-	return verdicts, nil
-}
-
 // msMatchBlock renders one finding for the ms-match prompt: the issue (title +
 // full body) and every piece of changelog evidence behind its determined
 // milestone — each evidence PR's title and body alongside its raw changelog
@@ -603,7 +191,7 @@ func (f *FlagData) msMatchBlock(d *db.DB, fdg *msFinding, texts map[int]db.Text)
 	fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 	fmt.Fprintf(&b, "determined milestone: %s\n", fdg.expected)
 	if t, ok := texts[fdg.issue.Number]; ok && t.Body != "" {
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(t.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.Body), msIssueBodyRunes))
 	}
 
 	b.WriteString("EVIDENCE:\n")
@@ -619,7 +207,7 @@ func (f *FlagData) msMatchBlock(d *db.DB, fdg *msFinding, texts map[int]db.Text)
 		if t, ok := texts[fx.PRNumber]; ok && t.Title != "" {
 			fmt.Fprintf(&b, "  PR #%d (%s): %s\n", fx.PRNumber, strings.ToLower(t.State), text.OneLine(t.Title))
 			if t.Body != "" {
-				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(t.Body), msPRBodyRunes))
+				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.Body), msPRBodyRunes))
 			}
 		}
 	}
@@ -674,7 +262,7 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	if err != nil {
 		return err
 	}
-	client := f.NewGHQL()
+	client := f.NewGraphQL()
 	cout.Printf("fetching full text for <yellow>%d</> issues/PRs from <white>%s</>/<cyan>%s</>...\n", len(need), owner, name)
 
 	for start := 0; start < len(need); start += 25 {
@@ -713,11 +301,6 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	return nil
 }
 
-func msMatchHash(promptText, block string) string {
-	h := sha256.Sum256([]byte(promptText + "|" + block))
-	return hex.EncodeToString(h[:8])
-}
-
 // scoreTag colours a match confidence: green at or above the apply threshold,
 // orange in the murky middle, red for a clear non-match.
 func scoreTag(confidence float64) string {
@@ -744,13 +327,4 @@ func (f *FlagData) preparePrompt(name string) (string, error) {
 	p = strings.ReplaceAll(p, "{{LEGACY_MAX}}", strconv.Itoa(f.CurrentMajor-2))
 	p = strings.ReplaceAll(p, "{{RECENT_MAJORS}}", recent)
 	return p, nil
-}
-
-// aiIdent is how a verdict records who answered: the CLI, and the model when
-// one was set. A cached verdict only counts as a hit for the same identity.
-func aiIdent(cmd, model string) string {
-	if model == "" {
-		return cmd
-	}
-	return cmd + "/" + model
 }

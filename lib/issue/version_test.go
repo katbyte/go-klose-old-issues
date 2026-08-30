@@ -1,9 +1,9 @@
-package triage_test
+package issue_test
 
 import (
 	"testing"
 
-	"github.com/katbyte/koi/lib/triage"
+	"github.com/katbyte/koi/lib/issue"
 )
 
 func TestExtractProviderVersion(t *testing.T) {
@@ -70,7 +70,7 @@ func TestExtractProviderVersion(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := triage.ExtractProviderVersion(tc.body)
+			got := issue.ExtractProviderVersion(tc.body)
 			if tc.wantNil {
 				if got != nil {
 					t.Fatalf("expected nil, got %+v", got)
@@ -110,7 +110,7 @@ func TestVersionFromLabels(t *testing.T) {
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			major, count := triage.VersionFromLabels(tc.labels)
+			major, count := issue.VersionFromLabels(tc.labels)
 			if major != tc.wantMajor || count != tc.wantCount {
 				t.Fatalf("got major=%d count=%d, want major=%d count=%d", major, count, tc.wantMajor, tc.wantCount)
 			}
@@ -122,7 +122,7 @@ func TestExtractResources(t *testing.T) {
 	t.Parallel()
 
 	body := "* azurerm_subnet\n* azurerm_subnet_network_security_group_association\n* azurerm_subnet again"
-	got := triage.ExtractResources(body, 10)
+	got := issue.ExtractResources(body, 10)
 	want := []string{"azurerm_subnet", "azurerm_subnet_network_security_group_association"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
@@ -133,7 +133,7 @@ func TestExtractResources(t *testing.T) {
 		}
 	}
 
-	if got := triage.ExtractResources(body, 1); len(got) != 1 {
+	if got := issue.ExtractResources(body, 1); len(got) != 1 {
 		t.Fatalf("limit not applied: %v", got)
 	}
 }
@@ -141,10 +141,10 @@ func TestExtractResources(t *testing.T) {
 func TestServiceFromLabels(t *testing.T) {
 	t.Parallel()
 
-	if got := triage.ServiceFromLabels([]string{"bug", "service/virtual-networks"}); got != "virtual-networks" {
+	if got := issue.ServiceFromLabels([]string{"bug", "service/virtual-networks"}); got != "virtual-networks" {
 		t.Fatalf("got %q", got)
 	}
-	if got := triage.ServiceFromLabels([]string{"bug"}); got != "" {
+	if got := issue.ServiceFromLabels([]string{"bug"}); got != "" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -152,11 +152,11 @@ func TestServiceFromLabels(t *testing.T) {
 func TestVersionLabels(t *testing.T) {
 	t.Parallel()
 
-	got := triage.VersionLabels([]string{"bug", "v/3.x", "service/compute", "v/1.x (legacy)"})
+	got := issue.VersionLabels([]string{"bug", "v/3.x", "service/compute", "v/1.x (legacy)"})
 	if len(got) != 2 || got[0] != "v/1.x (legacy)" || got[1] != "v/3.x" {
 		t.Fatalf("got %v", got)
 	}
-	if got := triage.VersionLabels([]string{"bug"}); got != nil {
+	if got := issue.VersionLabels([]string{"bug"}); got != nil {
 		t.Fatalf("got %v", got)
 	}
 }

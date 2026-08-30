@@ -12,8 +12,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 // Classes by what the issue leans on, strongest first: a removed resource is
@@ -37,8 +37,8 @@ const (
 
 // DeprecatedOpts configures the deprecated audit and its apply modes.
 type DeprecatedOpts struct {
-	Link       string // resource | property ("" = both types)
-	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link            string // resource | property ("" = both types)
+	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // deprecatedMatch is one removal the issue leans on, with the issue line that
@@ -92,7 +92,8 @@ func deprecatedClassOf(r db.Removal) string {
 // way out — where the ask is moot as filed. The AI judges whether each issue's
 // substance actually centres on the dead thing; the apply modes close as not
 // planned with a comment pointing at the successor.
-func (f *FlagData) Deprecated(o DeprecatedOpts) error {
+func (f *FlagData) Deprecated(link string) error {
+	o := DeprecatedOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
 			return err
@@ -143,7 +144,7 @@ func (f *FlagData) Deprecated(o DeprecatedOpts) error {
 	}
 
 	// report: score everything (pipelined, cached) and list surest-moot first
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if f.AI.Enabled {
 		promptText, items, jerr := f.deprecatedJudgeItems(d, findings)
 		if jerr != nil {
@@ -338,7 +339,7 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 	cout.Printf("closing <yellow>%d</> issues that lean on removed/deprecated things in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -361,13 +362,13 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			closed++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 			previewed++
-		case msApplySkipped:
+		case issue.ApplySkipped:
 			skipped++
 		}
 		if !f.DryRun && o.Max > 0 && closed >= o.Max {
@@ -412,10 +413,10 @@ func (f *FlagData) applyDeprecatedAI(d *db.DB, findings []deprecatedFinding, o D
 	throttle := newThrottle()
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []judgedTarget) (bool, error) {
+	process := func(ts []issue.Judged) (bool, error) {
 		for _, t := range ts {
 			pos++
-			fdg, v := byNumber[t.number], t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -433,19 +434,19 @@ func (f *FlagData) applyDeprecatedAI(d *db.DB, findings []deprecatedFinding, o D
 					return true, cerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					closed++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					if interactive {
 						humanSkipped++
 					} else {
 						skipped++
 					}
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
 					return true, nil
 				}
@@ -461,7 +462,7 @@ func (f *FlagData) applyDeprecatedAI(d *db.DB, findings []deprecatedFinding, o D
 		if !auto || f.DryRun || f.Yes {
 			return true, nil
 		}
-		ok, err := confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
 		if err == nil && !ok {
 			cout.Printf("aborted\n")
 		}
@@ -480,22 +481,22 @@ func (f *FlagData) applyDeprecatedAI(d *db.DB, findings []deprecatedFinding, o D
 // closeOneDeprecated handles one candidate: card, the deprecated-close comment
 // (citing the strongest match and its successor), and the close as not planned
 // (or preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDeprecatedCard(fdg, pos, total, v)
 
 	comment, err := f.renderDeprecatedComment(fdg)
 	if err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
-			len(comment), templateDeprecatedClose, triage.StateNotPlanned)
-		return msApplyPreviewed, nil
+			len(comment), templateDeprecatedClose, issue.StateNotPlanned)
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as moot?", fdg.issue.Number), comment, fdg.issue.URL)
-		if perr != nil || res != askAccept {
+		res, perr := issue.AskClose(fmt.Sprintf("close <cyan>#%d</> as moot?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != issue.AskAccept {
 			return res, perr
 		}
 	}
@@ -504,25 +505,25 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 	live, err := repo.GetIssue(fdg.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if live.State != restStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 
 	throttle()
 	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
 		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	throttle()
-	if err := repo.CloseIssue(fdg.issue.Number, triage.StateNotPlanned); err != nil {
+	if err := repo.CloseIssue(fdg.issue.Number, issue.StateNotPlanned); err != nil {
 		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 
-	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateNotPlanned)
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", issue.StateNotPlanned)
 	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, reasonDeprecated)
 
 	best := fdg.matches[0].removal
@@ -532,7 +533,7 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 	}
 	a := &db.Action{
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonDeprecated,
-		StateReason: triage.StateNotPlanned, Template: templateDeprecatedClose,
+		StateReason: issue.StateNotPlanned, Template: templateDeprecatedClose,
 		Evidence:       map[string]string{"what": what, "action": best.Action, "source": best.Source, "successor": best.Successor},
 		Source:         "deprecated",
 		IssueUpdatedAt: fdg.issue.UpdatedAt,
@@ -542,18 +543,18 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	row, err := d.GetAction(fdg.issue.Number)
 	if err != nil || row == nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if row.Status == db.StatusProposed {
 		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
-			return msApplyFailed, err
+			return issue.ApplyFailed, err
 		}
 	}
-	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+	return issue.ApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
 }
 
 // renderDeprecatedComment renders the close comment citing the strongest match.
@@ -610,13 +611,13 @@ func (f *FlagData) renderDeprecatedComment(fdg *deprecatedFinding) (string, erro
 // deprecatedJudgeItems renders one judge block per finding: the issue's
 // substance (body + comment digest) and every removed/deprecated thing it
 // leans on, so the AI can tell a moot ask from an incidental mention.
-func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) (string, []judgeItem, error) {
+func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptDeprecated)
 	if err != nil {
 		return "", nil, err
 	}
 
-	items := make([]judgeItem, 0, len(findings))
+	items := make([]issue.JudgeItem, 0, len(findings))
 	for i := range findings {
 		fdg := &findings[i]
 		comments, cerr := d.CommentsFor(fdg.issue.Number)
@@ -627,12 +628,12 @@ func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) 
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		if picked := digestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 			}
 		}
 		b.WriteString("REMOVED/DEPRECATED THINGS THE ISSUE REFERENCES:\n")
@@ -657,7 +658,7 @@ func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) 
 		if len(fdg.alive) > 0 {
 			fmt.Fprintf(&b, "RESOURCES THE ISSUE ALSO REFERENCES THAT ARE NOT REMOVED OR DEPRECATED: %s\n", strings.Join(fdg.alive, ", "))
 		}
-		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
 }
@@ -711,7 +712,7 @@ func matchLine(t string, re *regexp.Regexp) string {
 
 // printDeprecatedCard is one issue with every removed/deprecated thing it
 // leans on, successors included, and the AI's moot score when judged.
-func (f *FlagData) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v *msMatchVerdict) {
+func (f *FlagData) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))

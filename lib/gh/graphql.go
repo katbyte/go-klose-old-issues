@@ -1,7 +1,8 @@
-// Package ghql is a minimal GitHub GraphQL v4 client used for bulk reads: issues
-// with nested comments, reactions, labels, and cross-referenced PRs come back in
-// ~70 requests for the whole repo instead of thousands of REST calls.
-package ghql
+// The GraphQL v4 client used for bulk reads: issues with nested comments,
+// reactions, labels, and cross-referenced PRs come back in ~70 requests for
+// the whole repo instead of thousands of REST calls.
+
+package gh
 
 import (
 	"bytes"

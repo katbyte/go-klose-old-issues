@@ -16,8 +16,8 @@ import (
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 // evidenceKeyAI is where every check parks the judge's reasoning on the action
@@ -33,13 +33,13 @@ var actionsTakenStatuses = []string{db.StatusApplied, db.StatusFailed, db.Status
 // rules engine and carry source "rules" — the reason is what identifies them,
 // and the check name is also the ai_verdicts pass that judged them.
 var checkByReason = map[string]string{
-	triage.ReasonLegacyBug:     passLegacy,
-	triage.ReasonFixedMergedPR: passFixed,
-	reasonComments:             passComments,
-	reasonDeprecated:           passDeprecated,
-	reasonExists:               passExists,
-	reasonDuplicateOpen:        passDuplicates,
-	reasonDuplicateResolved:    passResolved,
+	issue.ReasonLegacyBug:     passLegacy,
+	issue.ReasonFixedMergedPR: passFixed,
+	reasonComments:            passComments,
+	reasonDeprecated:          passDeprecated,
+	reasonExists:              passExists,
+	reasonDuplicateOpen:       passDuplicates,
+	reasonDuplicateResolved:   passResolved,
 }
 
 // actionEvidence is one key/value of an action's recorded evidence.
@@ -97,7 +97,8 @@ type actionsData struct {
 // ActionsTaken writes actions-taken.html and actions-taken.csv: every issue koi
 // has closed (or tried to), the evidence that put it on the list, and the AI's
 // score, reasoning, and model for each one. Pure db history — it never fetches.
-func (f *FlagData) ActionsTaken(out string) error {
+func (f *FlagData) ActionsTaken() error {
+	out := f.Cmd.Report.Out
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -192,7 +193,7 @@ func (f *FlagData) actionItem(a *db.Action, titles map[int]string, verdicts map[
 	item.AIReason = text.OneLine(a.Evidence[evidenceKeyAI])
 	if item.AIReason == "" && v != nil {
 		// no reasoning on the row (an older close): fall back to the cached verdict
-		var mv msMatchVerdict
+		var mv issue.Verdict
 		if err := json.Unmarshal([]byte(v.Verdict), &mv); err == nil {
 			item.AIReason = text.OneLine(mv.Reason)
 		}

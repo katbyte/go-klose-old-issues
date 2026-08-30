@@ -7,14 +7,12 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/pkg/browser"
-
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -40,8 +38,8 @@ const (
 
 // FixedOpts configures the fixed audit and its apply modes.
 type FixedOpts struct {
-	Link       string // fixed-by | mentioned-by ("" = both)
-	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link            string // fixed-by | mentioned-by ("" = both)
+	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // fixedFinding is one open issue with the merged same-repo PRs referencing it.
@@ -59,7 +57,8 @@ type fixedFinding struct {
 // fixed-by (closing keyword) then mentioned-by (bare mention). The AI judges
 // whether the PR(s) actually fix each issue on full text, and the apply modes
 // close the confirmed ones with a comment citing the PR and shipped version.
-func (f *FlagData) Fixed(o FixedOpts) error {
+func (f *FlagData) Fixed(link string) error {
+	o := FixedOpts{Link: link, FlagsApplyModes: f.Modes}
 	// stay fresh by default: the incremental fetch is cheap and stale crossref
 	// or issue state here means judging (or closing!) on old information
 	if !f.NoAutoFetch {
@@ -105,7 +104,7 @@ func (f *FlagData) Fixed(o FixedOpts) error {
 	}
 
 	// report: score everything (pipelined, cached) and list best matches first
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if f.AI.Enabled {
 		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
 		if jerr != nil {
@@ -219,7 +218,7 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 	cout.Printf("closing <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -242,13 +241,13 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			closed++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 			previewed++
-		case msApplySkipped:
+		case issue.ApplySkipped:
 			skipped++
 		}
 		if !f.DryRun && o.Max > 0 && closed >= o.Max {
@@ -296,10 +295,10 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 	throttle := newThrottle()
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []judgedTarget) (bool, error) {
+	process := func(ts []issue.Judged) (bool, error) {
 		for _, t := range ts {
 			pos++
-			fdg, v := byNumber[t.number], t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -317,19 +316,19 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 					return true, cerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					closed++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					if interactive {
 						humanSkipped++
 					} else {
 						skipped++
 					}
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
 					return true, nil
 				}
@@ -345,7 +344,7 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 		if !auto || f.DryRun || f.Yes {
 			return true, nil
 		}
-		ok, err := confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
 		if err == nil && !ok {
 			cout.Printf("aborted\n")
 		}
@@ -381,22 +380,22 @@ func (f *FlagData) fixedSummary(closed, skipped, humanSkipped, failed, previewed
 
 // closeOneFixed handles one candidate: card, comment, and the close itself (or
 // a preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *msMatchVerdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
+func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *issue.Verdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
 	f.printFixedCard(fdg, pos, total, prVersions, v)
 
 	comment, err := f.renderFixedComment(fdg)
 	if err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
-			len(comment), templateFixedShipped, triage.StateCompleted)
-		return msApplyPreviewed, nil
+			len(comment), templateFixedShipped, issue.StateCompleted)
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as fixed?", fdg.issue.Number), comment, fdg.issue.URL)
-		if perr != nil || res != askAccept {
+		res, perr := issue.AskClose(fmt.Sprintf("close <cyan>#%d</> as fixed?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != issue.AskAccept {
 			return res, perr
 		}
 	}
@@ -405,32 +404,32 @@ func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *m
 	live, err := repo.GetIssue(fdg.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if live.State != restStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 
 	throttle()
 	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
 		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	throttle()
-	if err := repo.CloseIssue(fdg.issue.Number, triage.StateCompleted); err != nil {
+	if err := repo.CloseIssue(fdg.issue.Number, issue.StateCompleted); err != nil {
 		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 
-	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
-	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, triage.ReasonFixedMergedPR)
-	return msApplySet, f.recordFixedClose(d, fdg, v)
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", issue.StateCompleted)
+	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, issue.ReasonFixedMergedPR)
+	return issue.ApplySet, f.recordFixedClose(d, fdg, v)
 }
 
 // printFixedCard is one finding: the open issue, its merged PR references, the
 // reopen callout when the scan saw one, and the AI's score when judged.
-func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *msMatchVerdict) {
+func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
@@ -444,10 +443,10 @@ func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions 
 }
 
 // recordFixedClose writes the applied action row for one close.
-func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *msMatchVerdict) error {
+func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *issue.Verdict) error {
 	a := &db.Action{
-		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: triage.ReasonFixedMergedPR,
-		StateReason: triage.StateCompleted, Template: templateFixedShipped,
+		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: issue.ReasonFixedMergedPR,
+		StateReason: issue.StateCompleted, Template: templateFixedShipped,
 		Evidence:       map[string]string{"pr": fmt.Sprintf("#%d", fdg.best.RefNumber), evidenceKeyVersion: fdg.version},
 		Source:         "fixed",
 		IssueUpdatedAt: fdg.issue.UpdatedAt,
@@ -515,7 +514,7 @@ func fixedPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 // fixedJudgeItems fetches the PR texts and renders one judge block per finding:
 // the issue's title and body, every merged reference with its shipping release
 // and body, and the reopen note when the scan saw one.
-func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (string, []judgeItem, error) {
+func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptFixed)
 	if err != nil {
 		return "", nil, err
@@ -535,12 +534,12 @@ func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions
 		return "", nil, err
 	}
 
-	items := make([]judgeItem, 0, len(findings))
+	items := make([]issue.JudgeItem, 0, len(findings))
 	for i := range findings {
 		fdg := &findings[i]
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		b.WriteString("REFERENCED PRS:\n")
 		for _, pr := range fdg.prs {
 			state := prLabelMerged
@@ -553,20 +552,13 @@ func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions
 			}
 			fmt.Fprintf(&b, "- PR #%d (%s%s): %s\n", pr.RefNumber, state, link, text.OneLine(pr.Title))
 			if t, ok := texts[pr.RefNumber]; ok && t.Body != "" {
-				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(t.Body), msPRBodyRunes))
+				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.Body), msPRBodyRunes))
 			}
 		}
 		if fdg.reopenedBy != 0 {
 			fmt.Fprintf(&b, "NOTE: this issue was closed by PR #%d and then REOPENED — the fix may have been incomplete or regressed.\n", fdg.reopenedBy)
 		}
-		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
-}
-
-// openIssueInBrowser opens the url, reporting rather than failing on error.
-func openIssueInBrowser(url string) {
-	if err := browser.OpenURL(url); err != nil {
-		cout.Errorf("      <yellow>WARNING:</> opening browser: %v\n", err)
-	}
 }

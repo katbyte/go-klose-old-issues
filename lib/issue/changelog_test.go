@@ -1,9 +1,9 @@
-package triage_test
+package issue_test
 
 import (
 	"testing"
 
-	"github.com/katbyte/koi/lib/triage"
+	"github.com/katbyte/koi/lib/issue"
 )
 
 const changelogSample = `## 4.81.0 (July 14, 2026)
@@ -31,7 +31,7 @@ BUG FIXES:
 func TestParseChangelog(t *testing.T) {
 	t.Parallel()
 
-	entries := triage.ParseChangelog(changelogSample)
+	entries := issue.ParseChangelog(changelogSample)
 	if len(entries) != 5 {
 		t.Fatalf("expected 5 entries, got %d: %+v", len(entries), entries)
 	}
@@ -68,7 +68,7 @@ func TestVersionLess(t *testing.T) {
 		{"5.0.0", "4.81.0", false},
 	}
 	for _, tc := range tests {
-		if got := triage.VersionLess(tc.a, tc.b); got != tc.want {
+		if got := issue.VersionLess(tc.a, tc.b); got != tc.want {
 			t.Errorf("VersionLess(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}

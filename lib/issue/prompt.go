@@ -1,4 +1,4 @@
-package cli
+package issue
 
 import (
 	"bufio"
@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/pkg/browser"
 	"golang.org/x/term"
 
 	"github.com/katbyte/koi/lib/cout"
@@ -15,8 +16,8 @@ import (
 // stdinReader is shared so successive prompts don't lose buffered input.
 var stdinReader = bufio.NewReader(os.Stdin)
 
-// promptInput prints prompt and returns the trimmed line the user entered.
-func promptInput(prompt string) (string, error) {
+// PromptInput prints prompt and returns the trimmed line the user entered.
+func PromptInput(prompt string) (string, error) {
 	cout.Printf("%s", prompt)
 	line, err := stdinReader.ReadString('\n')
 	if err != nil {
@@ -25,10 +26,10 @@ func promptInput(prompt string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-// promptKey prints prompt and returns a single pressed key — no enter needed.
+// PromptKey prints prompt and returns a single pressed key — no enter needed.
 // Enter returns "" (the default choice), ctrl-c aborts the run. When stdin
 // isn't a terminal it falls back to line input so pipes keep working.
-func promptKey(prompt string) (string, error) {
+func PromptKey(prompt string) (string, error) {
 	cout.Printf("%s", prompt)
 
 	fd := int(os.Stdin.Fd())
@@ -62,45 +63,55 @@ func promptKey(prompt string) (string, error) {
 	return strings.ToLower(string(b)), nil
 }
 
-// confirm prints prompt and returns true when the user presses y.
-func confirm(prompt string) (bool, error) {
-	answer, err := promptKey(prompt + " <gray>[y/N]</> ")
+// Confirm prints prompt and returns true when the user presses y.
+func Confirm(prompt string) (bool, error) {
+	answer, err := PromptKey(prompt + " <gray>[y/N]</> ")
 	if err != nil {
 		return false, err
 	}
 	return strings.EqualFold(answer, "y"), nil
 }
 
-// askAccept is askClose's go-ahead — distinct from every msApply* code.
-const askAccept = -1
+// Apply-loop outcomes: what happened to one candidate. Every check's apply
+// loop and the milestone setter speak this vocabulary.
+const (
+	ApplyPreviewed = iota // dry-run: card shown, nothing changed
+	ApplySet              // the mutation landed on GitHub
+	ApplyFailed           // the mutation failed (reported, not fatal)
+	ApplySkipped          // the human said no
+	ApplyQuit             // the human quit the session
+)
 
-// askClose is the per-candidate confirmation every close check shares:
+// AskAccept is AskClose's go-ahead — distinct from every Apply* outcome.
+const AskAccept = -1
+
+// AskClose is the per-candidate confirmation every close check shares:
 // (a)ccept the close, (s)kip it, (p)review the comment that would be posted,
 // (o)pen the issue, (q)uit the run. Preview and open loop back to the prompt so
 // the human answers after seeing what they asked for; with no comment to show
 // (the milestone setter) the preview key drops out of the offer.
-func askClose(question, comment, url string) (int, error) {
+func AskClose(question, comment, url string) (int, error) {
 	// magenta, not lightMagenta — that one belongs to milestones and versions
 	keys := "<green>(a)</>ccept <red>(s)</>kip (o)pen (q)uit"
 	if comment != "" {
 		keys = "<green>(a)</>ccept <red>(s)</>kip <magenta>(p)</>review (o)pen (q)uit"
 	}
 	for {
-		ans, err := promptKey(fmt.Sprintf("      %s %s <gray>></> ", question, keys))
+		ans, err := PromptKey(fmt.Sprintf("      %s %s <gray>></> ", question, keys))
 		if err != nil {
-			return msApplyFailed, err
+			return ApplyFailed, err
 		}
 		switch strings.ToLower(ans) {
 		case "a", "y":
-			return askAccept, nil
+			return AskAccept, nil
 		case "s", "n", "":
-			return msApplySkipped, nil
+			return ApplySkipped, nil
 		case "p":
 			printCommentPreview(comment)
 		case "o":
-			openIssueInBrowser(url)
+			OpenInBrowser(url)
 		case "q":
-			return msApplyQuit, nil
+			return ApplyQuit, nil
 		}
 	}
 }
@@ -117,4 +128,11 @@ func printCommentPreview(comment string) {
 		_, _ = fmt.Fprintf(cout.Writer(), "        %s\n", line)
 	}
 	cout.Printf("\n")
+}
+
+// OpenInBrowser opens the url, reporting rather than failing on error.
+func OpenInBrowser(url string) {
+	if err := browser.OpenURL(url); err != nil {
+		cout.Errorf("      <yellow>WARNING:</> opening browser: %v\n", err)
+	}
 }

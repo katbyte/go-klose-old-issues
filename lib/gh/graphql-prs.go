@@ -1,4 +1,4 @@
-package ghql
+package gh
 
 import (
 	"fmt"

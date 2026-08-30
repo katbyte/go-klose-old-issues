@@ -9,8 +9,8 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 // ChangelogCheck audits the PR side of milestone bookkeeping: every changelog
@@ -18,7 +18,8 @@ import (
 // release's milestone. This inverts the issue audit — the changelog is the
 // ground truth of what shipped where, and it covers exactly the PRs that need
 // milestones without walking the repository's full PR history.
-func (f *FlagData) ChangelogCheck(o MilestoneOpts) error {
+func (f *FlagData) ChangelogCheck() error {
+	o := MilestoneOpts{FlagsMilestone: f.Cmd.MS, FlagsApplyModes: f.Modes}
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -144,10 +145,10 @@ func auditChangelogPR(pr *db.MSPR, versions []string, milestones map[string]db.M
 	expected, wanted := "", ""
 	for _, v := range versions {
 		cited[v] = true
-		if wanted == "" || triage.VersionLess(v, wanted) {
+		if wanted == "" || issue.VersionLess(v, wanted) {
 			wanted = v
 		}
-		if _, ok := milestones["v"+v]; ok && (expected == "" || triage.VersionLess(v, expected)) {
+		if _, ok := milestones["v"+v]; ok && (expected == "" || issue.VersionLess(v, expected)) {
 			expected = v
 		}
 	}
@@ -190,7 +191,7 @@ func (f *FlagData) fetchChangelogPRs(d *db.DB, prVersions map[int][]string, cach
 	if err != nil {
 		return err
 	}
-	client := f.NewGHQL()
+	client := f.NewGraphQL()
 	cout.Printf("fetching milestones for <yellow>%d</> changelog-cited PRs from <white>%s</>/<cyan>%s</>...\n", len(need), owner, name)
 
 	for start := 0; start < len(need); start += 50 {
@@ -267,7 +268,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 
 	cout.Printf("setting milestones on <yellow>%d</> PRs in %s%s\n", len(todo), f.repoTag(), dryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("set milestones on <yellow>%d</> PRs in %s?", len(todo), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("set milestones on <yellow>%d</> PRs in %s?", len(todo), f.repoTag()))
 		if err != nil {
 			return err
 		}

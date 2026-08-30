@@ -7,8 +7,8 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 // ensureAnalysed refreshes signals and rule proposals before a consumer command
@@ -60,7 +60,7 @@ func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 			return nil, err
 		}
 
-		if a := triage.Propose(i, s, cfg); a != nil {
+		if a := issue.Propose(i, s, cfg); a != nil {
 			// proposals refined by the AI passes or edited by a human outlive an
 			// analyse re-run: rules alone can't reproduce an ai-keep veto, and the
 			// verdict cache means an AI run wouldn't re-derive it either
@@ -102,18 +102,18 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 
 	s := &db.Signals{
 		IssueNumber: i.Number,
-		Kind:        triage.KindFromLabels(i.Labels),
-		Service:     triage.ServiceFromLabels(i.Labels),
-		Resources:   triage.ExtractResources(i.Title+"\n"+i.Body, 10),
+		Kind:        issue.KindFromLabels(i.Labels),
+		Service:     issue.ServiceFromLabels(i.Labels),
+		Resources:   issue.ExtractResources(i.Title+"\n"+i.Body, 10),
 		ComputedAt:  db.Now(),
 	}
 
 	// version precedence: maintainer label > template block > body mentions
-	if major, count := triage.VersionFromLabels(i.Labels); major > 0 {
+	if major, count := issue.VersionFromLabels(i.Labels); major > 0 {
 		s.VersionMajor, s.VersionFull, s.VersionSource = major, "", "label"
 		s.VersionQuote = "labelled v/" + strconv.Itoa(major) + ".x"
 		s.MultiVersionLabels = count > 1
-	} else if v := triage.ExtractProviderVersion(i.Body); v != nil {
+	} else if v := issue.ExtractProviderVersion(i.Body); v != nil {
 		s.VersionMajor, s.VersionFull, s.VersionSource, s.VersionQuote = v.Major, v.Full, v.Source, v.Quote
 	}
 
@@ -133,7 +133,7 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 	}
 	s.Participants = len(participants)
 
-	if claim := triage.SweepClaims(comments); claim != nil {
+	if claim := issue.SweepClaims(comments); claim != nil {
 		s.NewestClaimMajor = claim.Major
 		s.NewestClaimAt = claim.At
 		s.NewestClaimQuote = claim.Quote

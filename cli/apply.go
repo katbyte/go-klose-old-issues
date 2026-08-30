@@ -6,6 +6,7 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
 )
 
@@ -20,7 +21,8 @@ const restStateOpen = "open"
 // with the right state_reason. Before every mutation the issue is re-fetched and
 // skipped as stale if it changed since the decision — new activity means a human
 // re-look, not a robo-close.
-func (f *FlagData) Apply(reason string, maxApply int) error {
+func (f *FlagData) Apply() error {
+	reason, maxApply := f.Cmd.ApplyReason, f.Modes.Max
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -49,7 +51,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 	printCounts(counts)
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("close <yellow>%d</> issues on %s?", len(actions), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("close <yellow>%d</> issues on %s?", len(actions), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -77,7 +79,7 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 		cout.Printf("      <lightBlue>%s</> · %s · confidence %s · 💬 %d · 👍 %d\n",
 			a.Reason, version, confidenceColoured(a.Confidence), card.issue.CommentCount, card.issue.ThumbsUp)
 
-		comment, err := renderCloseComment(f, card.issue, card.signals, a)
+		comment, err := issue.RenderCloseComment(card.issue, card.signals, a, f.CurrentMajor)
 		if err != nil {
 			cout.Errorf("      <red>rendering comment: %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, err.Error()); err != nil {
@@ -164,7 +166,8 @@ func (f *FlagData) Apply(reason string, maxApply int) error {
 }
 
 // Reopen reopens an issue (mistake recovery) and records it on the action row.
-func (f *FlagData) Reopen(number int, comment string) error {
+func (f *FlagData) Reopen(number int) error {
+	comment := f.Cmd.ReopenComment
 	d, err := f.OpenDB()
 	if err != nil {
 		return err

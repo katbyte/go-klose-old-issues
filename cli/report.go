@@ -15,16 +15,9 @@ import (
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
-
-// ReportOpts configures the report.
-type ReportOpts struct {
-	Out    string // directory to write report.html into
-	WithAI bool   // AI-score every candidate and sort surest first
-	Limit  int    // cap candidates per check, for cheap test runs (0 = all)
-}
 
 // Span colour kinds, matching css classes in the report template.
 const (
@@ -119,7 +112,7 @@ func limitFindings[T any](findings []T, limit int) ([]T, bool) {
 
 // sortByVerdict orders findings surest-first once verdicts exist; unanswered
 // candidates sink to the bottom.
-func sortByVerdict[T any](findings []T, number func(*T) int, verdicts map[int]*msMatchVerdict) {
+func sortByVerdict[T any](findings []T, number func(*T) int, verdicts map[int]*issue.Verdict) {
 	slices.SortStableFunc(findings, func(a, b T) int {
 		av, bv := -1.0, -1.0
 		if v := verdicts[number(&a)]; v != nil {
@@ -140,7 +133,7 @@ func sortByVerdict[T any](findings []T, number func(*T) int, verdicts map[int]*m
 }
 
 // attachVerdict fills the AI fields on one item.
-func attachVerdict(item *reportItem, v *msMatchVerdict) {
+func attachVerdict(item *reportItem, v *issue.Verdict) {
 	if v == nil {
 		return
 	}
@@ -156,7 +149,8 @@ func attachVerdict(item *reportItem, v *msMatchVerdict) {
 // (cached verdicts are reused) and sorts surest first; --limit N keeps test
 // runs cheap. The old analyse-based report and its decisions.csv are gone —
 // the checks' apply modes are the review flow now.
-func (f *FlagData) Report(o ReportOpts) error {
+func (f *FlagData) Report() error {
+	o := f.Cmd.Report
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
 			return err
@@ -232,7 +226,7 @@ func (f *FlagData) Report(o ReportOpts) error {
 }
 
 // fixedReportSection builds the "a merged PR touches this" check section.
-func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) fixedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passFixed,
 		Question: "a merged PR touches this open issue — did it fix it?",
@@ -252,7 +246,7 @@ func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (re
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
 		if jerr != nil {
@@ -301,7 +295,7 @@ func (f *FlagData) fixedReportSection(d *db.DB, o ReportOpts, now time.Time) (re
 }
 
 // resolvedReportSection builds the "a linked issue was dealt with" check section.
-func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) resolvedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passResolved,
 		Question: "a linked issue was dealt with — does its outcome cover this open one?",
@@ -322,7 +316,7 @@ func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) 
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.resolvedJudgeItems(d, findings)
 		if jerr != nil {
@@ -375,7 +369,7 @@ func (f *FlagData) resolvedReportSection(d *db.DB, o ReportOpts, now time.Time) 
 }
 
 // legacyReportSection builds the "this bug is old and unconfirmed" check section.
-func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	col, err := f.collectLegacy(d, nil)
 	if err != nil {
 		return reportSection{Slug: passLegacy}, err
@@ -411,7 +405,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 
 	findings := col.findings
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.legacyJudgeItems(d, findings)
 		if jerr != nil {
@@ -455,7 +449,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 		if cerr != nil {
 			return s, cerr
 		}
-		mentions := triage.VersionMentions(comments)
+		mentions := issue.VersionMentions(comments)
 		const maxMentions = 6
 		for n, m := range mentions {
 			if n == maxMentions {
@@ -484,7 +478,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 			last := &comments[len(comments)-1]
 			row := []reportSpan{
 				span(fmt.Sprintf("last comment %s ago · @%s:", text.HumanAge(last.CreatedAt, now), last.Author), kindDim),
-				span("“"+text.TruncateRunes(text.OneLine(triage.CleanBody(last.Body)), 140)+"”", kindQuote),
+				span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(last.Body)), 140)+"”", kindQuote),
 			}
 			if last.URL != "" {
 				row = append(row, linkSpan("view comment", last.URL))
@@ -500,7 +494,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 }
 
 // commentsReportSection builds the "its own thread says it is done" section.
-func (f *FlagData) commentsReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) commentsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passComments,
 		Question: "this issue's own thread says it can be closed — is the claim credible?",
@@ -520,7 +514,7 @@ func (f *FlagData) commentsReportSection(d *db.DB, o ReportOpts, now time.Time) 
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.commentsJudgeItems(d, findings)
 		if jerr != nil {
@@ -571,7 +565,7 @@ func (f *FlagData) commentsReportSection(d *db.DB, o ReportOpts, now time.Time) 
 }
 
 // existsReportSection builds the "the ask already exists" section.
-func (f *FlagData) existsReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passExists,
 		Question: "this enhancement request appears to already exist in the provider — did it ship?",
@@ -591,7 +585,7 @@ func (f *FlagData) existsReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.existsJudgeItems(d, findings)
 		if jerr != nil {
@@ -650,7 +644,7 @@ func (f *FlagData) existsReportSection(d *db.DB, o ReportOpts, now time.Time) (r
 }
 
 // duplicatesReportSection builds the "this is another open issue" section.
-func (f *FlagData) duplicatesReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passDuplicates,
 		Question: "this looks like an older open issue — is it the same one?",
@@ -671,7 +665,7 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o ReportOpts, now time.Time
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.duplicatesJudgeItems(d, findings)
 		if jerr != nil {
@@ -710,7 +704,7 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o ReportOpts, now time.Time
 }
 
 // deprecatedReportSection builds the "the thing it leans on is gone" section.
-func (f *FlagData) deprecatedReportSection(d *db.DB, o ReportOpts, now time.Time) (reportSection, error) {
+func (f *FlagData) deprecatedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passDeprecated,
 		Question: "this issue leans on a removed or deprecated resource/property — moot where it stands?",
@@ -732,7 +726,7 @@ func (f *FlagData) deprecatedReportSection(d *db.DB, o ReportOpts, now time.Time
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.deprecatedJudgeItems(d, findings)
 		if jerr != nil {

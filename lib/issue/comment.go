@@ -1,4 +1,4 @@
-package cli
+package issue
 
 import (
 	"fmt"
@@ -22,8 +22,8 @@ type commentData struct {
 	Evidence      map[string]string
 }
 
-// renderCloseComment renders the close comment for an action.
-func renderCloseComment(f *FlagData, i *db.Issue, s *db.Signals, a *db.Action) (string, error) {
+// RenderCloseComment renders the close comment for an action.
+func RenderCloseComment(i *db.Issue, s *db.Signals, a *db.Action, currentMajor int) (string, error) {
 	text, err := assets.CommentTemplate(a.Template)
 	if err != nil {
 		return "", err
@@ -37,8 +37,8 @@ func renderCloseComment(f *FlagData, i *db.Issue, s *db.Signals, a *db.Action) (
 	data := commentData{
 		Number:        i.Number,
 		Title:         i.Title,
-		CurrentMajor:  f.CurrentMajor,
-		PreviousMajor: f.CurrentMajor - 1,
+		CurrentMajor:  currentMajor,
+		PreviousMajor: currentMajor - 1,
 		Evidence:      a.Evidence,
 	}
 	if s != nil {

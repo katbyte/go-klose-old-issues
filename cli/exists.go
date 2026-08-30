@@ -12,8 +12,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -106,8 +106,8 @@ func existsArgAsked(arg string, words map[string]bool) bool {
 
 // ExistsOpts configures the exists audit and its apply modes.
 type ExistsOpts struct {
-	Link       string // resource | property ("" = both classes)
-	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link            string // resource | property ("" = both classes)
+	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // existsEvidence is one shipped thing that appears to deliver the ask.
@@ -139,7 +139,8 @@ type existsFinding struct {
 // arrived after the ask, or a property the request names shipped in a later
 // release. The AI judges whether what shipped actually delivers the specific
 // request; the apply modes close as completed with the good news.
-func (f *FlagData) Exists(o ExistsOpts) error {
+func (f *FlagData) Exists(link string) error {
+	o := ExistsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
 			return err
@@ -184,7 +185,7 @@ func (f *FlagData) Exists(o ExistsOpts) error {
 	}
 
 	// report: score everything (pipelined, cached) and list surest first
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if f.AI.Enabled {
 		promptText, items, jerr := f.existsJudgeItems(d, findings)
 		if jerr != nil {
@@ -560,7 +561,7 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts)
 	cout.Printf("closing <yellow>%d</> delivered requests in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> requests as completed in %s?", len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> requests as completed in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -583,13 +584,13 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts)
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			closed++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 			previewed++
-		case msApplySkipped:
+		case issue.ApplySkipped:
 			skipped++
 		}
 		if !f.DryRun && o.Max > 0 && closed >= o.Max {
@@ -634,10 +635,10 @@ func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpt
 	throttle := newThrottle()
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []judgedTarget) (bool, error) {
+	process := func(ts []issue.Judged) (bool, error) {
 		for _, t := range ts {
 			pos++
-			fdg, v := byNumber[t.number], t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -655,19 +656,19 @@ func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpt
 					return true, cerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					closed++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					if interactive {
 						humanSkipped++
 					} else {
 						skipped++
 					}
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
 					return true, nil
 				}
@@ -683,7 +684,7 @@ func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpt
 		if !auto || f.DryRun || f.Yes {
 			return true, nil
 		}
-		ok, err := confirm(fmt.Sprintf("comment and close requests the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close requests the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
 		if err == nil && !ok {
 			cout.Printf("aborted\n")
 		}
@@ -701,22 +702,22 @@ func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpt
 
 // closeOneExists handles one candidate: card, the good-news comment, and the
 // close as completed (or preview under dry-run, or the a/s ask).
-func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printExistsCard(fdg, pos, total, v)
 
 	comment, err := f.renderExistsComment(fdg)
 	if err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
-			len(comment), templateExistsClose, triage.StateCompleted)
-		return msApplyPreviewed, nil
+			len(comment), templateExistsClose, issue.StateCompleted)
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as delivered?", fdg.issue.Number), comment, fdg.issue.URL)
-		if perr != nil || res != askAccept {
+		res, perr := issue.AskClose(fmt.Sprintf("close <cyan>#%d</> as delivered?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != issue.AskAccept {
 			return res, perr
 		}
 	}
@@ -725,25 +726,25 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 	live, err := repo.GetIssue(fdg.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if live.State != restStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 
 	throttle()
 	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
 		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	throttle()
-	if err := repo.CloseIssue(fdg.issue.Number, triage.StateCompleted); err != nil {
+	if err := repo.CloseIssue(fdg.issue.Number, issue.StateCompleted); err != nil {
 		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 
-	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateCompleted)
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", issue.StateCompleted)
 	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, reasonExists)
 
 	best := fdg.evidence[0]
@@ -753,7 +754,7 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 	}
 	a := &db.Action{
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonExists,
-		StateReason: triage.StateCompleted, Template: templateExistsClose,
+		StateReason: issue.StateCompleted, Template: templateExistsClose,
 		Evidence:       map[string]string{"what": what, evidenceKeyVersion: best.version, "pr": fmt.Sprintf("#%d", best.pr)},
 		Source:         passExists,
 		IssueUpdatedAt: fdg.issue.UpdatedAt,
@@ -763,18 +764,18 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	row, err := d.GetAction(fdg.issue.Number)
 	if err != nil || row == nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if row.Status == db.StatusProposed {
 		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
-			return msApplyFailed, err
+			return issue.ApplyFailed, err
 		}
 	}
-	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+	return issue.ApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
 }
 
 // renderExistsComment renders the good-news close citing the best evidence.
@@ -814,13 +815,13 @@ func (f *FlagData) renderExistsComment(fdg *existsFinding) (string, error) {
 
 // existsJudgeItems renders one judge block per finding: the request's
 // substance and everything that shipped which appears to deliver it.
-func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string, []judgeItem, error) {
+func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptExists)
 	if err != nil {
 		return "", nil, err
 	}
 
-	items := make([]judgeItem, 0, len(findings))
+	items := make([]issue.JudgeItem, 0, len(findings))
 	for i := range findings {
 		fdg := &findings[i]
 		comments, cerr := d.CommentsFor(fdg.issue.Number)
@@ -834,12 +835,12 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 			b.WriteString("KIND UNKNOWN: nothing labels this issue. Judge first whether it is a REQUEST for something at all — a bug report, a question or a discussion is not a request and scores 0.\n")
 		}
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		if picked := digestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "REQUEST COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 			}
 		}
 		b.WriteString("WHAT SHIPPED AFTER THE ASK THAT APPEARS TO DELIVER IT:\n")
@@ -860,14 +861,14 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 				fmt.Fprintf(&b, "  THE REQUEST'S PROSE MENTIONING IT: %s\n", e.quote)
 			}
 		}
-		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
 }
 
 // printExistsCard is one candidate: the request and everything that shipped
 // which appears to deliver it, with the AI's score when judged.
-func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *msMatchVerdict) {
+func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))

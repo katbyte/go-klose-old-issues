@@ -9,8 +9,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -34,8 +34,8 @@ func isRequestLabel(l string) bool { return requestLabels[strings.ToLower(l)] }
 
 // LegacyOpts configures the legacy audit and its apply modes.
 type LegacyOpts struct {
-	Majors     []int // only bugs reported against these majors (empty = every legacy major)
-	applyModes       // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Majors          []int // only bugs reported against these majors (empty = every legacy major)
+	FlagsApplyModes       // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // legacyFinding is one closeable legacy bug: the issue, its signals, and the
@@ -56,7 +56,8 @@ type legacyFinding struct {
 // is on old issues) and scores whether closing as stale is right; the apply
 // modes close with the legacy-bug comment. Enhancements are a different
 // problem and are not touched here.
-func (f *FlagData) Legacy(o LegacyOpts) error {
+func (f *FlagData) Legacy() error {
+	o := LegacyOpts{Majors: f.Cmd.LegacyMajors, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
 			return err
@@ -118,7 +119,7 @@ func (f *FlagData) Legacy(o LegacyOpts) error {
 	}
 
 	// report: score everything (pipelined, cached) and list surest-stale first
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if f.AI.Enabled {
 		promptText, items, jerr := f.legacyJudgeItems(d, findings)
 		if jerr != nil {
@@ -215,17 +216,17 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 			col.unknownKind++
 		}
 
-		a := triage.Propose(i, rules, cfg)
+		a := issue.Propose(i, rules, cfg)
 		switch {
 		case a == nil:
 			continue
 		case a.Action == db.ActionKeep:
 			col.protected[a.Reason]++
 			continue
-		case a.Reason == triage.ReasonFixedMergedPR:
+		case a.Reason == issue.ReasonFixedMergedPR:
 			col.diverted++ // koi fixed territory: a merged PR references it
 			continue
-		case a.Reason != triage.ReasonLegacyBug:
+		case a.Reason != issue.ReasonLegacyBug:
 			continue
 		}
 		if len(onlyMajors) > 0 && !slices.Contains(onlyMajors, s.VersionMajor) {
@@ -262,7 +263,7 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts)
 	cout.Printf("closing <yellow>%d</> legacy bugs in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> legacy bugs as not planned in %s?", len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> legacy bugs as not planned in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -285,13 +286,13 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts)
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			closed++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 			previewed++
-		case msApplySkipped:
+		case issue.ApplySkipped:
 			skipped++
 		}
 		if !f.DryRun && o.Max > 0 && closed >= o.Max {
@@ -336,10 +337,10 @@ func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpt
 	throttle := newThrottle()
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []judgedTarget) (bool, error) {
+	process := func(ts []issue.Judged) (bool, error) {
 		for _, t := range ts {
 			pos++
-			fdg, v := byNumber[t.number], t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -357,19 +358,19 @@ func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpt
 					return true, cerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					closed++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					if interactive {
 						humanSkipped++
 					} else {
 						skipped++
 					}
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
 					return true, nil
 				}
@@ -385,7 +386,7 @@ func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpt
 		if !auto || f.DryRun || f.Yes {
 			return true, nil
 		}
-		ok, err := confirm(fmt.Sprintf("comment and close legacy bugs the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close legacy bugs the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
 		if err == nil && !ok {
 			cout.Printf("aborted\n")
 		}
@@ -403,22 +404,22 @@ func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpt
 
 // closeOneLegacy handles one candidate: card, the legacy-bug comment, and the
 // close (or preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printLegacyCard(fdg, pos, total, v)
 
-	comment, err := renderCloseComment(f, fdg.issue, fdg.signals, fdg.action)
+	comment, err := issue.RenderCloseComment(fdg.issue, fdg.signals, fdg.action, f.CurrentMajor)
 	if err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
 			len(comment), fdg.action.Template, fdg.action.StateReason)
-		return msApplyPreviewed, nil
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as a legacy bug?", fdg.issue.Number), comment, fdg.issue.URL)
-		if perr != nil || res != askAccept {
+		res, perr := issue.AskClose(fmt.Sprintf("close <cyan>#%d</> as a legacy bug?", fdg.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != issue.AskAccept {
 			return res, perr
 		}
 	}
@@ -427,22 +428,22 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 	live, err := repo.GetIssue(fdg.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if live.State != restStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 
 	throttle()
 	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
 		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	throttle()
 	if err := repo.CloseIssue(fdg.issue.Number, fdg.action.StateReason); err != nil {
 		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 
 	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", fdg.action.StateReason)
@@ -453,23 +454,23 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 		fdg.action.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(fdg.action); err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	row, err := d.GetAction(fdg.issue.Number)
 	if err != nil || row == nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if row.Status == db.StatusProposed {
 		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
-			return msApplyFailed, err
+			return issue.ApplyFailed, err
 		}
 	}
-	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+	return issue.ApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
 }
 
 // printLegacyCard is one candidate: the issue, its kind and version evidence,
 // engagement, and the AI's staleness score when judged.
-func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *msMatchVerdict) {
+func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *issue.Verdict) {
 	i, s := fdg.issue, fdg.signals
 	kindTag, kind := tagOrange, s.Kind
 	if s.Kind == signalKindCrash {
@@ -492,13 +493,13 @@ func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *msMatc
 // legacyJudgeItems renders one judge block per candidate: the issue's body and
 // a digest of its comments — the comments are where "still happens on v5"
 // hides, so the AI reads them before blessing a close.
-func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string, []judgeItem, error) {
+func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := f.preparePrompt(promptLegacy)
 	if err != nil {
 		return "", nil, err
 	}
 
-	items := make([]judgeItem, 0, len(findings))
+	items := make([]issue.JudgeItem, 0, len(findings))
 	for i := range findings {
 		fdg := &findings[i]
 		comments, cerr := d.CommentsFor(fdg.issue.Number)
@@ -517,17 +518,17 @@ func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string,
 		}
 		fmt.Fprintf(&b, "kind: %s · opened %s · last activity %s\n",
 			kind, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.signals.LastActivity.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 
 		picked := digestComments(comments, 8)
 		if len(picked) > 0 {
 			fmt.Fprintf(&b, "COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 			}
 		}
-		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
 }

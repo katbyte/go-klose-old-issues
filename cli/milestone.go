@@ -13,9 +13,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
-	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -35,19 +34,17 @@ const (
 
 // MilestoneOpts configures the milestone audit.
 type MilestoneOpts struct {
-	SkipScan   bool   // audit existing data without re-scanning
-	Rescan     bool   // force a full re-walk
-	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
-	CSV        string // write the full audit to this csv ("" = don't)
-	Bucket     string // list every finding in this bucket instead of the 10-per-bucket sample
-	Link       string // determine milestones from this evidence class only ("" = strongest available)
+	FlagsMilestone         // --skip-scan / --rescan / --csv / --bucket
+	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link            string // determine milestones from this evidence class only ("" = strongest available)
 }
 
 // Milestone audits every issue in the repo — open AND closed — against the
 // milestone it should carry. The expected milestone is derived from merged PRs
 // that cross-reference the issue, mapped to the release that shipped them via
 // the changelog (which links every bullet to its PR number).
-func (f *FlagData) Milestone(o MilestoneOpts) error {
+func (f *FlagData) Milestone(link string) error {
+	o := MilestoneOpts{FlagsMilestone: f.Cmd.MS, FlagsApplyModes: f.Modes, Link: link}
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -70,7 +67,7 @@ func (f *FlagData) milestoneScan(d *db.DB, rescan bool) error {
 	if err != nil {
 		return err
 	}
-	client := f.NewGHQL()
+	client := f.NewGraphQL()
 	started := db.Now()
 
 	milestones, err := client.AllMilestones(owner, name)
@@ -132,7 +129,7 @@ func (f *FlagData) milestoneScan(d *db.DB, rescan bool) error {
 	return d.DeleteMeta(metaMSScanCursor)
 }
 
-func (f *FlagData) msFullScan(d *db.DB, client *ghql.Client, owner, name, cursor string) error {
+func (f *FlagData) msFullScan(d *db.DB, client *gh.Client, owner, name, cursor string) error {
 	fetched, page := 0, 0
 	for {
 		p, err := client.ScanIssues(owner, name, cursor)
@@ -162,7 +159,7 @@ func (f *FlagData) msFullScan(d *db.DB, client *ghql.Client, owner, name, cursor
 	}
 }
 
-func (f *FlagData) msIncrementalScan(d *db.DB, client *ghql.Client, owner, name string, since time.Time) error {
+func (f *FlagData) msIncrementalScan(d *db.DB, client *gh.Client, owner, name string, since time.Time) error {
 	cursor, fetched := "", 0
 	for {
 		p, err := client.ScanUpdatedIssues(owner, name, since, cursor)
@@ -194,7 +191,7 @@ func (f *FlagData) msIncrementalScan(d *db.DB, client *ghql.Client, owner, name 
 	}
 }
 
-func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
+func scanBundles(nodes []gh.ScanIssueNode, repo string) []db.MSBundle {
 	bundles := make([]db.MSBundle, 0, len(nodes))
 	for i := range nodes {
 		n := &nodes[i]
@@ -210,7 +207,7 @@ func scanBundles(nodes []ghql.ScanIssueNode, repo string) []db.MSBundle {
 		// one fix row per PR at its strongest link: closed-by (the ClosedEvent's
 		// closer) beats linked (closing-keyword reference) beats mention
 		best := map[int]db.MSFix{}
-		consider := func(s *ghql.ScanPRRef, link string) {
+		consider := func(s *gh.ScanPRRef, link string) {
 			// only merged PRs from the same repo can map to a release
 			if s.Typename != typePullRequest || !s.Merged || !strings.EqualFold(s.Repository.NameWithOwner, repo) {
 				return
@@ -428,7 +425,7 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 		var via []db.MSFix
 		if class == msLinkCited {
 			for _, v := range prVersions[i.Number] {
-				if expected == "" || triage.VersionLess(v, expected) {
+				if expected == "" || issue.VersionLess(v, expected) {
 					expected = v
 				}
 			}
@@ -439,7 +436,7 @@ func auditIssue(i db.MSIssue, fixes []db.MSFix, prVersions map[int][]string, mil
 					continue
 				}
 				for _, v := range prVersions[fx.PRNumber] {
-					if expected == "" || triage.VersionLess(v, expected) {
+					if expected == "" || issue.VersionLess(v, expected) {
 						expected = v
 					}
 				}
@@ -738,7 +735,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 
 	cout.Printf("setting milestones on <yellow>%d</> issues in %s%s\n", len(todo), f.repoTag(), dryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("set milestones on <yellow>%d</> issues in %s?", len(todo), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("set milestones on <yellow>%d</> issues in %s?", len(todo), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -756,11 +753,11 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			applied++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 		}
 	}
 
@@ -802,7 +799,7 @@ func (f *FlagData) printMSEvidence(d *db.DB, fdg *msFinding) error {
 }
 
 // printMSVerdict prints the AI's score and reason for a judged finding.
-func printMSVerdict(v *msMatchVerdict) {
+func printMSVerdict(v *issue.Verdict) {
 	if v == nil {
 		return
 	}
@@ -810,26 +807,17 @@ func printMSVerdict(v *msMatchVerdict) {
 	cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
 }
 
-// applyOneMilestone results.
-const (
-	msApplyPreviewed = iota // dry-run: card shown, nothing changed
-	msApplySet              // milestone set on GitHub
-	msApplyFailed           // the mutation failed (reported, not fatal)
-	msApplySkipped          // the human said no
-	msApplyQuit             // the human quit the session
-)
-
 // applyOneMilestone prints one finding's card — evidence, mismatch callout, AI
 // score when judged — and sets the milestone, or previews it under dry-run.
 // With ask, the human confirms each set: (a)ccept (s)kip (o)pen (q)uit, with
 // y/n as quiet aliases.
-func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, milestones map[string]db.Milestone, pos, total int, throttle func(), v *msMatchVerdict, ask bool) (int, error) {
+func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, milestones map[string]db.Milestone, pos, total int, throttle func(), v *issue.Verdict, ask bool) (int, error) {
 	m := milestones[fdg.expected]
 
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, text.TruncateRunes(fdg.issue.Title, 90), f.issueURL(fdg.issue.Number))
 	if err := f.printMSEvidence(d, fdg); err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if fdg.bucket == msMismatch {
 		cout.Printf("      <yellow>mismatch: carries %s, the changelog says %s</>\n", fdg.issue.Milestone, fdg.expected)
@@ -838,12 +826,12 @@ func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, mil
 
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would set milestone → %s</> <gray>(and sync it onto the fix PR if missing there)</>\n", fdg.expected)
-		return msApplyPreviewed, nil
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, err := askClose(fmt.Sprintf("set → <lightMagenta>%s</>?", fdg.expected), "", f.issueURL(fdg.issue.Number))
-		if err != nil || res != askAccept {
+		res, err := issue.AskClose(fmt.Sprintf("set → <lightMagenta>%s</>?", fdg.expected), "", f.issueURL(fdg.issue.Number))
+		if err != nil || res != issue.AskAccept {
 			return res, err
 		}
 	}
@@ -851,7 +839,7 @@ func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, mil
 	throttle()
 	if err := repo.SetMilestone(fdg.issue.Number, m.Number); err != nil {
 		cout.Errorf("      <red>failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	cout.Printf("      <fg=28>set milestone →</> <lightMagenta>%s</>\n", fdg.expected)
 	cout.Quietf("%d@milestone@%s\n", fdg.issue.Number, fdg.expected)
@@ -859,7 +847,7 @@ func (f *FlagData) applyOneMilestone(d *db.DB, repo gh.Repo, fdg *msFinding, mil
 
 	// keep the local scan in sync so a re-audit doesn't re-propose it
 	if _, err := d.Exec("UPDATE ms_issues SET milestone = ? WHERE number = ?", fdg.expected, fdg.issue.Number); err != nil {
-		return msApplyFailed, fmt.Errorf("updating scan row for #%d: %w", fdg.issue.Number, err)
+		return issue.ApplyFailed, fmt.Errorf("updating scan row for #%d: %w", fdg.issue.Number, err)
 	}
-	return msApplySet, nil
+	return issue.ApplySet, nil
 }

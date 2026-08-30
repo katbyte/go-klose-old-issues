@@ -1,4 +1,4 @@
-package triage_test
+package issue_test
 
 import (
 	"strings"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/katbyte/koi/lib/db"
-	"github.com/katbyte/koi/lib/triage"
+	"github.com/katbyte/koi/lib/issue"
 )
 
 func comment(author, body string, daysAgo int) db.Comment {
@@ -65,7 +65,7 @@ func TestSweepClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			got := triage.SweepClaims(tc.comments)
+			got := issue.SweepClaims(tc.comments)
 			if tc.wantMajor == 0 {
 				if got != nil {
 					t.Fatalf("expected nil, got %+v", got)
@@ -89,7 +89,7 @@ func TestCleanBody(t *testing.T) {
 	t.Parallel()
 
 	in := "### Community Note\n\n* Please vote on this issue\n* Please do not leave +1\n\n### Terraform Version\n<!--- a comment --->\nreal content"
-	out := triage.CleanBody(in)
+	out := issue.CleanBody(in)
 	if len(out) >= len(in) {
 		t.Fatalf("expected shorter output, got %q", out)
 	}
@@ -108,7 +108,7 @@ func TestVersionMentions(t *testing.T) {
 	c3 := comment("c", "no versions here", 10)
 	c3.ID = "c3"
 
-	got := triage.VersionMentions([]db.Comment{c1, c2, c3})
+	got := issue.VersionMentions([]db.Comment{c1, c2, c3})
 	if len(got) != 2 {
 		t.Fatalf("want 2 mentions (one per comment+major), got %d: %+v", len(got), got)
 	}

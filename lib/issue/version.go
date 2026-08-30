@@ -1,8 +1,10 @@
-// Package triage holds the pure domain logic: parsing provider versions and
-// resources out of issue text, sweeping comments for "still an issue on X"
-// claims, parsing changelogs, and the rules engine that proposes actions.
-// Everything here is deterministic and unit-testable; no network, no db writes.
-package triage
+// Package issue is the brain of koi: everything that decides, explains, and
+// confirms what happens to an issue. Parsing provider versions and resources
+// out of issue text, sweeping comments for "still an issue on X" claims,
+// parsing changelogs, the rules engine that proposes actions, the close
+// comment rendering, and the interactive close prompt. The domain logic is
+// deterministic and unit-testable; no network, no db writes.
+package issue
 
 import (
 	"regexp"

@@ -9,8 +9,8 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 // cardContext bundles everything the review card needs for one proposal. The
@@ -25,7 +25,7 @@ type cardContext struct {
 	comments []db.Comment
 	prs      []db.Crossref  // linked PRs in the triaged repo only — foreign-repo mentions are noise
 	releases map[int]string // PR number -> release that shipped it, per the changelog
-	mentions []triage.Claim // every version claim in the thread, with quote + comment url
+	mentions []issue.Claim  // every version claim in the thread, with quote + comment url
 	now      time.Time
 }
 
@@ -64,7 +64,7 @@ func (f *FlagData) loadCard(d *db.DB, a *db.Action) (*cardContext, error) {
 		prs = append(prs, r)
 		if r.Merged {
 			if versions, err := d.ChangelogVersionsForPR(r.RefNumber); err == nil && len(versions) > 0 {
-				sort.Slice(versions, func(a, b int) bool { return triage.VersionLess(versions[a], versions[b]) })
+				sort.Slice(versions, func(a, b int) bool { return issue.VersionLess(versions[a], versions[b]) })
 				releases[r.RefNumber] = versions[0]
 			}
 		}
@@ -72,7 +72,7 @@ func (f *FlagData) loadCard(d *db.DB, a *db.Action) (*cardContext, error) {
 
 	return &cardContext{
 		f: f, issue: i, signals: s, action: a, comments: comments,
-		prs: prs, releases: releases, mentions: triage.VersionMentions(comments),
+		prs: prs, releases: releases, mentions: issue.VersionMentions(comments),
 		now: time.Now(),
 	}, nil
 }
@@ -158,13 +158,13 @@ func (c *cardContext) renderCommentDigest() {
 }
 
 func (c *cardContext) renderCommentLine(cm *db.Comment, width int) {
-	body := text.TruncateRunes(text.OneLine(triage.CleanBody(cm.Body)), width)
-	body = triage.HighlightVersions(body, "<lightMagenta>", "</>")
+	body := text.TruncateRunes(text.OneLine(issue.CleanBody(cm.Body)), width)
+	body = issue.HighlightVersions(body, "<lightMagenta>", "</>")
 	marker := ""
 	if cm.IsMaintainer() {
 		marker = " <green>[maintainer]</>"
 	}
-	if triage.HasVersionMention(cm.Body) {
+	if issue.HasVersionMention(cm.Body) {
 		marker += " <yellow>[version]</>"
 	}
 	cout.Printf("   <gray>%5s</> <cyan>@%s</>%s: %s\n", text.HumanAge(cm.CreatedAt, c.now), cm.Author, marker, body)
@@ -181,7 +181,7 @@ func (c *cardContext) renderAllComments() {
 // renderBody prints the cleaned issue body (the b key).
 func (c *cardContext) renderBody() {
 	cout.Printf("\n<gray>── body of #%d ──</>\n", c.issue.Number)
-	cout.Println(text.TruncateRunes(triage.CleanBody(c.issue.Body), 4000))
+	cout.Println(text.TruncateRunes(issue.CleanBody(c.issue.Body), 4000))
 }
 
 // renderLinkedPRs prints each same-repo linked PR on its own line: state, title,
@@ -257,7 +257,7 @@ func digestComments(comments []db.Comment, maxN int) []db.Comment {
 	// version mentions, newest first
 	versioned := 0
 	for i := len(comments) - 1; i >= 0 && versioned < 3; i-- {
-		if triage.HasVersionMention(comments[i].Body) {
+		if issue.HasVersionMention(comments[i].Body) {
 			pickedIdx[i] = true
 			versioned++
 		}

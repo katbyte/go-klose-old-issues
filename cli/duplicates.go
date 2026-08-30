@@ -12,8 +12,8 @@ import (
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -54,8 +54,8 @@ var dupWord = regexp.MustCompile(`[a-z][a-z0-9_]*`)
 
 // DuplicatesOpts configures the duplicates audit and its apply modes.
 type DuplicatesOpts struct {
-	Link       string // linked | similar ("" = both classes)
-	applyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link            string // linked | similar ("" = both classes)
+	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // duplicateTarget is the older open issue this one appears to duplicate.
@@ -78,7 +78,8 @@ type duplicateFinding struct {
 // references it, or nobody linked anything and the two titles say the same
 // thing. The issue carrying more of the discussion survives, weighted towards
 // the older one; the AI judges whether the two are really the same ask.
-func (f *FlagData) Duplicates(o DuplicatesOpts) error {
+func (f *FlagData) Duplicates(link string) error {
+	o := DuplicatesOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.Fetch(false); err != nil {
 			return err
@@ -124,7 +125,7 @@ func (f *FlagData) Duplicates(o DuplicatesOpts) error {
 	}
 
 	// report: score everything (pipelined, cached) and list surest first
-	var verdicts map[int]*msMatchVerdict
+	var verdicts map[int]*issue.Verdict
 	if f.AI.Enabled {
 		promptText, items, jerr := f.duplicatesJudgeItems(d, findings)
 		if jerr != nil {
@@ -448,7 +449,7 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 	cout.Printf("closing <yellow>%d</> duplicates in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
 
 	if !f.DryRun && !f.Yes {
-		ok, err := confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag()))
 		if err != nil {
 			return err
 		}
@@ -471,13 +472,13 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 			return err
 		}
 		switch res {
-		case msApplySet:
+		case issue.ApplySet:
 			closed++
-		case msApplyFailed:
+		case issue.ApplyFailed:
 			failed++
-		case msApplyPreviewed:
+		case issue.ApplyPreviewed:
 			previewed++
-		case msApplySkipped:
+		case issue.ApplySkipped:
 			skipped++
 		}
 		if !f.DryRun && o.Max > 0 && closed >= o.Max {
@@ -522,10 +523,10 @@ func (f *FlagData) applyDuplicatesAI(d *db.DB, findings []duplicateFinding, o Du
 	throttle := newThrottle()
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []judgedTarget) (bool, error) {
+	process := func(ts []issue.Judged) (bool, error) {
 		for _, t := range ts {
 			pos++
-			fdg, v := byNumber[t.number], t.verdict
+			fdg, v := byNumber[t.Number], t.Verdict
 			switch {
 			case v == nil:
 				unanswered++
@@ -543,19 +544,19 @@ func (f *FlagData) applyDuplicatesAI(d *db.DB, findings []duplicateFinding, o Du
 					return true, cerr
 				}
 				switch res {
-				case msApplySet:
+				case issue.ApplySet:
 					closed++
-				case msApplyFailed:
+				case issue.ApplyFailed:
 					failed++
-				case msApplyPreviewed:
+				case issue.ApplyPreviewed:
 					previewed++
-				case msApplySkipped:
+				case issue.ApplySkipped:
 					if interactive {
 						humanSkipped++
 					} else {
 						skipped++
 					}
-				case msApplyQuit:
+				case issue.ApplyQuit:
 					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
 					return true, nil
 				}
@@ -571,7 +572,7 @@ func (f *FlagData) applyDuplicatesAI(d *db.DB, findings []duplicateFinding, o Du
 		if !auto || f.DryRun || f.Yes {
 			return true, nil
 		}
-		ok, err := confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
 		if err == nil && !ok {
 			cout.Printf("aborted\n")
 		}
@@ -589,22 +590,22 @@ func (f *FlagData) applyDuplicatesAI(d *db.DB, findings []duplicateFinding, o Du
 
 // closeOneDuplicate handles one candidate: card, the pointer comment, and the
 // close as a duplicate (or preview under dry-run, or the a/s ask).
-func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFinding, v *msMatchVerdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDuplicatesCard(fdg, pos, total, v)
 
 	comment, err := f.renderDuplicatesComment(fdg)
 	if err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if f.DryRun {
 		cout.Printf("      <yellow>dry-run: would comment (%d chars, %s.md) then close as %s</>\n",
-			len(comment), templateDuplicateOpen, triage.StateDuplicate)
-		return msApplyPreviewed, nil
+			len(comment), templateDuplicateOpen, issue.StateDuplicate)
+		return issue.ApplyPreviewed, nil
 	}
 
 	if ask {
-		res, perr := askClose(fmt.Sprintf("close <cyan>#%d</> as a duplicate of <cyan>#%d</>?", fdg.issue.Number, fdg.best.issue.Number), comment, fdg.issue.URL)
-		if perr != nil || res != askAccept {
+		res, perr := issue.AskClose(fmt.Sprintf("close <cyan>#%d</> as a duplicate of <cyan>#%d</>?", fdg.issue.Number, fdg.best.issue.Number), comment, fdg.issue.URL)
+		if perr != nil || res != issue.AskAccept {
 			return res, perr
 		}
 	}
@@ -613,11 +614,11 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 	live, err := repo.GetIssue(fdg.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if live.State != restStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 	// the survivor must still be open: closing an issue in favour of one that
 	// was itself closed while this run was going leaves nobody tracking it
@@ -625,30 +626,30 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 	target, err := repo.GetIssue(fdg.best.issue.Number)
 	if err != nil {
 		cout.Errorf("      <red>fetching #%d: %v</>\n", fdg.best.issue.Number, err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	if target.State != restStateOpen {
 		cout.Printf("      <gray>#%d is closed now — skipped, koi resolved covers that case</>\n", fdg.best.issue.Number)
-		return msApplySkipped, nil
+		return issue.ApplySkipped, nil
 	}
 
 	throttle()
 	if err := repo.CreateComment(fdg.issue.Number, comment); err != nil {
 		cout.Errorf("      <red>comment failed: %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 	throttle()
-	if err := repo.CloseIssue(fdg.issue.Number, triage.StateDuplicate); err != nil {
+	if err := repo.CloseIssue(fdg.issue.Number, issue.StateDuplicate); err != nil {
 		cout.Errorf("      <red>close failed (comment was posted): %v</>\n", err)
-		return msApplyFailed, nil
+		return issue.ApplyFailed, nil
 	}
 
-	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", triage.StateDuplicate)
+	cout.Printf("      <fg=28>commented + closed as</> <lightMagenta>%s</>\n", issue.StateDuplicate)
 	cout.Quietf("%d@closed@%s\n", fdg.issue.Number, reasonDuplicateOpen)
 
 	a := &db.Action{
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonDuplicateOpen,
-		StateReason: triage.StateDuplicate, Template: templateDuplicateOpen,
+		StateReason: issue.StateDuplicate, Template: templateDuplicateOpen,
 		Evidence: map[string]string{
 			"duplicate-of": fmt.Sprintf("#%d", fdg.best.issue.Number),
 			"class":        fdg.best.class,
@@ -664,23 +665,23 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 		a.Evidence[evidenceKeyAI] = v.Reason
 	}
 	if _, err := d.ProposeAction(a); err != nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	row, err := d.GetAction(fdg.issue.Number)
 	if err != nil || row == nil {
-		return msApplyFailed, err
+		return issue.ApplyFailed, err
 	}
 	if row.Status == db.StatusProposed {
 		if err := d.DecideAction(row.ID, db.StatusApproved, f.Decider()); err != nil {
-			return msApplyFailed, err
+			return issue.ApplyFailed, err
 		}
 	}
-	return msApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
+	return issue.ApplySet, d.MarkApplied(row.ID, db.StatusApplied, "")
 }
 
 // printDuplicatesCard is one finding: the newer issue, every older issue it
 // appears to duplicate, and the AI's score when judged.
-func (f *FlagData) printDuplicatesCard(fdg *duplicateFinding, pos, total int, v *msMatchVerdict) {
+func (f *FlagData) printDuplicatesCard(fdg *duplicateFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <gray>· opened %s · 💬 %d · 👍 %d</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), fdg.issue.CreatedAt.Format("2006-01-02"),
@@ -735,13 +736,13 @@ func (f *FlagData) renderDuplicatesComment(fdg *duplicateFinding) (string, error
 // duplicatesJudgeItems renders one judge block per finding: both issues in
 // full, so the AI compares what they actually ask rather than how they are
 // worded.
-func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (string, []judgeItem, error) {
+func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptDuplicates)
 	if err != nil {
 		return "", nil, err
 	}
 
-	items := make([]judgeItem, 0, len(findings))
+	items := make([]issue.JudgeItem, 0, len(findings))
 	for i := range findings {
 		fdg := &findings[i]
 		var b strings.Builder
@@ -749,7 +750,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 		fmt.Fprintf(&b, "opened %s, last activity %s, 💬 %d, 👍 %d\n",
 			fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"),
 			fdg.issue.CommentCount, fdg.issue.ThumbsUp)
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		comments, cerr := d.CommentsFor(fdg.issue.Number)
 		if cerr != nil {
 			return "", nil, cerr
@@ -758,7 +759,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 			}
 		}
 
@@ -777,7 +778,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 				t.issue.Number, how, side, t.issue.CreatedAt.Format("2006-01-02"),
 				t.issue.CommentCount, t.issue.ThumbsUp, text.OneLine(t.issue.Title))
 			if t.issue.Body != "" {
-				fmt.Fprintf(&b, "  THAT ISSUE'S BODY:\n%s\n", text.TruncateRunes(triage.CleanBody(t.issue.Body), msPRBodyRunes))
+				fmt.Fprintf(&b, "  THAT ISSUE'S BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.issue.Body), msPRBodyRunes))
 			}
 			tc, terr := d.CommentsFor(t.issue.Number)
 			if terr != nil {
@@ -787,11 +788,11 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 				fmt.Fprintf(&b, "  THAT ISSUE'S COMMENTS (%d of %d):\n", len(picked), len(tc))
 				for _, c := range picked {
 					fmt.Fprintf(&b, "  - [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-						text.TruncateRunes(text.OneLine(triage.CleanBody(c.Body)), commentRunesFor))
+						text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 				}
 			}
 		}
-		items = append(items, judgeItem{number: fdg.issue.Number, block: b.String()})
+		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
 }

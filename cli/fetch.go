@@ -10,9 +10,9 @@ import (
 	"github.com/katbyte/koi/lib/clog"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
-	"github.com/katbyte/koi/lib/ghql"
+	"github.com/katbyte/koi/lib/gh"
+	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
-	"github.com/katbyte/koi/lib/triage"
 )
 
 const (
@@ -42,7 +42,7 @@ func (f *FlagData) Fetch(full bool) error {
 	}
 	defer func() { _ = d.Close() }()
 
-	client := f.NewGHQL()
+	client := f.NewGraphQL()
 	started := db.Now()
 
 	cursor, err := d.GetMeta(metaFetchCursor)
@@ -135,7 +135,7 @@ func (f *FlagData) Fetch(full bool) error {
 	return nil
 }
 
-func (f *FlagData) fullWalk(d *db.DB, client *ghql.Client, owner, name, cursor string) error {
+func (f *FlagData) fullWalk(d *db.DB, client *gh.Client, owner, name, cursor string) error {
 	fetched := 0
 	for {
 		page, err := client.OpenIssues(owner, name, cursor)
@@ -176,7 +176,7 @@ func printFetchedIssue(pos, total int, b *db.IssueBundle) {
 	if i.ThumbsUp > 0 {
 		extra += fmt.Sprintf(" <gray>· 👍 %d</>", i.ThumbsUp)
 	}
-	if major, _ := triage.VersionFromLabels(i.Labels); major > 0 {
+	if major, _ := issue.VersionFromLabels(i.Labels); major > 0 {
 		extra += fmt.Sprintf(" <gray>·</> <lightMagenta>v%d.x</>", major)
 	}
 	if prs := len(b.Crossrefs); prs > 0 {
@@ -186,7 +186,7 @@ func printFetchedIssue(pos, total int, b *db.IssueBundle) {
 		pos, total, i.Number, state, text.TruncateRunes(text.OneLine(i.Title), 65), extra)
 }
 
-func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string, since time.Time) error {
+func (f *FlagData) incremental(d *db.DB, client *gh.Client, owner, name string, since time.Time) error {
 	cursor, fetched := "", 0
 	for {
 		page, err := client.UpdatedIssues(owner, name, since, cursor)
@@ -228,7 +228,7 @@ func (f *FlagData) incremental(d *db.DB, client *ghql.Client, owner, name string
 // open issue numbers (the repository connection is ground truth; search is
 // not) and refetches every issue whose state disagrees: closes the sync
 // missed, reopens, and brand-new issues alike.
-func (f *FlagData) reconcileOpenSet(d *db.DB, client *ghql.Client, owner, name string) error {
+func (f *FlagData) reconcileOpenSet(d *db.DB, client *gh.Client, owner, name string) error {
 	if last, err := d.GetMeta(metaLastReconcile); err != nil {
 		return err
 	} else if at, terr := time.Parse(time.RFC3339, last); terr == nil && time.Since(at) < reconcileEvery {
@@ -286,7 +286,7 @@ func (f *FlagData) reconcileOpenSet(d *db.DB, client *ghql.Client, owner, name s
 // fetchRemainingComments pages in the tail comments of issues whose comment count
 // exceeds what the bulk fetch returned — old, busy issues, exactly the ones where
 // the comments carry the decisive context.
-func (f *FlagData) fetchRemainingComments(d *db.DB, client *ghql.Client, owner, name string) error {
+func (f *FlagData) fetchRemainingComments(d *db.DB, client *gh.Client, owner, name string) error {
 	rows, err := d.Query(`
 		SELECT i.number, i.comment_count, COUNT(c.id)
 		FROM issues i LEFT JOIN comments c ON c.issue_number = i.number
@@ -348,7 +348,7 @@ func (f *FlagData) fetchRemainingComments(d *db.DB, client *ghql.Client, owner, 
 // changelogFiles are the per-major changelog files in the azurerm repo.
 // rawFileRetry downloads a raw file with a few retries — raw.githubusercontent
 // throttles bursts, and a transient failure here must not look like a 404.
-func rawFileRetry(client *ghql.Client, owner, name, file string) (string, error) {
+func rawFileRetry(client *gh.Client, owner, name, file string) (string, error) {
 	var content string
 	var err error
 	for attempt := 1; attempt <= 3; attempt++ {
@@ -364,7 +364,7 @@ func rawFileRetry(client *ghql.Client, owner, name, file string) (string, error)
 
 var changelogFiles = []string{"CHANGELOG.md", "CHANGELOG-v4.md", "CHANGELOG-v3.md", "CHANGELOG-v2.md", "CHANGELOG-v1.md", "CHANGELOG-v0.md"}
 
-func (f *FlagData) fetchChangelogs(d *db.DB, client *ghql.Client, owner, name string) error {
+func (f *FlagData) fetchChangelogs(d *db.DB, client *gh.Client, owner, name string) error {
 	var entries []db.ChangelogEntry
 	failed := 0
 	for _, file := range changelogFiles {
@@ -377,7 +377,7 @@ func (f *FlagData) fetchChangelogs(d *db.DB, client *ghql.Client, owner, name st
 			cout.Errorf("<yellow>warning:</> changelog %s: %v\n", file, err)
 			continue
 		}
-		entries = append(entries, triage.ParseChangelog(content)...)
+		entries = append(entries, issue.ParseChangelog(content)...)
 	}
 
 	if len(entries) == 0 {
@@ -406,7 +406,7 @@ var removalGuideMajors = []int{4, 5}
 // fetchRemovals rebuilds the removed/deprecated inventory from the upgrade
 // guides plus the changelog's DEPRECATIONS bullets. A failed guide download
 // keeps the existing table — a transient failure must not empty it.
-func (f *FlagData) fetchRemovals(d *db.DB, client *ghql.Client, owner, name string) error {
+func (f *FlagData) fetchRemovals(d *db.DB, client *gh.Client, owner, name string) error {
 	var removals []db.Removal
 	for _, major := range removalGuideMajors {
 		file := fmt.Sprintf("website/docs/guides/%d.0-upgrade-guide.html.markdown", major)
@@ -415,14 +415,14 @@ func (f *FlagData) fetchRemovals(d *db.DB, client *ghql.Client, owner, name stri
 			cout.Errorf("<yellow>warning:</> upgrade guide %s: %v — keeping the existing removals table\n", file, err)
 			return nil
 		}
-		removals = append(removals, triage.ParseUpgradeGuide(content, major)...)
+		removals = append(removals, issue.ParseUpgradeGuide(content, major)...)
 	}
 
 	deprecations, err := d.ChangelogSection("DEPRECATIONS")
 	if err != nil {
 		return err
 	}
-	removals = append(removals, triage.MineChangelogDeprecations(deprecations)...)
+	removals = append(removals, issue.MineChangelogDeprecations(deprecations)...)
 
 	if err := d.ReplaceRemovals(removals); err != nil {
 		return err
@@ -448,7 +448,7 @@ var docArgBullet = regexp.MustCompile("(?m)^\\s*[*-]\\s+`([a-z0-9_.]+)`")
 // docs: the resource/data source listings, and every argument each doc page
 // names TODAY. Page contents are only refetched when the docs trees actually
 // changed (their oids are remembered). A failed listing keeps existing data.
-func (f *FlagData) fetchProviderDocs(d *db.DB, client *ghql.Client, owner, name string) error {
+func (f *FlagData) fetchProviderDocs(d *db.DB, client *gh.Client, owner, name string) error {
 	kinds := map[string]string{db.DocKindResource: "website/docs/r", db.DocKindDataSource: "website/docs/d"}
 	byKind := map[string][]string{}
 	paths := map[string][]string{}
@@ -514,7 +514,7 @@ func (f *FlagData) fetchProviderDocs(d *db.DB, client *ghql.Client, owner, name 
 }
 
 // nodeToBundle converts a GraphQL issue node into db rows.
-func nodeToBundle(n *ghql.IssueNode) db.IssueBundle {
+func nodeToBundle(n *gh.IssueNode) db.IssueBundle {
 	labels := make([]string, 0, len(n.Labels.Nodes))
 	for _, l := range n.Labels.Nodes {
 		labels = append(labels, l.Name)
@@ -571,7 +571,7 @@ func nodeToBundle(n *ghql.IssueNode) db.IssueBundle {
 	return b
 }
 
-func commentFromNode(n *ghql.CommentNode, issueNumber int) db.Comment {
+func commentFromNode(n *gh.CommentNode, issueNumber int) db.Comment {
 	return db.Comment{
 		ID:                n.ID,
 		IssueNumber:       issueNumber,

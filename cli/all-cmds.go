@@ -37,7 +37,7 @@ func Make() (*cobra.Command, error) {
 sqlite database, runs deterministic triage rules (with optional AI passes for
 the ambiguous remainder), and then walks a human through approving and applying
 closes in throttled waves. Nothing touches GitHub without an approved action.`,
-		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
 			switch {
 			case viper.GetBool("silent"):
 				cout.Level = cout.VerbositySilent
@@ -46,7 +46,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			case viper.GetBool("verbose"):
 				cout.Level = cout.VerbosityVerbose
 			}
-			return nil
+			return bindCommandFlags(cmd)
 		},
 		RunE: func(_ *cobra.Command, _ []string) error {
 			fmt.Printf("Run \"koi help\" for more information about available koi commands.\n")
@@ -71,15 +71,15 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Long:          `Fetches every open issue — title, body, all comments, reactions, labels, and cross-referenced PRs — via the GraphQL API into the local database, plus the repository changelogs. The first run walks everything (resumable); later runs sync incrementally.`,
 		Aliases:       []string{"f"},
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			full, _ := cmd.Flags().GetBool("full")
-			return GetFlags().Fetch(full)
+			f := GetFlags()
+			return f.Fetch(f.Cmd.FetchFull)
 		},
 	}
-	fetchCmd.Flags().Bool("full", false, "force a full re-walk instead of an incremental sync")
+	addFetchFlags(fetchCmd)
 	root.AddCommand(fetchCmd)
 
 	reviewCmd := &cobra.Command{
@@ -91,18 +91,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			opts, err := reviewOptsFromFlags(cmd)
-			if err != nil {
-				return err
-			}
-			return GetFlags().Review(opts)
+			return GetFlags().Review()
 		},
 	}
-	reviewCmd.Flags().String("reason", "", "only review proposals with this reason code")
-	reviewCmd.Flags().String("action", "close", "which proposals to review: close, keep, human, or all")
-	reviewCmd.Flags().Float64("min-confidence", 0, "only review proposals at or above this confidence")
-	reviewCmd.Flags().Int("limit", 0, "max proposals to review this session (0 = all)")
-	reviewCmd.Flags().Bool("approve-all", false, "bulk-approve everything matching the filters (confirms first)")
+	addReviewFlags(reviewCmd)
 	root.AddCommand(reviewCmd)
 
 	reportCmd := &cobra.Command{
@@ -110,25 +102,20 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, exists, legacy, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			out, _ := cmd.Flags().GetString("out")
-			withAI, _ := cmd.Flags().GetBool("with-ai")
-			limit, _ := cmd.Flags().GetInt("limit")
 			f := GetFlags()
 			// the report is what someone reviews and acts from, so its open set
 			// must be true — reconcile by default unless explicitly turned off
 			if !cmd.Flags().Changed("auto-reconcile") {
 				f.AutoReconcile = true
 			}
-			return f.Report(ReportOpts{Out: out, WithAI: withAI, Limit: limit})
+			return f.Report()
 		},
 	}
-	reportCmd.PersistentFlags().String("out", "report", "directory to write the report files into")
-	reportCmd.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
-	reportCmd.Flags().Int("limit", 0, "cap candidates per check for a cheap test run (0 = all)")
+	addReportFlags(reportCmd)
 	reportCmd.AddCommand(&cobra.Command{
 		Use:           "actions-taken",
 		Short:         "writes the ledger of everything koi has closed, with the AI decision behind each one",
@@ -139,8 +126,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			out, _ := cmd.Flags().GetString("out")
-			return GetFlags().ActionsTaken(out)
+			return GetFlags().ActionsTaken()
 		},
 	})
 	root.AddCommand(reportCmd)
@@ -161,24 +147,21 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Use:           "apply",
 		Short:         "applies approved close actions to GitHub (comment + close), throttled",
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			reason, _ := cmd.Flags().GetString("reason")
-			maxApply, _ := cmd.Flags().GetInt("max")
-			return GetFlags().Apply(reason, maxApply)
+			return GetFlags().Apply()
 		},
 	}
-	applyCmd.Flags().String("reason", "", "only apply approved actions with this reason code")
-	applyCmd.Flags().Int("max", 100, "maximum closes to apply this run (waves keep the notification storm sane)")
+	addApplyFlags(applyCmd)
 	root.AddCommand(applyCmd)
 
 	reopenCmd := &cobra.Command{
 		Use:           "reopen #",
 		Short:         "reopens a closed issue (mistake recovery), with an optional comment",
 		Args:          cobra.ExactArgs(1),
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -186,24 +169,16 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			if err != nil {
 				return fmt.Errorf("issue number %q is not a number: %w", args[0], err)
 			}
-			comment, _ := cmd.Flags().GetString("comment")
-			return GetFlags().Reopen(number, comment)
+			return GetFlags().Reopen(number)
 		},
 	}
-	reopenCmd.Flags().String("comment", "", "comment to post when reopening")
+	addReopenFlags(reopenCmd)
 	root.AddCommand(reopenCmd)
 
 	msRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o MilestoneOpts
-			o.SkipScan, _ = cmd.Flags().GetBool("skip-scan")
-			o.Rescan, _ = cmd.Flags().GetBool("rescan")
-			o.applyModes = applyModesFrom(cmd)
-			o.CSV, _ = cmd.Flags().GetString("csv")
-			o.Bucket, _ = cmd.Flags().GetString("bucket")
-			o.Link = link
-			return GetFlags().Milestone(o)
+			return GetFlags().Milestone(link)
 		}
 	}
 	milestoneCmd := &cobra.Command{
@@ -212,17 +187,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Long:          `Scans every issue in the repository (light fields only — no bodies or comments) and determines the milestone each should carry: PRs tied to an issue are mapped to the release that shipped them via the changelog, using the strongest evidence available — the PR that closed the issue, then closing-keyword links, then a direct changelog citation, then bare mentions. --apply sets the determined milestone on closed issues, filling missing ones and correcting mismatches — the changelog is the ground truth of what shipped where. Open issues on released milestones are report-only. Subcommands restrict determination to one evidence class.`,
 		Aliases:       []string{"ms"},
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          msRunE(""),
 	}
-	milestoneCmd.PersistentFlags().Bool("skip-scan", false, "audit the existing scan data without re-fetching")
-	milestoneCmd.PersistentFlags().Bool("rescan", false, "force a full re-walk instead of an incremental scan")
-	addApplyFlags(milestoneCmd,
-		"set the determined milestones on closed issues — filling missing ones and correcting mismatches",
-		"the AI scores each issue↔evidence pairing", "milestone sets", 200)
-	milestoneCmd.PersistentFlags().String("csv", "", "write the full audit findings to this csv file")
-	milestoneCmd.PersistentFlags().String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
+	addMilestoneFlags(milestoneCmd)
 	for _, sub := range []struct{ use, link, short string }{
 		{"closed-by-pr", db.LinkClosedBy, "determine milestones only from the PR that closed each issue (strongest evidence)"},
 		{"linked-to-pr", db.LinkLinked, "determine milestones only from closing-keyword linked PRs (\"fixes #N\")"},
@@ -233,7 +202,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          msRunE(sub.link),
 		})
@@ -243,17 +212,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "audits every changelog-cited PR for the citing release's milestone",
 		Long:          `The changelog is the ground truth of what shipped in which release: every bullet cites the PR that shipped it. This checks each cited PR carries the citing release's milestone — the PR-side complement of the issue audit. --apply sets the citing release on merged PRs, filling missing milestones and correcting mismatches.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o MilestoneOpts
-			o.Rescan, _ = cmd.Flags().GetBool("rescan")
-			o.Apply, _ = cmd.Flags().GetBool("apply")
-			o.Max, _ = cmd.Flags().GetInt("max")
-			o.CSV, _ = cmd.Flags().GetString("csv")
-			o.Bucket, _ = cmd.Flags().GetString("bucket")
-			return GetFlags().ChangelogCheck(o)
+			return GetFlags().ChangelogCheck()
 		},
 	})
 	root.AddCommand(milestoneCmd)
@@ -261,10 +224,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	fxdRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o FixedOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Fixed(o)
+			return GetFlags().Fixed(link)
 		}
 	}
 	fixedCmd := &cobra.Command{
@@ -272,12 +232,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "a merged PR touches these open issues — did it fix them? AI-scored, closeable",
 		Long:          `Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. References class like the milestone audit: fixed-by (closing-keyword reference) then mentioned-by (bare mention), with subcommands scoping to one class. The AI judges whether the PR(s) actually fix each issue on full text. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with the fix PR and shipped version, closes as completed, and records an action for koi reopen.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          fxdRunE(""),
 	}
-	addApplyFlags(fixedCmd, "comment and close everything listed as completed",
-		"the AI scores each issue↔PR pairing", "closes", 50)
 	for _, sub := range []struct{ use, link, short string }{
 		{"fixed-by", classFixedBy, "only issues a merged PR references with a closing keyword (strongest evidence)"},
 		{"mentioned-by", classMentionedBy, "only issues a merged PR merely mentions (the AI earns its keep here)"},
@@ -286,7 +244,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          fxdRunE(sub.link),
 		})
@@ -296,10 +254,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	rsRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o ResolvedOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Resolved(o)
+			return GetFlags().Resolved(link)
 		}
 	}
 	resolvedCmd := &cobra.Command{
@@ -307,12 +262,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "a linked issue was dealt with — does its outcome cover these open ones? AI-scored, closeable",
 		Long:          `Every open issue that cross-references a closed issue in the same repository. Targets class by how they were closed: completed (resolved, with the fixing PR and release when known), duplicate, then not-planned; subcommands scope to one class. The AI compares the substance of both issues before blessing a close. --apply closes everything listed, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment as a duplicate pointing at the linked issue and its resolution, closed as completed when the target was resolved and not planned otherwise.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          rsRunE(""),
 	}
-	addApplyFlags(resolvedCmd, "comment and close everything listed as a duplicate",
-		"the AI compares both issues and scores", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{"completed", "only issues whose linked issue was resolved (strongest evidence)"},
 		{"duplicate", "only issues whose linked issue was itself closed as a duplicate"},
@@ -322,7 +275,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          rsRunE(sub.use),
 		})
@@ -334,28 +287,20 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "these bugs are old (v1–v3) and nobody says they are still alive — close as stale? AI reads issue + comments",
 		Long:          `Open bug and crash reports against legacy majors (v1..current-2) that the keep rules cleared for closing: no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are a different problem and are not touched. The AI reads each issue AND its comments and scores whether closing as stale is right. --apply closes the rules-cleared set, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment with the legacy-bug template and close as not planned.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o LegacyOpts
-			o.Majors, _ = cmd.Flags().GetIntSlice("major")
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Legacy(o)
+			return GetFlags().Legacy()
 		},
 	}
-	legacyCmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
-	addApplyFlags(legacyCmd, "comment and close every rules-cleared candidate as not planned",
-		"the AI scores each candidate from issue + comments", "closes", 50)
+	addLegacyFlags(legacyCmd)
 	root.AddCommand(legacyCmd)
 
 	depRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o DeprecatedOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Deprecated(o)
+			return GetFlags().Deprecated(link)
 		}
 	}
 	deprecatedCmd := &cobra.Command{
@@ -363,13 +308,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "these open issues lean on removed or deprecated resources/properties — moot where they stand? AI-scored, closeable",
 		Long:          `Scans every open issue against the removals inventory the fetch parses from the 4.0/5.0 upgrade guides and the changelog's DEPRECATIONS bullets: issues asking about or reporting against resources, data sources, or properties that were removed or deprecated. Classes by what the issue leans on, strongest first: removed-resource, removed-property, deprecated-resource, deprecated-property; the resource and property subcommands scope to one type. The AI judges whether each issue's substance actually centres on the dead thing or merely mentions it in passing. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with what was removed, when, and the successor to use, closed as not planned.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          depRunE(""),
 	}
-	addApplyFlags(deprecatedCmd,
-		"comment and close every listed issue as not planned (the AI-less path — incidental mentions are in the list, prefer --apply-with-ai)",
-		"the AI scores whether each issue is truly moot", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{"resource", "only issues leaning on a removed or deprecated resource/data source (strongest evidence)"},
 		{"property", "only issues leaning on a removed or deprecated property of a living resource"},
@@ -378,7 +320,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          depRunE(sub.use),
 		})
@@ -388,10 +330,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	cmtRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o CommentsOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Comments(o)
+			return GetFlags().Comments(link)
 		}
 	}
 	commentsCmd := &cobra.Command{
@@ -399,12 +338,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "these open issues' own threads say they can be closed — \"fixed in vX\", \"can be closed\". AI-scored, closeable",
 		Long:          `Scans every open issue's comments for claims that the issue is done: "this can be closed", "fixed in v3.27.0 by #18588", "no longer an issue", a maintainer saying they will close it. Classes by who says so: maintainer-says (MEMBER/COLLABORATOR authored a claim) then community-says; subcommands scope to one class. The AI reads each claim in thread context — negations, questions, and later disputes all score low. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the claim (author, deep link, version when named) and closes as completed.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          cmtRunE(""),
 	}
-	addApplyFlags(commentsCmd, "comment and close every listed issue as completed",
-		"the AI scores each claim in thread context", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classMaintainerSays, "only issues where a maintainer's comment says it can close (strongest evidence)"},
 		{classCommunitySays, "only issues where the community says it can close (the AI earns its keep here)"},
@@ -413,7 +350,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          cmtRunE(sub.use),
 		})
@@ -423,10 +360,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	exsRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o ExistsOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Exists(o)
+			return GetFlags().Exists(link)
 		}
 	}
 	existsCmd := &cobra.Command{
@@ -434,12 +368,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "these enhancement requests appear to already exist in the provider — good news closes. AI-scored, closeable",
 		Long:          `Open enhancement requests whose ask already exists: the requested resource or data source is in the provider docs today and arrived after the request (per the changelog's New Resource bullets), or a property the request's prose names shipped for one of its resources in a later release. The AI judges whether what shipped actually delivers the specific ask. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments with what exists, since when, and the documentation link, closed as completed.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          exsRunE(""),
 	}
-	addApplyFlags(existsCmd, "comment and close every listed request as completed",
-		"the AI judges whether what shipped delivers each ask", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classExistsResource, "only requests whose asked-for resource/data source now exists (strongest evidence)"},
 		{classExistsProperty, "only requests whose asked-for property shipped in a later release"},
@@ -448,7 +380,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          exsRunE(sub.use),
 		})
@@ -458,10 +390,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	dupRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			var o DuplicatesOpts
-			o.Link = link
-			o.applyModes = applyModesFrom(cmd)
-			return GetFlags().Duplicates(o)
+			return GetFlags().Duplicates(link)
 		}
 	}
 	duplicatesCmd := &cobra.Command{
@@ -470,12 +399,10 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "these open issues appear to duplicate an older open issue. AI-scored, closeable",
 		Long:          `Open issues that duplicate another OPEN issue: this one references it, or nobody ever linked them and the two titles say the same thing. The older issue always survives, since it holds the history, the reactions and the maintainer discussion; the AI compares both issues in full and judges whether they are really the same ask. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments pointing at the surviving issue and closes as a duplicate. Issues with an open PR linked to them are never listed. For duplicates of issues that are already CLOSED, use koi resolved.`,
 		Args:          cobra.NoArgs,
-		PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 		SilenceErrors: true,
 		RunE:          dupRunE(""),
 	}
-	addApplyFlags(duplicatesCmd, "comment and close every listed issue as a duplicate",
-		"the AI compares both issues and scores the match", "closes", 50)
 	for _, sub := range []struct{ use, short string }{
 		{classDupLinked, "only issues that reference the older issue (strongest evidence)"},
 		{classDupSimilar, "only issues nobody linked, matched on near-identical titles"},
@@ -484,7 +411,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			Use:           sub.use,
 			Short:         sub.short,
 			Args:          cobra.NoArgs,
-			PreRunE:       ValidateParams([]string{"token-gh", "repo", "db"}),
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
 			SilenceErrors: true,
 			RunE:          dupRunE(sub.use),
 		})
@@ -533,28 +460,4 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 	}
 
 	return root, nil
-}
-
-func reviewOptsFromFlags(cmd *cobra.Command) (ReviewOpts, error) {
-	var o ReviewOpts
-	var err error
-	if o.Reason, err = cmd.Flags().GetString("reason"); err != nil {
-		return o, fmt.Errorf("reading reason flag: %w", err)
-	}
-	if o.Action, err = cmd.Flags().GetString("action"); err != nil {
-		return o, fmt.Errorf("reading action flag: %w", err)
-	}
-	if o.MinConfidence, err = cmd.Flags().GetFloat64("min-confidence"); err != nil {
-		return o, fmt.Errorf("reading min-confidence flag: %w", err)
-	}
-	if o.Limit, err = cmd.Flags().GetInt("limit"); err != nil {
-		return o, fmt.Errorf("reading limit flag: %w", err)
-	}
-	if o.ApproveAll, err = cmd.Flags().GetBool("approve-all"); err != nil {
-		return o, fmt.Errorf("reading approve-all flag: %w", err)
-	}
-	if o.Action == "all" {
-		o.Action = ""
-	}
-	return o, nil
 }
