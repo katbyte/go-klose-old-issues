@@ -493,7 +493,7 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 func (f *FlagData) applyDuplicatesAI(d *db.DB, findings []duplicateFinding, o DuplicatesOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -755,7 +755,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 		if cerr != nil {
 			return "", nil, cerr
 		}
-		if picked := digestComments(comments, 5); len(picked) > 0 {
+		if picked := issue.DigestComments(comments, 5); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
@@ -784,7 +784,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 			if terr != nil {
 				return "", nil, terr
 			}
-			if picked := digestComments(tc, 4); len(picked) > 0 {
+			if picked := issue.DigestComments(tc, 4); len(picked) > 0 {
 				fmt.Fprintf(&b, "  THAT ISSUE'S COMMENTS (%d of %d):\n", len(picked), len(tc))
 				for _, c := range picked {
 					fmt.Fprintf(&b, "  - [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,

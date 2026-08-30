@@ -307,7 +307,7 @@ func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o Resolve
 func (f *FlagData) applyResolvedAI(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -609,7 +609,7 @@ func (f *FlagData) resolvedJudgeItems(d *db.DB, findings []resolvedFinding) (str
 		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 		// the open issue's own thread often settles it: "fixed by #X" supports
 		// the duplicate, "still happening on vY" refutes it
-		if picked := digestComments(comments, 8); len(picked) > 0 {
+		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,

@@ -605,7 +605,7 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts)
 func (f *FlagData) applyExistsAI(d *db.DB, findings []existsFinding, o ExistsOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -836,7 +836,7 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 		}
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
 		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
-		if picked := digestComments(comments, 8); len(picked) > 0 {
+		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "REQUEST COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,

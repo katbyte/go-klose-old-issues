@@ -134,9 +134,9 @@ func configureFlags(root *cobra.Command) error {
 	// Apply-mode Flags (FlagsApplyModes) — shared by the checks, milestone, and apply
 	pflags.Bool("apply", false, "act on the evidence with no AI: checks close everything they list, milestone sets every determined milestone")
 	pflags.Bool("apply-with-ai", false, "the AI scores each candidate, you confirm each one interactively")
-	pflags.Float64("apply-with-ai-auto", msMatchThreshold, fmt.Sprintf(
-		"act on what the AI scores at or above this confidence (bare flag = %.2f, or --apply-with-ai-auto=0.85)", msMatchThreshold))
-	pflags.Lookup("apply-with-ai-auto").NoOptDefVal = fmt.Sprintf("%g", msMatchThreshold)
+	pflags.Float64("apply-with-ai-auto", judgeThreshold, fmt.Sprintf(
+		"act on what the AI scores at or above this confidence (bare flag = %.2f, or --apply-with-ai-auto=0.85)", judgeThreshold))
+	pflags.Lookup("apply-with-ai-auto").NoOptDefVal = fmt.Sprintf("%g", judgeThreshold)
 	pflags.Int("max", 50, "maximum mutations (closes, milestone sets) to apply this run")
 
 	// Output Flags

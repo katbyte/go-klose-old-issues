@@ -48,7 +48,7 @@ func (f *FlagData) Apply() error {
 		counts["close/"+a.Reason]++
 	}
 	cout.Printf("applying <yellow>%d</> closes to <white>%s</>%s:\n", len(actions), f.GH.Repo, dryRunTag(f.DryRun))
-	printCounts(counts)
+	cout.PrintCounts(counts)
 
 	if !f.DryRun && !f.Yes {
 		ok, err := issue.Confirm(fmt.Sprintf("close <yellow>%d</> issues on %s?", len(actions), f.repoTag()))
@@ -65,21 +65,21 @@ func (f *FlagData) Apply() error {
 	applied, stale, failed := 0, 0, 0
 
 	for n, a := range actions {
-		card, err := f.loadCard(d, a)
+		card, err := issue.LoadCard(d, a, f.GH.Repo, f.KeepReactions, f.CurrentMajor)
 		if err != nil {
 			return err
 		}
 
 		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
-			n+1, len(actions), a.IssueNumber, text.TruncateRunes(text.OneLine(card.issue.Title), 90), f.issueURL(a.IssueNumber))
+			n+1, len(actions), a.IssueNumber, text.TruncateRunes(text.OneLine(card.Issue.Title), 90), f.issueURL(a.IssueNumber))
 		version := "no version"
-		if card.signals != nil && card.signals.VersionMajor > 0 {
-			version = fmt.Sprintf("<lightMagenta>v%s</> <gray>(%s)</>", versionText(card.signals), card.signals.VersionSource)
+		if card.Signals != nil && card.Signals.VersionMajor > 0 {
+			version = fmt.Sprintf("<lightMagenta>v%s</> <gray>(%s)</>", issue.VersionText(card.Signals), card.Signals.VersionSource)
 		}
 		cout.Printf("      <lightBlue>%s</> · %s · confidence %s · 💬 %d · 👍 %d\n",
-			a.Reason, version, confidenceColoured(a.Confidence), card.issue.CommentCount, card.issue.ThumbsUp)
+			a.Reason, version, issue.ConfidenceColoured(a.Confidence), card.Issue.CommentCount, card.Issue.ThumbsUp)
 
-		comment, err := issue.RenderCloseComment(card.issue, card.signals, a, f.CurrentMajor)
+		comment, err := issue.RenderCloseComment(card.Issue, card.Signals, a, f.CurrentMajor)
 		if err != nil {
 			cout.Errorf("      <red>rendering comment: %v</>\n", err)
 			if err := d.MarkApplied(a.ID, db.StatusFailed, err.Error()); err != nil {

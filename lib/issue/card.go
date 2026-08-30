@@ -1,4 +1,4 @@
-package cli
+package issue
 
 import (
 	"fmt"
@@ -9,27 +9,32 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
-	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
 )
 
-// cardContext bundles everything the review card needs for one proposal. The
+// Card bundles everything the review card needs for one proposal. The
 // card's job is to let a human decide in seconds: every load-bearing fact —
 // version evidence with its quote, the newest claim, linked PRs, the AI's
 // judgement, and the informative comments — is on screen, highlighted.
-type cardContext struct {
-	f        *FlagData
-	issue    *db.Issue
-	signals  *db.Signals
-	action   *db.Action
+type Card struct {
+	Issue   *db.Issue
+	Signals *db.Signals
+	Action  *db.Action
+
 	comments []db.Comment
 	prs      []db.Crossref  // linked PRs in the triaged repo only — foreign-repo mentions are noise
 	releases map[int]string // PR number -> release that shipped it, per the changelog
-	mentions []issue.Claim  // every version claim in the thread, with quote + comment url
+	mentions []Claim        // every version claim in the thread, with quote + comment url
 	now      time.Time
+
+	keepReactions int // 👍 threshold that reddens the count
+	currentMajor  int // what "recent claim" is judged against
 }
 
-func (f *FlagData) loadCard(d *db.DB, a *db.Action) (*cardContext, error) {
+// LoadCard assembles the card for one proposal. repo scopes linked PRs to the
+// triaged repository; keepReactions and currentMajor colour the engagement and
+// claim lines.
+func LoadCard(d *db.DB, a *db.Action, repo string, keepReactions, currentMajor int) (*Card, error) {
 	i, err := d.GetIssue(a.IssueNumber)
 	if err != nil {
 		return nil, err
@@ -58,28 +63,28 @@ func (f *FlagData) loadCard(d *db.DB, a *db.Action) (*cardContext, error) {
 	var prs []db.Crossref
 	releases := map[int]string{}
 	for _, r := range crossrefs {
-		if !r.IsPR || !strings.EqualFold(r.RefRepo, f.GH.Repo) {
+		if !r.IsPR || !strings.EqualFold(r.RefRepo, repo) {
 			continue
 		}
 		prs = append(prs, r)
 		if r.Merged {
 			if versions, err := d.ChangelogVersionsForPR(r.RefNumber); err == nil && len(versions) > 0 {
-				sort.Slice(versions, func(a, b int) bool { return issue.VersionLess(versions[a], versions[b]) })
+				sort.Slice(versions, func(a, b int) bool { return VersionLess(versions[a], versions[b]) })
 				releases[r.RefNumber] = versions[0]
 			}
 		}
 	}
 
-	return &cardContext{
-		f: f, issue: i, signals: s, action: a, comments: comments,
-		prs: prs, releases: releases, mentions: issue.VersionMentions(comments),
-		now: time.Now(),
+	return &Card{
+		Issue: i, Signals: s, Action: a, comments: comments,
+		prs: prs, releases: releases, mentions: VersionMentions(comments),
+		now: time.Now(), keepReactions: keepReactions, currentMajor: currentMajor,
 	}, nil
 }
 
-// render prints the full card.
-func (c *cardContext) render(pos, total int) {
-	i, s, a := c.issue, c.signals, c.action
+// Render prints the full card.
+func (c *Card) Render(pos, total int) {
+	i, s, a := c.Issue, c.Signals, c.Action
 
 	cout.Printf("\n<gray>%s</>\n", strings.Repeat("─", 100))
 	cout.Printf("<lightBlue>[%d/%d]</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n", pos, total, i.Number, text.TruncateRunes(i.Title, 90), i.URL)
@@ -92,19 +97,19 @@ func (c *cardContext) render(pos, total int) {
 	cout.Printf("  <gray>%s</>\n", labels)
 	cout.Printf("  opened <yellow>%s</> ago by %s (%s) · 💬 <yellow>%d</> · 👍 %s · %d participants · last activity <yellow>%s</> ago%s\n",
 		text.HumanAge(i.CreatedAt, c.now), i.Author, strings.ToLower(i.AuthorAssociation),
-		i.CommentCount, thumbsColoured(i.ThumbsUp, c.f.KeepReactions),
+		i.CommentCount, thumbsColoured(i.ThumbsUp, c.keepReactions),
 		s.Participants, text.HumanAge(s.LastActivity, c.now), maintainerTag(s.MaintainerCommented))
 
 	// version evidence
 	if s.VersionMajor > 0 {
-		cout.Printf("  version: <lightMagenta>v%s</> <gray>(%s)</> — %s\n", versionText(s), s.VersionSource, text.TruncateRunes(s.VersionQuote, 80))
+		cout.Printf("  version: <lightMagenta>v%s</> <gray>(%s)</> — %s\n", VersionText(s), s.VersionSource, text.TruncateRunes(s.VersionQuote, 80))
 	} else {
 		cout.Printf("  version: <gray>undetermined</>\n")
 	}
 
 	// claims: for a close proposal, "no recent claims" is the load-bearing fact
 	switch {
-	case s.NewestClaimMajor > 0 && s.NewestClaimMajor >= c.f.CurrentMajor-1:
+	case s.NewestClaimMajor > 0 && s.NewestClaimMajor >= c.currentMajor-1:
 		cout.Printf("  claim: <red>v%d.x mentioned %s ago</> by @%s — \"%s\"\n",
 			s.NewestClaimMajor, text.HumanAge(s.NewestClaimAt, c.now), s.NewestClaimAuthor, text.TruncateRunes(s.NewestClaimQuote, 80))
 	case s.NewestClaimMajor > 0:
@@ -133,9 +138,9 @@ func (c *cardContext) render(pos, total int) {
 	switch a.Action {
 	case db.ActionClose:
 		cout.Printf("  <red>CLOSE</> as %s · <bold>%s</> · confidence %s · template <cyan>%s.md</>\n",
-			a.StateReason, a.Reason, confidenceColoured(a.Confidence), a.Template)
+			a.StateReason, a.Reason, ConfidenceColoured(a.Confidence), a.Template)
 	case db.ActionKeep:
-		cout.Printf("  <green>KEEP</> · <bold>%s</> · confidence %s\n", a.Reason, confidenceColoured(a.Confidence))
+		cout.Printf("  <green>KEEP</> · <bold>%s</> · confidence %s\n", a.Reason, ConfidenceColoured(a.Confidence))
 	default:
 		cout.Printf("  <yellow>NEEDS HUMAN</> · %s\n", a.Reason)
 	}
@@ -146,47 +151,47 @@ func (c *cardContext) render(pos, total int) {
 
 // renderCommentDigest shows the informative slice of the thread: every comment
 // with a version mention plus the most recent ones, versions highlighted.
-func (c *cardContext) renderCommentDigest() {
+func (c *Card) renderCommentDigest() {
 	if len(c.comments) == 0 {
 		return
 	}
-	picked := digestComments(c.comments, 5)
+	picked := DigestComments(c.comments, 5)
 	cout.Printf("  <gray>── comments (%d of %d — c for all) ──</>\n", len(picked), len(c.comments))
 	for _, cm := range picked {
 		c.renderCommentLine(&cm, 150)
 	}
 }
 
-func (c *cardContext) renderCommentLine(cm *db.Comment, width int) {
-	body := text.TruncateRunes(text.OneLine(issue.CleanBody(cm.Body)), width)
-	body = issue.HighlightVersions(body, "<lightMagenta>", "</>")
+func (c *Card) renderCommentLine(cm *db.Comment, width int) {
+	body := text.TruncateRunes(text.OneLine(CleanBody(cm.Body)), width)
+	body = HighlightVersions(body, "<lightMagenta>", "</>")
 	marker := ""
 	if cm.IsMaintainer() {
 		marker = " <green>[maintainer]</>"
 	}
-	if issue.HasVersionMention(cm.Body) {
+	if HasVersionMention(cm.Body) {
 		marker += " <yellow>[version]</>"
 	}
 	cout.Printf("   <gray>%5s</> <cyan>@%s</>%s: %s\n", text.HumanAge(cm.CreatedAt, c.now), cm.Author, marker, body)
 }
 
-// renderAllComments prints the full thread (the c key).
-func (c *cardContext) renderAllComments() {
-	cout.Printf("\n<gray>── all %d comments on #%d ──</>\n", len(c.comments), c.issue.Number)
+// RenderAllComments prints the full thread (the c key).
+func (c *Card) RenderAllComments() {
+	cout.Printf("\n<gray>── all %d comments on #%d ──</>\n", len(c.comments), c.Issue.Number)
 	for i := range c.comments {
 		c.renderCommentLine(&c.comments[i], 400)
 	}
 }
 
-// renderBody prints the cleaned issue body (the b key).
-func (c *cardContext) renderBody() {
-	cout.Printf("\n<gray>── body of #%d ──</>\n", c.issue.Number)
-	cout.Println(text.TruncateRunes(issue.CleanBody(c.issue.Body), 4000))
+// RenderBody prints the cleaned issue body (the b key).
+func (c *Card) RenderBody() {
+	cout.Printf("\n<gray>── body of #%d ──</>\n", c.Issue.Number)
+	cout.Println(text.TruncateRunes(CleanBody(c.Issue.Body), 4000))
 }
 
 // renderLinkedPRs prints each same-repo linked PR on its own line: state, title,
 // and — for merged ones the changelog knows — the release that shipped it.
-func (c *cardContext) renderLinkedPRs() {
+func (c *Card) renderLinkedPRs() {
 	if len(c.prs) == 0 {
 		return
 	}
@@ -226,7 +231,7 @@ func (c *cardContext) renderLinkedPRs() {
 // mention with its quote, plus the comment url so the reviewer can jump straight
 // to the evidence. Only shown when there is more than one mention (the single
 // newest one is already on the claim line above).
-func (c *cardContext) renderVersionMentions() {
+func (c *Card) renderVersionMentions() {
 	if len(c.mentions) < 2 {
 		return
 	}
@@ -245,9 +250,9 @@ func (c *cardContext) renderVersionMentions() {
 	}
 }
 
-// digestComments picks the informative slice: every version-mentioning comment
+// DigestComments picks the informative slice: every version-mentioning comment
 // (newest first, up to 3) plus the last two overall, in chronological order.
-func digestComments(comments []db.Comment, maxN int) []db.Comment {
+func DigestComments(comments []db.Comment, maxN int) []db.Comment {
 	if len(comments) <= maxN {
 		return comments
 	}
@@ -257,7 +262,7 @@ func digestComments(comments []db.Comment, maxN int) []db.Comment {
 	// version mentions, newest first
 	versioned := 0
 	for i := len(comments) - 1; i >= 0 && versioned < 3; i-- {
-		if issue.HasVersionMention(comments[i].Body) {
+		if HasVersionMention(comments[i].Body) {
 			pickedIdx[i] = true
 			versioned++
 		}
@@ -295,7 +300,9 @@ func digestComments(comments []db.Comment, maxN int) []db.Comment {
 	return out
 }
 
-func versionText(s *db.Signals) string {
+// VersionText renders a signals row's version: the full version when known,
+// else "N.x" from the major.
+func VersionText(s *db.Signals) string {
 	if s.VersionFull != "" {
 		return s.VersionFull
 	}
@@ -309,9 +316,9 @@ func maintainerTag(commented bool) string {
 	return ""
 }
 
-// confidenceColoured buckets a confidence for display: green ≥0.75, yellow ≥0.5,
+// ConfidenceColoured buckets a confidence for display: green ≥0.75, yellow ≥0.5,
 // orange ≥0.25, red below.
-func confidenceColoured(c float64) string {
+func ConfidenceColoured(c float64) string {
 	switch {
 	case c >= 0.75:
 		return fmt.Sprintf("<green>%.2f</>", c)

@@ -1,4 +1,4 @@
-package cli
+package issue
 
 import (
 	"strconv"
@@ -7,24 +7,13 @@ import (
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
-	"github.com/katbyte/koi/lib/issue"
-	"github.com/katbyte/koi/lib/text"
 )
 
-// ensureAnalysed refreshes signals and rule proposals before a consumer command
-// runs. Analyse is deterministic, takes seconds, and never overwrites human
-// decisions or AI enrichment — so commands re-run it themselves rather than
-// making the user remember to.
-func (f *FlagData) ensureAnalysed(d *db.DB) error {
-	_, err := f.analyseAll(d)
-	return err
-}
-
-// analyseAll computes signals + rule proposals for every open issue, printing a
+// AnalyseAll computes signals + rule proposals for every open issue, printing a
 // single summary line. Returns nil counts when the db has no open issues (a
 // message is printed either way). Deterministic and free: safe to re-run any
 // time, and it never overwrites decisions a human has already made.
-func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
+func AnalyseAll(d *db.DB, repo string, cfg RuleConfig) (map[string]int, error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, err
@@ -34,10 +23,9 @@ func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 		return nil, nil
 	}
 
-	cfg := f.RuleConfig()
 	counts := map[string]int{}
 	for _, i := range issues {
-		s, err := computeSignals(d, i, f.GH.Repo)
+		s, err := computeSignals(d, i, repo)
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +48,7 @@ func (f *FlagData) analyseAll(d *db.DB) (map[string]int, error) {
 			return nil, err
 		}
 
-		if a := issue.Propose(i, s, cfg); a != nil {
+		if a := Propose(i, s, cfg); a != nil {
 			// proposals refined by the AI passes or edited by a human outlive an
 			// analyse re-run: rules alone can't reproduce an ai-keep veto, and the
 			// verdict cache means an AI run wouldn't re-derive it either
@@ -102,18 +90,18 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 
 	s := &db.Signals{
 		IssueNumber: i.Number,
-		Kind:        issue.KindFromLabels(i.Labels),
-		Service:     issue.ServiceFromLabels(i.Labels),
-		Resources:   issue.ExtractResources(i.Title+"\n"+i.Body, 10),
+		Kind:        KindFromLabels(i.Labels),
+		Service:     ServiceFromLabels(i.Labels),
+		Resources:   ExtractResources(i.Title+"\n"+i.Body, 10),
 		ComputedAt:  db.Now(),
 	}
 
 	// version precedence: maintainer label > template block > body mentions
-	if major, count := issue.VersionFromLabels(i.Labels); major > 0 {
+	if major, count := VersionFromLabels(i.Labels); major > 0 {
 		s.VersionMajor, s.VersionFull, s.VersionSource = major, "", "label"
 		s.VersionQuote = "labelled v/" + strconv.Itoa(major) + ".x"
 		s.MultiVersionLabels = count > 1
-	} else if v := issue.ExtractProviderVersion(i.Body); v != nil {
+	} else if v := ExtractProviderVersion(i.Body); v != nil {
 		s.VersionMajor, s.VersionFull, s.VersionSource, s.VersionQuote = v.Major, v.Full, v.Source, v.Quote
 	}
 
@@ -133,7 +121,7 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 	}
 	s.Participants = len(participants)
 
-	if claim := issue.SweepClaims(comments); claim != nil {
+	if claim := SweepClaims(comments); claim != nil {
 		s.NewestClaimMajor = claim.Major
 		s.NewestClaimAt = claim.At
 		s.NewestClaimQuote = claim.Quote
@@ -161,11 +149,4 @@ func computeSignals(d *db.DB, i *db.Issue, repo string) (*db.Signals, error) {
 	}
 
 	return s, nil
-}
-
-func printCounts(counts map[string]int) {
-	keys := text.SortedKeys(counts)
-	for _, k := range keys {
-		cout.Printf("  %-28s <yellow>%d</>\n", k, counts[k])
-	}
 }

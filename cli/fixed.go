@@ -265,7 +265,7 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun

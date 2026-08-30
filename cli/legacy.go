@@ -307,7 +307,7 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts)
 func (f *FlagData) applyLegacyAI(d *db.DB, findings []legacyFinding, o LegacyOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -520,7 +520,7 @@ func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string,
 			kind, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.signals.LastActivity.Format("2006-01-02"))
 		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
 
-		picked := digestComments(comments, 8)
+		picked := issue.DigestComments(comments, 8)
 		if len(picked) > 0 {
 			fmt.Fprintf(&b, "COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	c "github.com/gookit/color"
@@ -78,4 +79,16 @@ func StateTag(state string) string {
 		return "<fg=208>open</>  "
 	}
 	return "<green>" + fmt.Sprintf("%-6s", strings.ToLower(state)) + "</>"
+}
+
+// PrintCounts prints a sorted key → count tally, one indented line per key.
+func PrintCounts(counts map[string]int) {
+	keys := make([]string, 0, len(counts))
+	for k := range counts {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		Printf("  %-28s <yellow>%d</>\n", k, counts[k])
+	}
 }

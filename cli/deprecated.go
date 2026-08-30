@@ -383,7 +383,7 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 func (f *FlagData) applyDeprecatedAI(d *db.DB, findings []deprecatedFinding, o DeprecatedOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -629,7 +629,7 @@ func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) 
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
 		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
-		if picked := digestComments(comments, 8); len(picked) > 0 {
+		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,

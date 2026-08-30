@@ -353,7 +353,7 @@ func (f *FlagData) applyComments(d *db.DB, findings []commentsFinding, o Comment
 func (f *FlagData) applyCommentsAI(d *db.DB, findings []commentsFinding, o CommentsOpts) error {
 	threshold := o.Threshold
 	if threshold <= 0 {
-		threshold = msMatchThreshold
+		threshold = judgeThreshold
 	}
 	auto := o.ApplyWithAIAuto
 	interactive := !auto && !f.DryRun
@@ -586,7 +586,7 @@ func (f *FlagData) commentsJudgeItems(d *db.DB, findings []commentsFinding) (str
 				fmt.Fprintf(&b, "  LINKS PR #%d, which SHIPPED in v%s per the changelog\n", cl.prNumber, cl.prVersion)
 			}
 		}
-		if picked := digestComments(comments, 10); len(picked) > 0 {
+		if picked := issue.DigestComments(comments, 10); len(picked) > 0 {
 			fmt.Fprintf(&b, "THREAD DIGEST (%d of %d comments — watch for disputes AFTER the claims):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,

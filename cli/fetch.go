@@ -582,3 +582,12 @@ func commentFromNode(n *gh.CommentNode, issueNumber int) db.Comment {
 		URL:               n.URL,
 	}
 }
+
+// ensureAnalysed refreshes signals and rule proposals before a consumer command
+// runs. Analyse is deterministic, takes seconds, and never overwrites human
+// decisions or AI enrichment — so commands re-run it themselves rather than
+// making the user remember to.
+func (f *FlagData) ensureAnalysed(d *db.DB) error {
+	_, err := issue.AnalyseAll(d, f.GH.Repo, f.RuleConfig())
+	return err
+}

@@ -59,11 +59,11 @@ func (f *FlagData) Review() error {
 
 	for idx := 0; idx < len(actions); idx++ {
 		a := actions[idx]
-		card, err := f.loadCard(d, a)
+		card, err := issue.LoadCard(d, a, f.GH.Repo, f.KeepReactions, f.CurrentMajor)
 		if err != nil {
 			return err
 		}
-		card.render(idx+1, len(actions))
+		card.Render(idx+1, len(actions))
 
 	prompt:
 		for {
@@ -104,22 +104,22 @@ func (f *FlagData) Review() error {
 					return err
 				}
 				actions[idx] = a
-				card.action = a
-				card.render(idx+1, len(actions))
+				card.Action = a
+				card.Render(idx+1, len(actions))
 
 			case "c":
-				card.renderAllComments()
-				card.render(idx+1, len(actions))
+				card.RenderAllComments()
+				card.Render(idx+1, len(actions))
 
 			case "b":
-				card.renderBody()
-				card.render(idx+1, len(actions))
+				card.RenderBody()
+				card.Render(idx+1, len(actions))
 
 			case "t":
 				f.previewTemplate(card)
 
 			case "o":
-				if err := browser.OpenURL(card.issue.URL); err != nil {
+				if err := browser.OpenURL(card.Issue.URL); err != nil {
 					cout.Errorf("  <yellow>WARNING:</> opening browser: %v\n", err)
 				}
 
@@ -179,7 +179,7 @@ func printReviewHelp() {
 }
 
 // editAction lets the reviewer change the proposed action/reason before deciding.
-func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
+func (f *FlagData) editAction(d *db.DB, card *issue.Card) error {
 	reasons := []struct {
 		reason, stateReason string
 	}{
@@ -202,7 +202,7 @@ func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
 		return err
 	}
 
-	a := card.action
+	a := card.Action
 	switch strings.ToLower(ans) {
 	case "a", "":
 		return nil
@@ -221,17 +221,17 @@ func (f *FlagData) editAction(d *db.DB, card *cardContext) error {
 	}
 }
 
-func (f *FlagData) previewTemplate(card *cardContext) {
-	if card.action.Action != db.ActionClose {
+func (f *FlagData) previewTemplate(card *issue.Card) {
+	if card.Action.Action != db.ActionClose {
 		cout.Printf("  <gray>no template: not a close proposal</>\n")
 		return
 	}
-	text, err := issue.RenderCloseComment(card.issue, card.signals, card.action, f.CurrentMajor)
+	text, err := issue.RenderCloseComment(card.Issue, card.Signals, card.Action, f.CurrentMajor)
 	if err != nil {
 		cout.Errorf("  <red>rendering template:</> %v\n", err)
 		return
 	}
-	cout.Printf("\n<gray>── comment that would be posted on #%d ──</>\n%s\n<gray>──</>\n", card.issue.Number, text)
+	cout.Printf("\n<gray>── comment that would be posted on #%d ──</>\n%s\n<gray>──</>\n", card.Issue.Number, text)
 }
 
 // approveAll bulk-approves everything matching the filters after a summary + confirm.
@@ -241,7 +241,7 @@ func (f *FlagData) approveAll(d *db.DB, actions []*db.Action) error {
 		counts[a.Action+"/"+a.Reason]++
 	}
 	cout.Printf("bulk approving <yellow>%d</> proposals:\n", len(actions))
-	printCounts(counts)
+	cout.PrintCounts(counts)
 
 	if !f.Yes {
 		ok, err := issue.Confirm(fmt.Sprintf("approve all %d?", len(actions)))

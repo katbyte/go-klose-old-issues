@@ -154,7 +154,7 @@ func (f *FlagData) ActionsTaken() error {
 		counts[s.Check] = len(s.Items)
 	}
 	cout.Printf("wrote <cyan>%s</> and <cyan>%s</> — <yellow>%d</> actions taken\n", htmlPath, csvPath, data.Total)
-	printCounts(counts)
+	cout.PrintCounts(counts)
 	if abs, aerr := filepath.Abs(htmlPath); aerr == nil {
 		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
 	}
