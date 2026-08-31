@@ -209,7 +209,11 @@ func (f *FlagData) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, exists, legacy, errorsSec, docsSec, deprecated}
+	stale, err := f.staleReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -225,8 +229,8 @@ func (f *FlagData) Report() error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -651,6 +655,78 @@ func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time
 			item.Evidence = append(item.Evidence, []reportSpan{
 				span("no substantive replies at all", kindWarn),
 				span("quiet for "+text.HumanAge(fdg.issue.UpdatedAt, now), kindDim),
+			})
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// staleReportSection builds the "the maintainer's last word went unanswered"
+// section.
+func (f *FlagData) staleReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passStale,
+		Question: "a maintainer had the last word over a year ago and nobody answered — close out the thread?",
+		Description: "Open issues whose thread ended on a maintainer's comment left unanswered for over a year: " +
+			"asked (they requested information that never came) or said (they stated a position — by design, API " +
+			"limitation, upstream — nobody disputed). A last word that committed to action scores low; the ball stays " +
+			"with the maintainers. Applying closes as not planned citing the comment.",
+		Command: "koi stale [asked|said] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	col, err := f.collectStale(d, "")
+	if err != nil {
+		return s, err
+	}
+	findings := col.findings
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classStaleAsked, col.counts[classStaleAsked], kindOK},
+		{classStaleSaid, col.counts[classStaleSaid], kindWarn},
+	}
+	s.Note = fmt.Sprintf("%d more end on a maintainer's word under a year old · %s", col.recent, keepSummary(col.protected))
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.staleJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *staleFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		verb, verbKind := "said", kindWarn
+		if fdg.class == classStaleAsked {
+			verb, verbKind = "asked", kindOK
+		}
+		_, label := assocDisplay(fdg.last.AuthorAssociation)
+		row := []reportSpan{
+			span("@"+fdg.last.Author, kindOK),
+			span("("+label+")", kindDim),
+			span(verb, verbKind),
+			span(text.HumanAge(fdg.last.CreatedAt, now)+" ago, unanswered since:", kindDim),
+			span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.last.Body)), 200)+"”", kindQuote),
+		}
+		if fdg.last.URL != "" {
+			row = append(row, linkSpan("view comment", fdg.last.URL))
+		}
+		item.Evidence = append(item.Evidence, row)
+		if fdg.mentionsAuthor {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span("addressed the reporter @"+fdg.issue.Author+" directly", kindDim),
 			})
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])

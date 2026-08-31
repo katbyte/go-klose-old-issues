@@ -99,7 +99,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, exists, legacy, errors, docs, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
@@ -453,6 +453,36 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		})
 	}
 	root.AddCommand(errorsCmd)
+
+	staleRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Stale(link)
+		}
+	}
+	staleCmd := &cobra.Command{
+		Use:           "stale",
+		Short:         "a maintainer had the last word over a year ago and nobody answered — close out the thread? AI-scored, closeable",
+		Long:          `Open issues whose thread ended on a maintainer's comment left unanswered for over a year, classed by the shape of that last word: asked (they requested information, a repro, or confirmation that never came — the no-response close, generalised past the waiting-response label) or said (they stated a position — by design, API limitation, out of scope, belongs upstream — nobody disputed since); subcommands scope to one class. The AI reads what the maintainer actually said before blessing a close: a commitment ("we'll fix this") or a fixed-in claim scores low, so the ball stays with the maintainers where it belongs. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the maintainer's comment with a deep link and closes as not planned. Question-labelled issues belong to koi questions and are not touched.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+		SilenceErrors: true,
+		RunE:          staleRunE(""),
+	}
+	for _, sub := range []struct{ use, short string }{
+		{classStaleAsked, "only threads where the maintainer asked for something that never came (strongest evidence)"},
+		{classStaleSaid, "only threads where the maintainer stated a position nobody disputed"},
+	} {
+		staleCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+			SilenceErrors: true,
+			RunE:          staleRunE(sub.use),
+		})
+	}
+	root.AddCommand(staleCmd)
 
 	docsCmd := &cobra.Command{
 		Use:           "docs",
