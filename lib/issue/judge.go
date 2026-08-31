@@ -123,23 +123,43 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		uncached = append(uncached, &target{item: it, hash: hash})
 	}
 
-	cout.Printf("AI %s check: <yellow>%d</> pairings to judge (<gray>%d cached</>) via <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
-		pass, len(uncached), len(cached), j.cmd, j.model)
+	cout.Printf("AI %s check: <yellow>%d</> pairings <gray>·</> <yellow>%d</> to evaluate via ai, <gray>%d already cached</> <gray>·</> <cyan>%s</> <gray>· model:</> <lightCyan>%s</>\n",
+		pass, len(cached)+len(uncached), len(uncached), len(cached), j.cmd, j.model)
 
-	launch := func(start int) <-chan judgedBatch {
-		batch := uncached[start:min(start+judgeBatchSize, len(uncached))]
+	buildPrompt := func(batch []*target) string {
 		var prompt strings.Builder
 		prompt.WriteString(promptText)
 		for _, t := range batch {
 			prompt.WriteString("\n")
 			prompt.WriteString(t.item.Block)
 		}
+		return prompt.String()
+	}
+	launch := func(start int) <-chan judgedBatch {
+		batch := uncached[start:min(start+judgeBatchSize, len(uncached))]
 		ch := make(chan judgedBatch, 1)
 		go func() {
-			raw, respModel, err := j.ai.PromptWithModel(prompt.String())
+			raw, respModel, err := j.ai.PromptWithModel(buildPrompt(batch))
 			ch <- judgedBatch{raw: raw, model: respModel, err: err}
 		}()
 		return ch
+	}
+
+	// save records one verdict under the identity that answered it.
+	save := func(t *target, v *Verdict, ident string) error {
+		raw, merr := json.Marshal(v)
+		if merr != nil {
+			return fmt.Errorf("marshalling verdict for #%d: %w", t.item.Number, merr)
+		}
+		if err := j.db.SaveVerdict(&db.Verdict{
+			IssueNumber: t.item.Number, Pass: pass, PromptHash: t.hash,
+			Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
+		}); err != nil {
+			return err
+		}
+		t.verdict = v
+		verdicts[t.item.Number] = v
+		return nil
 	}
 
 	consecFails := 0
@@ -188,24 +208,53 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		for i := range batchVerdicts {
 			byNumber[batchVerdicts[i].Number] = &batchVerdicts[i]
 		}
+		var missing []*target
 		for _, t := range uncached[start:end] {
 			v := byNumber[t.item.Number]
 			if v == nil {
-				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.item.Number)
+				missing = append(missing, t)
 				continue
 			}
-			raw, merr := json.Marshal(v)
-			if merr != nil {
-				return fmt.Errorf("marshalling verdict for #%d: %w", t.item.Number, merr)
-			}
-			if err := j.db.SaveVerdict(&db.Verdict{
-				IssueNumber: t.item.Number, Pass: pass, PromptHash: t.hash,
-				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
-			}); err != nil {
+			if err := save(t, v, ident); err != nil {
 				return err
 			}
-			t.verdict = v
-			verdicts[t.item.Number] = v
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+
+		// a model occasionally drops an item from an otherwise-fine batch:
+		// re-ask once with just the missing blocks before declaring them
+		// unanswered (they stay uncached either way, so a rerun re-asks too)
+		nums := make([]string, 0, len(missing))
+		for _, t := range missing {
+			nums = append(nums, fmt.Sprintf("#%d", t.item.Number))
+		}
+		cout.Printf("  <yellow>%s missing from the response — asking again for just %s</>\n",
+			strings.Join(nums, ", "), map[bool]string{true: "it", false: "those"}[len(missing) == 1])
+		raw, respModel, rerr := j.ai.PromptWithModel(buildPrompt(missing))
+		var retryVerdicts []Verdict
+		if rerr == nil {
+			rerr = ai.ExtractJSON(raw, &retryVerdicts)
+		}
+		retryIdent := j.ident
+		if respModel != "" && respModel != j.model {
+			retryIdent = aiIdent(j.cmd, respModel)
+		}
+		byNumber = map[int]*Verdict{}
+		for i := range retryVerdicts {
+			byNumber[retryVerdicts[i].Number] = &retryVerdicts[i]
+		}
+		for _, t := range missing {
+			v := byNumber[t.item.Number]
+			switch {
+			case rerr != nil || v == nil:
+				cout.Errorf("  <yellow>#%d:</> no verdict in response\n", t.item.Number)
+			default:
+				if err := save(t, v, retryIdent); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	}
