@@ -49,6 +49,7 @@ func Command() *cobra.Command {
 			RunE:          msRunE(sub.link),
 		})
 	}
+	c.AddCommand(reportCommand())
 	c.AddCommand(&cobra.Command{
 		Use:           "changelog-check",
 		Short:         "audits every changelog-cited PR for the citing release's milestone",
@@ -70,4 +71,24 @@ func addMilestoneFlags(cmd *cobra.Command) {
 	f.Bool("rescan", false, "force a full re-walk instead of an incremental scan")
 	f.String("csv", "", "write the full audit findings to this csv file")
 	f.String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
+}
+
+// reportCommand returns koi milestone report: milestone.html of the audit's
+// findings, bucket by bucket.
+func reportCommand() *cobra.Command {
+	c := &cobra.Command{
+		Use:           "report",
+		Short:         "writes milestone.html — the audit's findings by bucket (missing, mismatch, no-milestone, open-released) with linked evidence",
+		Args:          cobra.NoArgs,
+		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return flags().Report()
+		},
+	}
+	c.Flags().String("out", "report", "directory to write milestone.html into")
+	c.Flags().Bool("with-ai", false, "AI-score the actionable buckets (cached verdicts reused) and sort surest first")
+	c.Flags().Int("limit", 0, "cap findings per bucket for a cheap test run (0 = all)")
+	return c
 }

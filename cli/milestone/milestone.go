@@ -2,12 +2,15 @@ package milestone
 
 import (
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/katbyte/koi/cli"
 
@@ -70,50 +73,70 @@ type msFinding struct {
 	reason      string     // the above as a sentence, e.g. "closed by PR #1564 — in the v1.10.0 changelog"
 }
 
-func (f *Flags) milestoneAudit(d *db.DB, o MilestoneOpts) error {
+// msCollection is everything one audit pass learns.
+type msCollection struct {
+	total       int
+	findings    []msFinding // everything actionable or listable (not ok/undetermined)
+	counts      map[string]int
+	classCounts map[string]map[string]int
+	milestones  map[string]db.Milestone
+}
+
+// collectMilestone runs the audit over every scanned issue and buckets the
+// findings; link restricts which evidence class may determine a milestone.
+func (f *Flags) collectMilestone(d *db.DB, link string) (*msCollection, error) {
+	col := &msCollection{counts: map[string]int{}, classCounts: map[string]map[string]int{}}
 	issues, err := d.MSIssues()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if len(issues) == 0 {
-		cout.Printf("no scanned issues — run <cyan>koi milestone</> without --skip-scan first\n")
-		return nil
+	col.total = len(issues)
+	if col.total == 0 {
+		return col, nil
 	}
 	fixes, err := d.MSFixesByIssue()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	prVersions, err := d.ChangelogVersionsByPR()
 	if err != nil {
-		return err
+		return nil, err
 	}
-	milestones, err := d.Milestones()
-	if err != nil {
-		return err
+	if col.milestones, err = d.Milestones(); err != nil {
+		return nil, err
 	}
 	if len(prVersions) == 0 {
 		cout.Errorf("<yellow>warning:</> changelog table is empty — run <cyan>koi fetch</> first for fix→release mapping\n")
 	}
 
-	counts := map[string]int{}
-	classCounts := map[string]map[string]int{}
-	var findings []msFinding
-
 	for _, i := range issues {
-		fdg := auditIssue(i, fixes[i.Number], prVersions, milestones, o.Link)
-		counts[fdg.bucket]++
+		fdg := auditIssue(i, fixes[i.Number], prVersions, col.milestones, link)
+		col.counts[fdg.bucket]++
 		if class := fdg.linkClass(); class != "" {
-			if classCounts[fdg.bucket] == nil {
-				classCounts[fdg.bucket] = map[string]int{}
+			if col.classCounts[fdg.bucket] == nil {
+				col.classCounts[fdg.bucket] = map[string]int{}
 			}
-			classCounts[fdg.bucket][class]++
+			col.classCounts[fdg.bucket][class]++
 		}
 		if fdg.bucket != msOK && fdg.bucket != msUndetermined {
-			findings = append(findings, fdg)
+			col.findings = append(col.findings, fdg)
 		}
 	}
+	return col, nil
+}
 
-	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", len(issues))
+func (f *Flags) milestoneAudit(d *db.DB, o MilestoneOpts) error {
+	col, err := f.collectMilestone(d, o.Link)
+	if err != nil {
+		return err
+	}
+	if col.total == 0 {
+		cout.Printf("no scanned issues — run <cyan>koi milestone</> without --skip-scan first\n")
+		return nil
+	}
+	findings, counts, classCounts, milestones := col.findings, col.counts, col.classCounts, col.milestones
+
+	cout.Printf("\n<bold>milestone audit over %d issues:</>\n", col.total)
 	for _, k := range text.SortedKeys(counts) {
 		cout.Printf("  %-16s <yellow>%d</>\n", k, counts[k])
 		// missing and mismatch get the class split: they're the buckets --apply
@@ -619,6 +642,32 @@ const (
 	bulletRunesForAI = 300
 )
 
+// msJudgeItems renders one ms-match judge block per finding, fetching the
+// full text of every candidate issue and evidence PR first — the model
+// judges on full text.
+func (f *Flags) msJudgeItems(d *db.DB, todo []msFinding) (string, []issue.JudgeItem, error) {
+	promptText, err := assets.Prompt(promptMSMatch)
+	if err != nil {
+		return "", nil, err
+	}
+	if err := f.fetchMatchTexts(d, todo); err != nil {
+		return "", nil, err
+	}
+	texts, err := d.Texts()
+	if err != nil {
+		return "", nil, err
+	}
+	items := make([]issue.JudgeItem, 0, len(todo))
+	for i := range todo {
+		block, berr := f.msMatchBlock(d, &todo[i], texts)
+		if berr != nil {
+			return "", nil, berr
+		}
+		items = append(items, issue.JudgeItem{Number: todo[i].issue.Number, Block: block})
+	}
+	return promptText, items, nil
+}
+
 // applyMilestonesWithAI is --apply-with-ai[-auto], pipelined on the shared
 // judge: every issue↔evidence pairing is scored by the AI CLI, and only likely
 // matches (≥ threshold) get their milestone set. While batch N's results are
@@ -627,31 +676,13 @@ const (
 // answer time overlaps judging too. Verdicts cache in ai_verdicts so re-runs
 // (and the real apply after a dry-run) only judge what changed.
 func (f *Flags) applyMilestonesWithAI(d *db.DB, todo []msFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
-	promptText, err := assets.Prompt(promptMSMatch)
+	promptText, items, err := f.msJudgeItems(d, todo)
 	if err != nil {
 		return err
 	}
-
-	// the model judges on full text: fetch title + body for every candidate
-	// issue and its evidence PRs not yet cached
-	if err := f.fetchMatchTexts(d, todo); err != nil {
-		return err
-	}
-	texts, err := d.Texts()
-	if err != nil {
-		return err
-	}
-
-	items := make([]issue.JudgeItem, 0, len(todo))
 	byNumber := map[int]*msFinding{}
 	for i := range todo {
-		fdg := &todo[i]
-		block, berr := f.msMatchBlock(d, fdg, texts)
-		if berr != nil {
-			return berr
-		}
-		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: block})
-		byNumber[fdg.issue.Number] = fdg
+		byNumber[todo[i].issue.Number] = &todo[i]
 	}
 
 	auto := o.ApplyWithAIAuto
@@ -808,4 +839,183 @@ func (f *Flags) fetchMatchTexts(d *db.DB, todo []msFinding) error {
 		}
 	}
 	return f.FetchTexts(d, text.SortedKeys(numbers))
+}
+
+// ---- report ----
+
+// msBucketMeta is what the report says about each bucket.
+var msBucketMeta = map[string]struct{ question, description, command string }{
+	msMissing: {
+		"this closed issue has no milestone, but the changelog says which release dealt with it — fill it in?",
+		"Closed issues with no milestone whose fix PRs map to a release via the changelog. The evidence class split is the wave plan: closed-by is near-certain, mention needs the AI.",
+		"koi milestone --skip-scan --apply / --apply-with-ai / --apply-with-ai-auto",
+	},
+	msMismatch: {
+		"this issue's milestone differs from the release the changelog determined — correct it?",
+		"Issues whose existing milestone disagrees with the changelog-determined release. The changelog is the ground truth of what shipped where, so --apply corrects these.",
+		"koi milestone --skip-scan --apply / --apply-with-ai / --apply-with-ai-auto",
+	},
+	msNoSuchRelease: {
+		"the determined release has no milestone in the repo — create it to fix these",
+		"The changelog names the shipping release but no matching milestone exists on GitHub. Creating the milestone (gh api) unblocks the apply.",
+		"gh api repos/:owner/:repo/milestones -f title=vX.Y.Z -f state=closed, then koi milestone --skip-scan --apply",
+	},
+	msOpenReleased: {
+		"this issue is OPEN but sits on an already-released milestone — reopen the question of why",
+		"Open issues carrying a milestone that has shipped: either the fix landed and the issue should close, or the milestone is wrong. Report-only; nothing applies here.",
+		"koi close fixed (the fix may have shipped) or manual review",
+	},
+}
+
+// msClassKind maps an evidence class to its report css kind, strongest to
+// weakest: ok, mid, warn, dim.
+func msClassKind(class string) string {
+	switch class {
+	case db.LinkClosedBy:
+		return cli.KindOK
+	case db.LinkLinked:
+		return cli.KindMid
+	case cli.LinkCited:
+		return cli.KindWarn
+	default:
+		return cli.KindDim
+	}
+}
+
+// Report writes milestone.html: the audit's findings bucket by bucket with
+// linked evidence, riding the shared report scaffolding. --with-ai scores the
+// actionable buckets (missing, mismatch) with the ms-match judge.
+func (f *Flags) Report() error {
+	o := f.Cmd.Report
+	if o.WithAI && !f.AI.Enabled {
+		return errors.New("--with-ai needs the AI (--ai=false is set)")
+	}
+
+	d, err := f.OpenDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+
+	if !f.Cmd.MS.SkipScan && !f.NoAutoFetch {
+		if err := f.MilestoneScan(d, f.Cmd.MS.Rescan); err != nil {
+			return err
+		}
+	}
+	col, err := f.collectMilestone(d, "")
+	if err != nil {
+		return err
+	}
+	if col.total == 0 {
+		cout.Printf("no scanned issues — run <cyan>koi milestone</> without --skip-scan first\n")
+		return nil
+	}
+
+	data := cli.ReportData{Repo: f.GH.Repo, Noun: "milestone findings", WithAI: o.WithAI, GeneratedAt: time.Now().Format("2006-01-02 15:04")}
+
+	// the AI scores only the actionable buckets, after the per-bucket limit
+	byBucket := map[string][]msFinding{}
+	for _, fdg := range col.findings {
+		byBucket[fdg.bucket] = append(byBucket[fdg.bucket], fdg)
+	}
+	truncated := map[string]bool{}
+	for b := range byBucket {
+		byBucket[b], truncated[b] = cli.LimitFindings(byBucket[b], o.Limit)
+	}
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI {
+		todo := append(append([]msFinding{}, byBucket[msMissing]...), byBucket[msMismatch]...)
+		if len(todo) > 0 {
+			promptText, items, jerr := f.msJudgeItems(d, todo)
+			if jerr != nil {
+				return jerr
+			}
+			if verdicts, err = f.JudgeBlocks(d, passMSMatch, promptText, items, nil, nil); err != nil {
+				return err
+			}
+		}
+	}
+
+	for _, bucket := range []string{msMissing, msMismatch, msNoSuchRelease, msOpenReleased} {
+		findings := byBucket[bucket]
+		if col.counts[bucket] == 0 {
+			continue
+		}
+		if verdicts != nil && (bucket == msMissing || bucket == msMismatch) {
+			cli.SortByVerdict(findings, func(x *msFinding) int { return x.issue.Number }, verdicts)
+		}
+		meta := msBucketMeta[bucket]
+		s := cli.ReportSection{
+			Slug: "ms-" + bucket, Name: "milestone · " + bucket,
+			Question: meta.question, Description: meta.description, Command: meta.command,
+			Total: col.counts[bucket], Truncated: truncated[bucket],
+		}
+		for _, class := range []string{db.LinkClosedBy, db.LinkLinked, cli.LinkCited, db.LinkMention} {
+			if n := col.classCounts[bucket][class]; n > 0 {
+				s.Classes = append(s.Classes, cli.ReportClass{Name: class, Count: n, Kind: msClassKind(class)})
+			}
+		}
+		if bucket == msMissing {
+			s.Note = fmt.Sprintf("audit over %d issues · %d ok · %d undetermined (closed as completed, no changelog-mapped fix)",
+				col.total, col.counts[msOK], col.counts[msUndetermined])
+		}
+		for i := range findings {
+			fdg := &findings[i]
+			item := cli.ReportItem{
+				Number: fdg.issue.Number, Title: text.OneLine(fdg.issue.Title),
+				URL:  f.IssueURL(fdg.issue.Number),
+				Meta: strings.ToLower(fdg.issue.State),
+			}
+			if !fdg.issue.ClosedAt.IsZero() {
+				item.Meta += " · closed " + fdg.issue.ClosedAt.Format("2006-01-02")
+			}
+			row := []cli.ReportSpan{cli.Span("milestone", cli.KindDim)}
+			cur := fdg.issue.Milestone
+			switch {
+			case cur == "":
+				row = append(row, cli.Span("—", cli.KindDim))
+			case bucket == msMismatch:
+				row = append(row, cli.Span(cur, cli.KindBad))
+			default:
+				row = append(row, cli.Span(cur, cli.KindWarn))
+			}
+			if fdg.expected != "" && fdg.expected != cur {
+				row = append(row, cli.Span("→", cli.KindDim), cli.Span(fdg.expected, cli.KindVer))
+			}
+			if fdg.noMilestone {
+				row = append(row, cli.Span("no such milestone — create it to fix", cli.KindBad))
+			}
+			item.Evidence = append(item.Evidence, row)
+			if fdg.reason != "" {
+				ev := []cli.ReportSpan{cli.Span(fdg.reason, msClassKind(fdg.linkClass()))}
+				for _, fx := range fdg.via {
+					ev = append(ev, cli.LinkSpan(fmt.Sprintf("PR #%d", fx.PRNumber),
+						fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, fx.PRNumber)))
+				}
+				item.Evidence = append(item.Evidence, ev)
+			}
+			cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
+			s.Items = append(s.Items, item)
+		}
+		data.Sections = append(data.Sections, s)
+		data.Total += s.Total
+	}
+
+	if err := os.MkdirAll(o.Out, 0o750); err != nil {
+		return fmt.Errorf("creating %s: %w", o.Out, err)
+	}
+	htmlPath := filepath.Join(o.Out, "milestone.html")
+	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
+		return err
+	}
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> milestone findings <gray>(missing %d · mismatch %d · no-milestone %d · open-released %d)</>\n",
+		htmlPath, data.Total, col.counts[msMissing], col.counts[msMismatch], col.counts[msNoSuchRelease], col.counts[msOpenReleased])
+	if !o.WithAI {
+		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score the actionable buckets, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
+	}
+	// a file:// url so the terminal makes the path clickable
+	if abs, aerr := filepath.Abs(htmlPath); aerr == nil {
+		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
+	}
+	return nil
 }
