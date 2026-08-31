@@ -30,18 +30,25 @@ const (
 	// supersedes); said gets its own
 	reasonStaleConcluded = "maintainer-concluded"
 
-	classStaleAsked = "asked"
-	classStaleSaid  = "said"
+	classStaleWaiting = "waiting"
+	classStaleAsked   = "asked"
+	classStaleSaid    = "said"
 
-	// how long the maintainer's last word must have hung unanswered
-	staleQuietDays = 365
+	// the label maintainers apply when they are explicitly waiting on the
+	// reporter — the strongest form of asked, so its window is far shorter
+	labelWaitingResponse = "waiting-response"
+
+	// how long the maintainer's last word must have hung unanswered — the
+	// explicit waiting-response label needs far less benefit of the doubt
+	staleQuietDays        = 365
+	staleWaitingQuietDays = 90
 )
 
-var staleClassRank = map[string]int{classStaleAsked: 1, classStaleSaid: 0}
+var staleClassRank = map[string]int{classStaleWaiting: 2, classStaleAsked: 1, classStaleSaid: 0}
 
 // StaleOpts configures the stale audit and its apply modes.
 type StaleOpts struct {
-	Link                string // asked | said ("" = both)
+	Link                string // waiting | asked | said ("" = all)
 	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
@@ -88,14 +95,15 @@ func (f *Flags) Stale(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open issues end on a maintainer's unanswered last word:</>\n", len(findings), col.open)
 	for _, c := range []struct{ class, tag, desc string }{
-		{classStaleAsked, cli.TagGreen, "the maintainer asked for something that never came"},
+		{classStaleWaiting, cli.TagGreen, "labelled waiting-response and the reporter never came back"},
+		{classStaleAsked, cli.TagYellow, "the maintainer asked for something that never came"},
 		{classStaleSaid, cli.TagOrange, "the maintainer stated a position nobody disputed"},
 	} {
 		if n := col.counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-6s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
 		}
 	}
-	cout.Printf("  <gray>skipped: %d where the silence is under a year old · %s</>\n", col.recent, keepSummary(col.protected))
+	cout.Printf("  <gray>skipped: %d where the silence is under the class's window · %s</>\n", col.recent, keepSummary(col.protected))
 	if len(findings) == 0 {
 		return nil
 	}
@@ -208,7 +216,13 @@ func (f *Flags) collectStale(d *db.DB, link string) (*staleCollection, error) {
 			col.protected["high-engagement"]++
 			continue
 		}
-		if now.Sub(last.CreatedAt) < staleQuietDays*24*time.Hour {
+		// the explicit waiting-response label is the strongest asked there is,
+		// so it earns the short window; without it a year of silence is needed
+		quiet := staleQuietDays * 24 * time.Hour
+		if i.HasLabel(labelWaitingResponse) {
+			quiet = staleWaitingQuietDays * 24 * time.Hour
+		}
+		if now.Sub(last.CreatedAt) < quiet {
 			col.recent++
 			continue
 		}
@@ -217,7 +231,10 @@ func (f *Flags) collectStale(d *db.DB, link string) (*staleCollection, error) {
 			issue: i, last: last, class: classStaleSaid,
 			mentionsAuthor: strings.Contains(last.Body, "@"+i.Author),
 		}
-		if strings.Contains(last.Body, "?") {
+		switch {
+		case i.HasLabel(labelWaitingResponse):
+			fdg.class = classStaleWaiting
+		case strings.Contains(last.Body, "?"):
 			fdg.class = classStaleAsked
 		}
 		if link != "" && fdg.class != link {
@@ -290,8 +307,9 @@ func (f *Flags) closeOneStale(d *db.DB, repo gh.Repo, fdg *staleFinding, v *issu
 		return issue.ApplySkipped, nil
 	}
 
+	// waiting and asked are both the no-response close; said concluded
 	reason := reasonStaleConcluded
-	if fdg.class == classStaleAsked {
+	if fdg.class != classStaleSaid {
 		reason = issue.ReasonNoResponse
 	}
 
@@ -383,7 +401,7 @@ func (f *Flags) renderStaleComment(fdg *staleFinding) (string, error) {
 		Author       string
 		URL          string
 		CurrentMajor int
-	}{fdg.class == classStaleAsked, fdg.last.Author, fdg.last.URL, f.CurrentMajor}
+	}{fdg.class != classStaleSaid, fdg.last.Author, fdg.last.URL, f.CurrentMajor}
 	var b strings.Builder
 	if err := tmpl.Execute(&b, data); err != nil {
 		return "", fmt.Errorf("rendering template %s: %w", templateStaleClose, err)
@@ -437,7 +455,7 @@ func (f *Flags) printStaleCard(fdg *staleFinding, pos, total int, v *issue.Verdi
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	now := time.Now()
 	verb := "said"
-	if fdg.class == classStaleAsked {
+	if fdg.class != classStaleSaid {
 		verb = "asked"
 	}
 	assocTag, assocName := assocDisplay(fdg.last.AuthorAssociation)
@@ -446,8 +464,11 @@ func (f *Flags) printStaleCard(fdg *staleFinding, pos, total int, v *issue.Verdi
 		who += fmt.Sprintf(" <gray>(%s)</>", assocName)
 	}
 	at := ""
+	if fdg.class == classStaleWaiting {
+		at = " <gray>· labelled</> <lightYellow>waiting-response</>"
+	}
 	if fdg.mentionsAuthor {
-		at = fmt.Sprintf(" <gray>· addressed</> @%s <gray>directly</>", fdg.issue.Author)
+		at += fmt.Sprintf(" <gray>· addressed</> @%s <gray>directly</>", fdg.issue.Author)
 	}
 	cout.Printf("      %s <gray>%s %s ago, unanswered since</>%s<gray>:</>\n", who, verb, text.HumanAge(fdg.last.CreatedAt, now), at)
 	cout.Printf("      <gray>“</>%s<gray>”</> <darkGray>%s</>\n",

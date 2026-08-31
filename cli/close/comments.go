@@ -52,6 +52,12 @@ var commentsPatterns = []struct {
 	{"works now", false, regexp.MustCompile(`now (?:it )?works|works? now|working (?:now|again|fine|as expected|correctly)|works (?:fine|again|for me|as expected|correctly|perfectly|ok(?:ay)?|well)(?: now| again)?|works (?:with|on|in|since|as of|after|using) v?\d|(?:issue|problem|error) (?:is |has )?gone\b|went away|resolved itself|behaving (?:correctly|as expected)`)},
 }
 
+// commentsAuthorSolved catches the reporter resolving their own issue in
+// prose: "my mistake", "user error", "figured it out". Only the issue
+// author's words count — anyone else's "my mistake" retracts a comment, not
+// the issue — so the loop gates this on the comment author.
+var commentsAuthorSolved = regexp.MustCompile(`my (?:mistake|bad|fault)\b|user error|figured (?:it|this) out|solved (?:it|this)\b|never\s?mind\b|(?:mistake|error|problem|issue) (?:was )?on (?:my|our) (?:end|side)|i was doing (?:it|something) wrong|misconfigur\w+ on (?:my|our)`)
+
 // commentsShortWorks catches bare confirmations — a tiny comment that just
 // says "works!" or "working" is a thumbs-up, while "works" buried in a long
 // comment usually is not.
@@ -242,6 +248,18 @@ func (f *Flags) collectComments(d *db.DB, link string) (findings []commentsFindi
 				fdg.claims = append(fdg.claims, commentsClaim{kind: p.kind, comment: *c, quote: quote})
 				claimed = true
 				break
+			}
+			// the reporter's own "my mistake / figured it out" resolves the
+			// issue as surely as any fix — author-gated, see commentsAuthorSolved
+			if !claimed && c.Author == i.Author {
+				if m := commentsAuthorSolved.FindStringIndex(low); m != nil {
+					ctx := low[max(0, m[0]-60):min(len(low), m[1]+60)]
+					if !commentsNegation.MatchString(ctx) && !strings.Contains(low[m[1]:min(len(low), m[1]+15)], "?") {
+						quote := text.TruncateRunes(text.OneLine(c.Body[max(0, m[0]-50):min(len(c.Body), m[1]+90)]), 140)
+						fdg.claims = append(fdg.claims, commentsClaim{kind: "author solved", comment: *c, quote: quote})
+						claimed = true
+					}
+				}
 			}
 			// a tiny comment that just says "works!" is a confirmation
 			if !claimed && len(strings.TrimSpace(c.Body)) <= 40 && commentsShortWorks.MatchString(low) && !strings.Contains(low, "?") && !commentsNegation.MatchString(low) {

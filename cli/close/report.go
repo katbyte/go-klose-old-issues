@@ -46,6 +46,12 @@ func (f *Flags) Report() error {
 	if o.WithAI && !f.AI.Enabled {
 		return errors.New("--with-ai needs the AI (--ai=false is set)")
 	}
+	// the errors and docs checks read a provider checkout; a report missing
+	// two checks would be acted on as if it were complete, so fail up front —
+	// before the expensive scans — rather than silently under-report
+	if err := verifyProviderSrc(f.Cmd.Errors.ProviderSrc, f.Cmd.Errors.ProviderRef); err != nil {
+		return fmt.Errorf("the errors and docs checks need a provider checkout: %w", err)
+	}
 
 	d, err := f.OpenDB()
 	if err != nil {
@@ -561,12 +567,13 @@ func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 	s := cli.ReportSection{
 		Slug:     passStale,
 		Name:     "close " + passStale,
-		Question: "a maintainer had the last word over a year ago and nobody answered — close out the thread?",
-		Description: "Open issues whose thread ended on a maintainer's comment left unanswered for over a year: " +
-			"asked (they requested information that never came) or said (they stated a position — by design, API " +
-			"limitation, upstream — nobody disputed). A last word that committed to action scores low; the ball stays " +
-			"with the maintainers. Applying closes as not planned citing the comment.",
-		Command: "koi close stale [asked|said] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Question: "a maintainer had the last word and nobody ever answered — close out the thread?",
+		Description: "Open issues whose thread ended on a maintainer's comment nobody answered: waiting (labelled " +
+			"waiting-response and 90+ days of silence), asked (they requested information that never came; a year of " +
+			"silence) or said (they stated a position — by design, API limitation, upstream — nobody disputed for a " +
+			"year). A last word that committed to action scores low; the ball stays with the maintainers. Applying " +
+			"closes as not planned citing the comment.",
+		Command: "koi close stale [waiting|asked|said] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	col, err := f.collectStale(d, "")
 	if err != nil {
@@ -575,7 +582,8 @@ func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 	findings := col.findings
 	s.Total = len(findings)
 	s.Classes = []cli.ReportClass{
-		{Name: classStaleAsked, Count: col.counts[classStaleAsked], Kind: cli.KindOK},
+		{Name: classStaleWaiting, Count: col.counts[classStaleWaiting], Kind: cli.KindOK},
+		{Name: classStaleAsked, Count: col.counts[classStaleAsked], Kind: cli.KindMid},
 		{Name: classStaleSaid, Count: col.counts[classStaleSaid], Kind: cli.KindWarn},
 	}
 	s.Note = fmt.Sprintf("%d more end on a maintainer's word under a year old · %s", col.recent, keepSummary(col.protected))
@@ -787,12 +795,8 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 			"Applying closes as not planned inviting a fresh issue on the current provider.",
 		Command: "koi close errors [verified|panic|unverified] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
+	// Report validated --provider-src up front, so the checkout is real here
 	eo := ErrorsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
-	if eo.Src == "" {
-		s.Note = "not scanned — point --provider-src (or provider-src in .koi) at a local clone of the provider to include this check"
-		cout.Printf("<yellow>errors check skipped: no --provider-src configured</>\n")
-		return s, nil
-	}
 	col, err := f.collectErrors(d, eo)
 	if err != nil {
 		return s, err
@@ -882,12 +886,8 @@ func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (c
 			"specific ask. Applying closes as completed pointing at the revised page.",
 		Command: "koi close docs --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
+	// Report validated --provider-src up front, so the checkout is real here
 	eo := DocsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
-	if eo.Src == "" {
-		s.Note = "not scanned — point --provider-src (or provider-src in .koi) at a local clone of the provider to include this check"
-		cout.Printf("<yellow>docs check skipped: no --provider-src configured</>\n")
-		return s, nil
-	}
 	col, err := f.collectDocs(d, eo)
 	if err != nil {
 		return s, err

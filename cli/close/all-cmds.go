@@ -143,7 +143,7 @@ func commentsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "comments",
 		Short:         "these open issues' own threads say they can be closed — \"fixed in vX\", \"can be closed\". AI-scored, closeable",
-		Long:          `Scans every open issue's comments for claims that the issue is done: "this can be closed", "fixed in v3.27.0 by #18588", "no longer an issue", a maintainer saying they will close it. Classes by who says so: maintainer-says (MEMBER/COLLABORATOR authored a claim) then community-says; subcommands scope to one class. The AI reads each claim in thread context — negations, questions, and later disputes all score low. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the claim (author, deep link, version when named) and closes as completed.`,
+		Long:          `Scans every open issue's comments for claims that the issue is done: "this can be closed", "fixed in v3.27.0 by #18588", "no longer an issue", the reporter's own "my mistake / figured it out", a maintainer saying they will close it. Classes by who says so: maintainer-says (MEMBER/COLLABORATOR authored a claim) then community-says; subcommands scope to one class. The AI reads each claim in thread context — negations, questions, and later disputes all score low. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the claim (author, deep link, version when named) and closes as completed.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),
 		SilenceErrors: true,
@@ -212,14 +212,15 @@ func staleCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "stale",
 		Short:         "a maintainer had the last word over a year ago and nobody answered — close out the thread? AI-scored, closeable",
-		Long:          `Open issues whose thread ended on a maintainer's comment left unanswered for over a year, classed by the shape of that last word: asked (they requested information, a repro, or confirmation that never came — the no-response close, generalised past the waiting-response label) or said (they stated a position — by design, API limitation, out of scope, belongs upstream — nobody disputed since); subcommands scope to one class. The AI reads what the maintainer actually said before blessing a close: a commitment ("we'll fix this") or a fixed-in claim scores low, so the ball stays with the maintainers where it belongs. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the maintainer's comment with a deep link and closes as not planned. Question-labelled issues belong to koi close questions and are not touched.`,
+		Long:          `Open issues whose thread ended on a maintainer's comment left unanswered for over a year, classed by the shape of that last word: waiting (the issue carries the waiting-response label and the reporter never came back — 90 days of silence is enough), asked (they requested information, a repro, or confirmation that never came — the no-response close, generalised past the waiting-response label; a year of silence) or said (they stated a position — by design, API limitation, out of scope, belongs upstream — nobody disputed since); subcommands scope to one class. The AI reads what the maintainer actually said before blessing a close: a commitment ("we'll fix this") or a fixed-in claim scores low, so the ball stays with the maintainers where it belongs. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the maintainer's comment with a deep link and closes as not planned. Question-labelled issues belong to koi close questions and are not touched.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),
 		SilenceErrors: true,
 		RunE:          runE(""),
 	}
 	subs(c, runE, []struct{ use, link, short string }{
-		{classStaleAsked, classStaleAsked, "only threads where the maintainer asked for something that never came (strongest evidence)"},
+		{classStaleWaiting, classStaleWaiting, "only issues labelled waiting-response whose reporter never came back (strongest evidence)"},
+		{classStaleAsked, classStaleAsked, "only threads where the maintainer asked for something that never came"},
 		{classStaleSaid, classStaleSaid, "only threads where the maintainer stated a position nobody disputed"},
 	})
 	return c
