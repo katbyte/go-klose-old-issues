@@ -29,7 +29,7 @@ func (f *Flags) issHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, n)
 }
 
-// Report writes report.html: every close candidate each check sees (fixed,
+// Report writes close.html: every close candidate each check sees (fixed,
 // resolved, duplicates, comments, exists, legacy, errors, deprecated), with
 // the evidence for why it is listed and links to
 // everything cited. --with-ai scores each candidate with the check's judge
@@ -112,7 +112,7 @@ func (f *Flags) Report() error {
 	if err := os.MkdirAll(o.Out, 0o750); err != nil {
 		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
-	htmlPath := filepath.Join(o.Out, "report.html")
+	htmlPath := filepath.Join(o.Out, "close.html")
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
