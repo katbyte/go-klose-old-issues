@@ -252,7 +252,7 @@ func (f *Flags) collectDeprecated(d *db.DB, link string) (findings []deprecatedF
 		// properties match against PROSE only — a removed property sitting in
 		// somebody's pasted config says nothing about what the issue is about,
 		// which an -with-ai session over the property class proved emphatically
-		t := i.Title + "\n" + issueProse(i.Body)
+		t := i.Title + "\n" + issue.Prose(i.Body)
 		texts[i.Number] = t
 		set := map[string]bool{}
 		for _, tok := range reToken.FindAllString(t, -1) {
@@ -561,32 +561,6 @@ func (f *Flags) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) (st
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
 	}
 	return promptText, items, nil
-}
-
-// issueHCLAssign spots config-looking lines: `prop = value`, block
-// openers, and comment lines — pasted HCL that escaped a code fence.
-var issueHCLAssign = regexp.MustCompile(`^[a-z0-9_."\[\]]+\s*[={]|^[a-z0-9_]+\s*\{$`)
-
-// issueProse strips fenced code blocks, bare HCL lines, and #-comment
-// lines from a body, leaving the sentences where someone talks ABOUT a
-// property rather than merely uses it. Shared by the deprecated and exists
-// checks — config dumps are not intent.
-func issueProse(body string) string {
-	var b strings.Builder
-	inFence := false
-	for line := range strings.SplitSeq(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
-			inFence = !inFence
-			continue
-		}
-		if inFence || trimmed == "" || strings.HasPrefix(trimmed, "#") || issueHCLAssign.MatchString(trimmed) {
-			continue
-		}
-		b.WriteString(line)
-		b.WriteByte('\n')
-	}
-	return b.String()
 }
 
 // removalURL deep-links a removal to where it is documented: the registry's

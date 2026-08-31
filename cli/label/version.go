@@ -313,7 +313,7 @@ func (f *Flags) applyVersion(d *db.DB, findings []versionFinding, withAI bool) e
 		})
 	p.Noun = "issues missing version labels"
 	p.GateLabel = "affected-version"
-	p.One, p.Verb, p.Done = "label", "labelling", "labelled"
+	labelVerbs(p)
 	p.ConfirmAll = fmt.Sprintf("add version labels to up to <yellow>%d</> issues in %s?", len(findings), f.RepoTag())
 	p.ConfirmAI = fmt.Sprintf("add version labels to issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
@@ -330,41 +330,10 @@ func (f *Flags) applyVersion(d *db.DB, findings []versionFinding, withAI bool) e
 	})
 }
 
-// labelOne handles one candidate: card, the a/s ask when interactive, the
-// live-open guard, and the label add.
+// labelOne handles one candidate: card, then the shared ask/guard/add.
 func (f *Flags) labelOne(repo gh.Repo, fdg *versionFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printVersionCard(fdg, pos, total, v)
-
-	labels := fdg.labels
-	if f.DryRun {
-		cout.Printf("      <yellow>dry-run: would add %s</>\n", strings.Join(labels, " "))
-		return issue.ApplyPreviewed, nil
-	}
-	if ask {
-		res, perr := issue.AskClose(fmt.Sprintf("label <cyan>#%d</> with <lightMagenta>%s</>?", fdg.issue.Number, strings.Join(labels, " ")), "", fdg.issue.URL)
-		if perr != nil || res != issue.AskAccept {
-			return res, perr
-		}
-	}
-
-	throttle()
-	live, err := repo.GetIssue(fdg.issue.Number)
-	if err != nil {
-		cout.Errorf("      <red>fetching live state: %v</>\n", err)
-		return issue.ApplyFailed, nil
-	}
-	if live.State != cli.RESTStateOpen {
-		cout.Printf("      <gray>already closed on github — skipped</>\n")
-		return issue.ApplySkipped, nil
-	}
-	throttle()
-	if err := repo.AddLabels(fdg.issue.Number, labels); err != nil {
-		cout.Errorf("      <red>labelling failed: %v</>\n", err)
-		return issue.ApplyFailed, nil
-	}
-	cout.Printf("      <fg=28>added</> <lightMagenta>%s</>\n", strings.Join(labels, " "))
-	cout.Quietf("%d@labelled@%s\n", fdg.issue.Number, strings.Join(labels, ","))
-	return issue.ApplySet, nil
+	return f.addLabels(repo, fdg.issue, fdg.labels, throttle, ask)
 }
 
 // versionJudgeItems renders one judge block per finding: the issue, the
@@ -468,7 +437,11 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []cli.ReportSection{version}
+	question, err := f.questionReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []cli.ReportSection{version, question}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -484,7 +457,7 @@ func (f *Flags) Report() error {
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> label candidates <gray>(version %d)</>\n", htmlPath, data.Total, version.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> label candidates <gray>(version %d · question %d)</>\n", htmlPath, data.Total, version.Total, question.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}

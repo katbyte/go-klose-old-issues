@@ -349,7 +349,7 @@ func (f *Flags) collectExists(d *db.DB, link string) (findings []existsFinding, 
 			unconfirmed[i.Number] = true
 		}
 		enhancements = append(enhancements, i)
-		prose := i.Title + "\n" + issueProse(i.Body)
+		prose := i.Title + "\n" + issue.Prose(i.Body)
 		set := map[string]bool{}
 		for _, tok := range reToken.FindAllString(prose, -1) {
 			set[tok] = true

@@ -143,6 +143,33 @@ func CleanBody(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// reHCLAssign spots config-looking lines: `prop = value`, block openers, and
+// comment lines — pasted HCL that escaped a code fence.
+var reHCLAssign = regexp.MustCompile(`^[a-z0-9_."\[\]]+\s*[={]|^[a-z0-9_]+\s*\{$`)
+
+// Prose strips fenced code blocks, bare HCL lines, and #-lines (comments and
+// markdown headings, template question-headings included) from a body,
+// leaving the sentences where someone talks ABOUT a thing rather than merely
+// uses it. Shared by the deprecated, exists, docs, and question checks —
+// config dumps are not intent.
+func Prose(body string) string {
+	var b strings.Builder
+	inFence := false
+	for line := range strings.SplitSeq(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if inFence || trimmed == "" || strings.HasPrefix(trimmed, "#") || reHCLAssign.MatchString(trimmed) {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 func maxInt(a, b int) int {
 	if a > b {
 		return a

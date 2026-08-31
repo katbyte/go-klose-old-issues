@@ -555,7 +555,7 @@ func (f *Flags) printDocsCard(fdg *docsFinding, pos, total int, v *issue.Verdict
 func docsAskTokens(i *db.Issue) []string {
 	var out []string
 	seen := map[string]bool{}
-	for _, m := range reDocsAskToken.FindAllStringSubmatch(i.Title+"\n"+issueProse(i.Body), -1) {
+	for _, m := range reDocsAskToken.FindAllStringSubmatch(i.Title+"\n"+issue.Prose(i.Body), -1) {
 		tok := strings.ToLower(m[1] + m[2]) // one group matches, the other is empty
 		if seen[tok] || strings.HasPrefix(tok, "azurerm_") || len(out) >= docsMaxAskTokens {
 			continue
