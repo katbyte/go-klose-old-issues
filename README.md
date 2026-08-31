@@ -57,7 +57,8 @@ koi fetch              # everything non-AI in one step: open issues + comments +
                        # scan -> issues.db, rules run automatically (resumable; later runs sync
                        # incrementally — the only required setup step)
 
-koi report             # close.html: every close candidate each check sees, with its evidence, linked
+koi report             # close-<yyyymmdd-hhmm>.html: every close candidate each check sees, with its
+                       # evidence, linked
 koi report --with-ai --limit 10   # AI-score a small slice per check first — cheap end-to-end test
 
 # then work one check at a time. Bare is always a report; the apply modes act:

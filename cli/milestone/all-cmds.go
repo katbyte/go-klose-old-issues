@@ -73,12 +73,12 @@ func addMilestoneFlags(cmd *cobra.Command) {
 	f.String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
 }
 
-// reportCommand returns koi milestone report: milestone.html of the audit's
+// reportCommand returns koi milestone report: a stamped milestone report of the audit's
 // findings, bucket by bucket.
 func reportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
-		Short:         "writes milestone.html — the audit's findings by bucket (missing, mismatch, no-milestone, open-released) with linked evidence",
+		Short:         "writes a stamped milestone report — the audit's findings by bucket (missing, mismatch, no-milestone, open-released) with linked evidence",
 		Args:          cobra.NoArgs,
 		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
 		SilenceErrors: true,
@@ -87,7 +87,7 @@ func reportCommand() *cobra.Command {
 			return flags().Report()
 		},
 	}
-	c.Flags().String("out", "report", "directory to write milestone.html into")
+	c.Flags().String("out", "report", "directory to write the milestone report into")
 	c.Flags().Bool("with-ai", false, "AI-score the actionable buckets (cached verdicts reused) and sort surest first")
 	c.Flags().Int("limit", 0, "cap findings per bucket for a cheap test run (0 = all)")
 	return c

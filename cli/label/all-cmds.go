@@ -52,7 +52,7 @@ func Command() *cobra.Command {
 	return c
 }
 
-// reportCommand returns koi label report: label.html of every candidate.
+// reportCommand returns koi label report: a stamped label report of every candidate.
 func reportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
@@ -71,7 +71,7 @@ func reportCommand() *cobra.Command {
 			return f.Report()
 		},
 	}
-	c.Flags().String("out", "report", "directory to write label.html into")
+	c.Flags().String("out", "report", "directory to write the label report into")
 	c.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
 	c.Flags().Int("limit", 0, "cap candidates per section for a cheap test run (0 = all)")
 	return c

@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"os"
 	"slices"
+	"time"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/issue"
@@ -134,6 +135,12 @@ func AttachVerdict(item *ReportItem, v *issue.Verdict) {
 	item.AIScore = fmt.Sprintf("%.2f", v.Confidence)
 	item.AIKind = ReportAIKind(v.Confidence)
 	item.AIReason = text.OneLine(v.Reason)
+}
+
+// ReportFileName stamps a report output with the run's date and time —
+// close-20260301-1252.html — so regenerating never overwrites an earlier run.
+func ReportFileName(prefix string, now time.Time) string {
+	return prefix + "-" + now.Format("20060102-1504") + ".html"
 }
 
 // WriteReportHTML renders one report page to the path.

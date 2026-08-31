@@ -410,7 +410,7 @@ func (f *Flags) printVersionCard(fdg *versionFinding, pos, total int, v *issue.V
 	cli.PrintVerdict(v)
 }
 
-// Report writes label.html: every issue the version labeller would touch,
+// Report writes label-<stamp>.html: every issue the labellers would touch,
 // with the evidence for each proposed label — the shared report scaffolding
 // with one section per label family.
 func (f *Flags) Report() error {
@@ -453,7 +453,7 @@ func (f *Flags) Report() error {
 	if err := os.MkdirAll(o.Out, 0o750); err != nil {
 		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
-	htmlPath := filepath.Join(o.Out, "label.html")
+	htmlPath := filepath.Join(o.Out, cli.ReportFileName("label", now))
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}

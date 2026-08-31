@@ -882,7 +882,7 @@ func msClassKind(class string) string {
 	}
 }
 
-// Report writes milestone.html: the audit's findings bucket by bucket with
+// Report writes milestone-<stamp>.html: the audit's findings bucket by bucket with
 // linked evidence, riding the shared report scaffolding. --with-ai scores the
 // actionable buckets (missing, mismatch) with the ms-match judge.
 func (f *Flags) Report() error {
@@ -911,7 +911,8 @@ func (f *Flags) Report() error {
 		return nil
 	}
 
-	data := cli.ReportData{Repo: f.GH.Repo, Noun: "milestone findings", WithAI: o.WithAI, GeneratedAt: time.Now().Format("2006-01-02 15:04")}
+	now := time.Now()
+	data := cli.ReportData{Repo: f.GH.Repo, Noun: "milestone findings", WithAI: o.WithAI, GeneratedAt: now.Format("2006-01-02 15:04")}
 
 	// the AI scores only the actionable buckets, after the per-bucket limit
 	byBucket := map[string][]msFinding{}
@@ -1004,7 +1005,7 @@ func (f *Flags) Report() error {
 	if err := os.MkdirAll(o.Out, 0o750); err != nil {
 		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
-	htmlPath := filepath.Join(o.Out, "milestone.html")
+	htmlPath := filepath.Join(o.Out, cli.ReportFileName("milestone", now))
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}

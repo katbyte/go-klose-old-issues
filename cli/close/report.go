@@ -29,7 +29,7 @@ func (f *Flags) issHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, n)
 }
 
-// Report writes close.html: every close candidate each check sees (fixed,
+// Report writes close-<stamp>.html: every close candidate each check sees (fixed,
 // resolved, duplicates, comments, exists, legacy, errors, deprecated), with
 // the evidence for why it is listed and links to
 // everything cited. --with-ai scores each candidate with the check's judge
@@ -112,7 +112,7 @@ func (f *Flags) Report() error {
 	if err := os.MkdirAll(o.Out, 0o750); err != nil {
 		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
-	htmlPath := filepath.Join(o.Out, "close.html")
+	htmlPath := filepath.Join(o.Out, cli.ReportFileName("close", now))
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
@@ -132,6 +132,7 @@ func (f *Flags) Report() error {
 func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passFixed,
+		Name:     "close " + passFixed,
 		Question: "a merged PR touches this open issue — did it fix it?",
 		Description: "Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. " +
 			"fixed-by means the PR declared it closes the issue with a closing keyword; mentioned-by is a bare mention. " +
@@ -201,6 +202,7 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passResolved,
+		Name:     "close " + passResolved,
 		Question: "a linked issue was dealt with — does its outcome cover this open one?",
 		Description: "Every open issue that cross-references a CLOSED issue in the same repository: likely duplicates of something already dealt with. " +
 			"Classes by how the linked issue was closed: completed (with the fixing PR and release when the changelog records them), duplicate, then not planned. " +
@@ -279,6 +281,7 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 	}
 	s := cli.ReportSection{
 		Slug:     passLegacy,
+		Name:     "close " + passLegacy,
 		Question: fmt.Sprintf("this bug is old (v1–v%d) and nobody says it is still alive — close as stale?", col.maxMajor),
 		Description: fmt.Sprintf("Open bug and crash reports against legacy majors (v1–v%d) that the keep rules cleared for closing: "+
 			"no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are not touched. "+
@@ -400,6 +403,7 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passComments,
+		Name:     "close " + passComments,
 		Question: "this issue's own thread says it can be closed — is the claim credible?",
 		Description: "Every open issue with a comment claiming it is done: \"this can be closed\", \"fixed in vX by #PR\", " +
 			"\"no longer an issue\", or a maintainer saying they will close it. Classes by who says so. " +
@@ -471,6 +475,7 @@ func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passQuestions,
+		Name:     "close " + passQuestions,
 		Question: "this question was answered, or died unanswered long ago — close it out?",
 		Description: "Open question-labelled issues that look done with: answered (a substantive reply exists — the newest, " +
 			"maintainers preferred, is the candidate answer — and the thread has settled) or dead (no substantive reply and " +
@@ -555,6 +560,7 @@ func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Tim
 func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passStale,
+		Name:     "close " + passStale,
 		Question: "a maintainer had the last word over a year ago and nobody answered — close out the thread?",
 		Description: "Open issues whose thread ended on a maintainer's comment left unanswered for over a year: " +
 			"asked (they requested information that never came) or said (they stated a position — by design, API " +
@@ -626,6 +632,7 @@ func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passExists,
+		Name:     "close " + passExists,
 		Question: "this enhancement request appears to already exist in the provider — did it ship?",
 		Description: "Open enhancement requests whose ask already exists: the requested resource or data source is in the " +
 			"provider docs today and arrived after the request, or a property the request's prose names shipped for one of " +
@@ -708,6 +715,7 @@ func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passDuplicates,
+		Name:     "close " + passDuplicates,
 		Question: "this looks like an older open issue — is it the same one?",
 		Description: "Open issues that duplicate another OPEN issue: this one references it, or nobody linked them and " +
 			"the titles say the same thing. The issue with more engagement survives, weighted towards the older one; " +
@@ -770,6 +778,7 @@ func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passErrors,
+		Name:     "close " + passErrors,
 		Question: "this bug quotes error output that no longer exists in the provider source — obsolete as written?",
 		Description: "Open bug and crash reports whose quoted error or panic output no longer exists anywhere in the provider " +
 			"source (vendored SDKs included) — the code that produced it has been rewritten since the report. " +
@@ -866,6 +875,7 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passDocs,
+		Name:     "close " + passDocs,
 		Question: "this documentation issue's page has been revised since — addressed now?",
 		Description: "Open documentation issues whose doc page has been edited since the report. Edits alone prove " +
 			"nothing — doc pages churn constantly — so the AI reads the current page content against the issue's " +
@@ -935,6 +945,7 @@ func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (c
 func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	s := cli.ReportSection{
 		Slug:     passDeprecated,
+		Name:     "close " + passDeprecated,
 		Question: "this issue leans on a removed or deprecated resource/property — moot where it stands?",
 		Description: "Every open issue referencing a resource, data source, or property that was removed or deprecated, " +
 			"per the 4.0/5.0 upgrade guides and the changelog's DEPRECATIONS bullets. " +
