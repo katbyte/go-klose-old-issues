@@ -5,6 +5,7 @@ package label
 
 import (
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/katbyte/koi/cli"
 )
@@ -23,6 +24,7 @@ func Command() *cobra.Command {
 		Args:  cobra.NoArgs,
 		RunE:  func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
+	c.AddCommand(reportCommand())
 	c.AddCommand(&cobra.Command{
 		Use:           "version",
 		Short:         "these open issues report or confirm provider versions their v/N.x labels don't record — label them? AI-scored",
@@ -35,5 +37,30 @@ func Command() *cobra.Command {
 			return flags().Version()
 		},
 	})
+	return c
+}
+
+// reportCommand returns koi label report: label.html of every candidate.
+func reportCommand() *cobra.Command {
+	c := &cobra.Command{
+		Use:           "report",
+		Short:         "writes an HTML report of every label candidate (version), with the evidence for each proposed label",
+		Args:          cobra.NoArgs,
+		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			f := flags()
+			// like the close report: what someone acts from must reflect the
+			// real open set, so reconcile by default unless explicitly off
+			if !cmd.Flags().Changed("auto-reconcile") && !viper.IsSet("auto-reconcile") {
+				f.AutoReconcile = true
+			}
+			return f.Report()
+		},
+	}
+	c.Flags().String("out", "report", "directory to write label.html into")
+	c.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
+	c.Flags().Int("limit", 0, "cap candidates per section for a cheap test run (0 = all)")
 	return c
 }

@@ -1,8 +1,8 @@
-// Package koi builds the koi root command and owns the root-level commands:
-// fetch, review, apply, reopen, cache, and stats. The command groups (close,
-// milestone, label) are added by main.go, and package cli stays pure shared
-// helpers.
-package koi
+// The koi root command and the root-level commands: fetch, review, apply,
+// reopen, cache, and stats. The command groups (close, milestone, label) are
+// added by main.go; the flag-free shared helpers live in cli/
+
+package cli
 
 import (
 	"fmt"
@@ -11,16 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/katbyte/koi/cli"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/version"
 )
-
-// Flags wraps the shared flag data; the shared plumbing promotes through.
-type Flags struct{ *cli.FlagData }
-
-// flags is every RunE's entry point to the fully populated Flags.
-func flags() *Flags { return &Flags{cli.GetFlags()} }
 
 // Make builds the koi root command with its persistent flags and the
 // root-level commands; main.go adds the close/milestone/label groups on top.
@@ -41,7 +34,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			case viper.GetBool("verbose"):
 				cout.Level = cout.VerbosityVerbose
 			}
-			return cli.BindCommandFlags(cmd)
+			return BindCommandFlags(cmd)
 		},
 		RunE: func(_ *cobra.Command, _ []string) error {
 			fmt.Printf("Run \"koi help\" for more information about available koi commands.\n")
@@ -66,11 +59,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Long:          `Fetches every open issue — title, body, all comments, reactions, labels, and cross-referenced PRs — via the GraphQL API into the local database, plus the repository changelogs. The first run walks everything (resumable); later runs sync incrementally.`,
 		Aliases:       []string{"f"},
 		Args:          cobra.NoArgs,
-		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
+		PreRunE:       ValidateParams([]string{ParamTokenGH, ParamRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			f := cli.GetFlags()
+			f := GetFlags()
 			return f.Fetch(f.Cmd.FetchFull)
 		},
 	}
@@ -82,11 +75,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "interactively review proposed actions, one card at a time",
 		Aliases:       []string{"r"},
 		Args:          cobra.NoArgs,
-		PreRunE:       cli.ValidateParams([]string{"db"}),
+		PreRunE:       ValidateParams([]string{"db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return flags().Review()
+			return GetFlags().Review()
 		},
 	}
 	addReviewFlags(reviewCmd)
@@ -96,11 +89,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Use:           "apply",
 		Short:         "applies approved close actions to GitHub (comment + close), throttled",
 		Args:          cobra.NoArgs,
-		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
+		PreRunE:       ValidateParams([]string{ParamTokenGH, ParamRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return flags().Apply()
+			return GetFlags().Apply()
 		},
 	}
 	addApplyFlags(applyCmd)
@@ -110,7 +103,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Use:           "reopen #",
 		Short:         "reopens a closed issue (mistake recovery), with an optional comment",
 		Args:          cobra.ExactArgs(1),
-		PreRunE:       cli.ValidateParams([]string{cli.ParamTokenGH, cli.ParamRepo, "db"}),
+		PreRunE:       ValidateParams([]string{ParamTokenGH, ParamRepo, "db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
@@ -118,7 +111,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			if err != nil {
 				return fmt.Errorf("issue number %q is not a number: %w", args[0], err)
 			}
-			return flags().Reopen(number)
+			return GetFlags().Reopen(number)
 		},
 	}
 	addReopenFlags(reopenCmd)
@@ -128,22 +121,22 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Use:           "cache",
 		Short:         "lists the local db's clearable caches and their sizes",
 		Args:          cobra.NoArgs,
-		PreRunE:       cli.ValidateParams([]string{"db"}),
+		PreRunE:       ValidateParams([]string{"db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return flags().Cache("")
+			return GetFlags().Cache("")
 		},
 	}
 	cacheCmd.AddCommand(&cobra.Command{
 		Use:           "clear ai|issues|milestones|prs|changelog|all",
 		Short:         "empties one cache domain — the next fetch/scan/judge rebuilds it (decisions are never touched)",
 		Args:          cobra.ExactArgs(1),
-		PreRunE:       cli.ValidateParams([]string{"db"}),
+		PreRunE:       ValidateParams([]string{"db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cmd.SilenceUsage = true
-			return flags().Cache(args[0])
+			return GetFlags().Cache(args[0])
 		},
 	})
 	root.AddCommand(cacheCmd)
@@ -153,15 +146,15 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		Short:         "shows the triage funnel: issues, signals, proposals, and decisions",
 		Aliases:       []string{"s"},
 		Args:          cobra.NoArgs,
-		PreRunE:       cli.ValidateParams([]string{"db"}),
+		PreRunE:       ValidateParams([]string{"db"}),
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cmd.SilenceUsage = true
-			return flags().Stats()
+			return GetFlags().Stats()
 		},
 	})
 
-	if err := cli.ConfigureFlags(root); err != nil {
+	if err := ConfigureFlags(root); err != nil {
 		return nil, fmt.Errorf("unable to configure flags: %w", err)
 	}
 

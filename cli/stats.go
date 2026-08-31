@@ -1,11 +1,9 @@
-package koi
+package cli
 
 import (
 	"fmt"
 	"sort"
 	"strings"
-
-	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
@@ -14,7 +12,7 @@ import (
 
 // Stats prints the triage funnel: what's fetched, what the signals say, and where
 // every proposal stands.
-func (f *Flags) Stats() error {
+func (f *FlagData) Stats() error {
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -31,7 +29,7 @@ func (f *Flags) Stats() error {
 	}
 	cout.Printf("<bold>issues:</> <yellow>%d</> fetched, <yellow>%d</> open\n", total, open)
 
-	lastSync, err := d.GetMeta(cli.MetaLastSync)
+	lastSync, err := d.GetMeta(MetaLastSync)
 	if err != nil {
 		return err
 	}

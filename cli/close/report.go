@@ -1,147 +1,32 @@
+// The close-candidates report: one section per check, riding the shared
+// report scaffolding in package cli.
+
 package close
 
 import (
 	"encoding/csv"
 	"errors"
 	"fmt"
-	"html/template"
 	"os"
 	"path/filepath"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/katbyte/koi/cli"
-
-	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/issue"
 	"github.com/katbyte/koi/lib/text"
 )
 
-// Span colour kinds, matching css classes in the report template.
-const (
-	kindOK    = "ok"
-	kindMid   = "mid"
-	kindWarn  = "warn"
-	kindBad   = "bad"
-	kindVer   = "ver"
-	kindDim   = "dim"
-	kindQuote = "quote"
-)
-
-// reportSpan is one fragment of an evidence line: a link when URL is set,
-// coloured by Kind (a css class in the template).
-type reportSpan struct {
-	Text string
-	URL  string
-	Kind string // "" or one of the kind* consts
-}
-
-// reportItem is one close candidate: the issue, its evidence lines, and the
-// AI's verdict when the report was scored.
-type reportItem struct {
-	Number   int
-	URL      string
-	Title    string
-	Meta     string
-	Evidence [][]reportSpan
-	AIScore  string // "" when not judged
-	AIKind   string
-	AIReason string
-}
-
-// reportClass is one evidence class tally shown as a pill.
-type reportClass struct {
-	Name  string
-	Count int
-	Kind  string
-}
-
-// reportSection is one check: what it asks, what it found, and how to act on it.
-type reportSection struct {
-	Slug        string
-	Question    string
-	Description string
-	Note        string // extra context line, e.g. what the rules protected
-	Command     string // the CLI commands that act on this section
-	Total       int    // every candidate the check found
-	Classes     []reportClass
-	Items       []reportItem
-	Truncated   bool // --limit cut the item list short
-}
-
-type reportData struct {
-	Repo        string
-	GeneratedAt string
-	WithAI      bool
-	Total       int
-	Sections    []reportSection
-}
-
-func span(t, kind string) reportSpan    { return reportSpan{Text: t, Kind: kind} }
-func linkSpan(t, url string) reportSpan { return reportSpan{Text: t, URL: url} }
+// prHTMLURL and issHTMLURL build web urls for report links.
 func (f *Flags) prHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, n)
 }
 
 func (f *Flags) issHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, n)
-}
-
-// reportAIKind buckets a confidence for colouring, matching ScoreTag's bands.
-func reportAIKind(c float64) string {
-	switch {
-	case c >= 0.7:
-		return kindOK
-	case c >= 0.4:
-		return kindMid
-	default:
-		return kindBad
-	}
-}
-
-// limitFindings caps a check's candidates for cheap test runs — applied BEFORE
-// any AI judging so --limit 10 costs ten verdicts, not the full set.
-func limitFindings[T any](findings []T, limit int) ([]T, bool) {
-	if limit > 0 && len(findings) > limit {
-		return findings[:limit], true
-	}
-	return findings, false
-}
-
-// sortByVerdict orders findings surest-first once verdicts exist; unanswered
-// candidates sink to the bottom.
-func sortByVerdict[T any](findings []T, number func(*T) int, verdicts map[int]*issue.Verdict) {
-	slices.SortStableFunc(findings, func(a, b T) int {
-		av, bv := -1.0, -1.0
-		if v := verdicts[number(&a)]; v != nil {
-			av = v.Confidence
-		}
-		if v := verdicts[number(&b)]; v != nil {
-			bv = v.Confidence
-		}
-		switch {
-		case av > bv:
-			return -1
-		case av < bv:
-			return 1
-		default:
-			return 0
-		}
-	})
-}
-
-// attachVerdict fills the AI fields on one item.
-func attachVerdict(item *reportItem, v *issue.Verdict) {
-	if v == nil {
-		return
-	}
-	item.AIScore = fmt.Sprintf("%.2f", v.Confidence)
-	item.AIKind = reportAIKind(v.Confidence)
-	item.AIReason = text.OneLine(v.Reason)
 }
 
 // Report writes report.html: every close candidate each check sees (fixed,
@@ -169,7 +54,7 @@ func (f *Flags) Report() error {
 	defer func() { _ = d.Close() }()
 
 	now := time.Now()
-	data := reportData{Repo: f.GH.Repo, WithAI: o.WithAI, GeneratedAt: now.Format("2006-01-02 15:04")}
+	data := cli.ReportData{Repo: f.GH.Repo, Noun: "close candidates", WithAI: o.WithAI, GeneratedAt: now.Format("2006-01-02 15:04")}
 
 	fixed, err := f.fixedReportSection(d, o, now)
 	if err != nil {
@@ -215,7 +100,7 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
+	data.Sections = []cli.ReportSection{fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -228,7 +113,7 @@ func (f *Flags) Report() error {
 		return fmt.Errorf("creating %s: %w", o.Out, err)
 	}
 	htmlPath := filepath.Join(o.Out, "report.html")
-	if err := writeReportHTML(htmlPath, &data); err != nil {
+	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
 	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
@@ -244,8 +129,8 @@ func (f *Flags) Report() error {
 }
 
 // fixedReportSection builds the "a merged PR touches this" check section.
-func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passFixed,
 		Question: "a merged PR touches this open issue — did it fix it?",
 		Description: "Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. " +
@@ -258,12 +143,12 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classFixedBy, counts[classFixedBy], kindOK},
-		{classMentionedBy, counts[classMentionedBy], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classFixedBy, Count: counts[classFixedBy], Kind: cli.KindOK},
+		{Name: classMentionedBy, Count: counts[classMentionedBy], Kind: cli.KindWarn},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
@@ -273,12 +158,12 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 		if verdicts, err = f.JudgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *fixedFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *fixedFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -286,35 +171,35 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 		}
 		for n := range fdg.prs {
 			pr := &fdg.prs[n]
-			row := make([]reportSpan, 0, 4)
+			row := make([]cli.ReportSpan, 0, 4)
 			if pr.WillClose {
-				row = append(row, span("fixed by", kindOK))
+				row = append(row, cli.Span("fixed by", cli.KindOK))
 			} else {
-				row = append(row, span("mentioned by", kindWarn))
+				row = append(row, cli.Span("mentioned by", cli.KindWarn))
 			}
-			row = append(row, linkSpan(fmt.Sprintf("PR #%d", pr.RefNumber), f.prHTMLURL(pr.RefNumber)))
+			row = append(row, cli.LinkSpan(fmt.Sprintf("PR #%d", pr.RefNumber), f.prHTMLURL(pr.RefNumber)))
 			if vs := prVersions[pr.RefNumber]; len(vs) > 0 {
-				row = append(row, span("shipped in v"+vs[0], kindVer))
+				row = append(row, cli.Span("shipped in v"+vs[0], cli.KindVer))
 			} else {
-				row = append(row, span("merged, not yet in a release", kindDim))
+				row = append(row, cli.Span("merged, not yet in a release", cli.KindDim))
 			}
-			row = append(row, span("· "+text.OneLine(pr.Title), kindDim))
+			row = append(row, cli.Span("· "+text.OneLine(pr.Title), cli.KindDim))
 			item.Evidence = append(item.Evidence, row)
 		}
 		if fdg.reopenedBy != 0 {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span(fmt.Sprintf("closed by PR #%d and then reopened — the fix may not have stuck", fdg.reopenedBy), kindBad),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span(fmt.Sprintf("closed by PR #%d and then reopened — the fix may not have stuck", fdg.reopenedBy), cli.KindBad),
 			})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // resolvedReportSection builds the "a linked issue was dealt with" check section.
-func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passResolved,
 		Question: "a linked issue was dealt with — does its outcome cover this open one?",
 		Description: "Every open issue that cross-references a CLOSED issue in the same repository: likely duplicates of something already dealt with. " +
@@ -327,13 +212,13 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classCompleted, counts[classCompleted], kindOK},
-		{classDuplicate, counts[classDuplicate], kindMid},
-		{classNotPlanned, counts[classNotPlanned], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classCompleted, Count: counts[classCompleted], Kind: cli.KindOK},
+		{Name: classDuplicate, Count: counts[classDuplicate], Kind: cli.KindMid},
+		{Name: classNotPlanned, Count: counts[classNotPlanned], Kind: cli.KindWarn},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.resolvedJudgeItems(d, findings)
@@ -343,13 +228,13 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		if verdicts, err = f.JudgeBlocks(d, passResolved, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *resolvedFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *resolvedFinding) int { return x.issue.Number }, verdicts)
 	}
 
-	classKind := map[string]string{classCompleted: kindOK, classDuplicate: kindMid, classNotPlanned: kindWarn}
+	classKind := map[string]string{classCompleted: cli.KindOK, classDuplicate: cli.KindMid, classNotPlanned: cli.KindWarn}
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -358,41 +243,41 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		for n := range fdg.targets {
 			t := &fdg.targets[n]
 			class := resolvedClass(t.stateReason)
-			row := make([]reportSpan, 0, 6)
+			row := make([]cli.ReportSpan, 0, 6)
 			row = append(row,
-				span("links", kindDim),
-				linkSpan(fmt.Sprintf("#%d", t.ref.RefNumber), f.issHTMLURL(t.ref.RefNumber)),
-				span("closed "+strings.ReplaceAll(class, "-", " "), classKind[class]))
+				cli.Span("links", cli.KindDim),
+				cli.LinkSpan(fmt.Sprintf("#%d", t.ref.RefNumber), f.issHTMLURL(t.ref.RefNumber)),
+				cli.Span("closed "+strings.ReplaceAll(class, "-", " "), classKind[class]))
 			if t.closedAt != "" {
-				row = append(row, span(dateOf(t.closedAt), kindDim))
+				row = append(row, cli.Span(dateOf(t.closedAt), cli.KindDim))
 			}
 			switch {
 			case t.fixPR != 0:
-				row = append(row, span("by", kindDim), linkSpan(fmt.Sprintf("PR #%d", t.fixPR), f.prHTMLURL(t.fixPR)))
+				row = append(row, cli.Span("by", cli.KindDim), cli.LinkSpan(fmt.Sprintf("PR #%d", t.fixPR), f.prHTMLURL(t.fixPR)))
 				if t.version != "" {
-					row = append(row, span("in v"+t.version, kindVer))
+					row = append(row, cli.Span("in v"+t.version, cli.KindVer))
 				} else if t.milestone != "" {
-					row = append(row, span(t.milestone, kindVer))
+					row = append(row, cli.Span(t.milestone, cli.KindVer))
 				}
 			case class == classCompleted:
-				row = append(row, span("(no fix recorded)", kindBad))
+				row = append(row, cli.Span("(no fix recorded)", cli.KindBad))
 			}
-			row = append(row, span("· "+text.OneLine(t.ref.Title), kindDim))
+			row = append(row, cli.Span("· "+text.OneLine(t.ref.Title), cli.KindDim))
 			item.Evidence = append(item.Evidence, row)
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // legacyReportSection builds the "this bug is old and unconfirmed" check section.
-func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
 	col, err := f.collectLegacy(d, nil)
 	if err != nil {
-		return reportSection{Slug: passLegacy}, err
+		return cli.ReportSection{Slug: passLegacy}, err
 	}
-	s := reportSection{
+	s := cli.ReportSection{
 		Slug:     passLegacy,
 		Question: fmt.Sprintf("this bug is old (v1–v%d) and nobody says it is still alive — close as stale?", col.maxMajor),
 		Description: fmt.Sprintf("Open bug and crash reports against legacy majors (v1–v%d) that the keep rules cleared for closing: "+
@@ -403,7 +288,7 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 	}
 	for m := 1; m <= col.maxMajor; m++ {
 		if col.byMajor[m] > 0 {
-			s.Classes = append(s.Classes, reportClass{fmt.Sprintf("v%d.x", m), col.byMajor[m], kindVer})
+			s.Classes = append(s.Classes, cli.ReportClass{Name: fmt.Sprintf("v%d.x", m), Count: col.byMajor[m], Kind: cli.KindVer})
 		}
 	}
 	if col.legacyBugs > 0 {
@@ -422,7 +307,7 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 	}
 
 	findings := col.findings
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.legacyJudgeItems(d, findings)
@@ -432,32 +317,32 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 		if verdicts, err = f.JudgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *legacyFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *legacyFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.signals.LastActivity, now),
 				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
 		}
-		kindTag := kindWarn
+		kindTag := cli.KindWarn
 		if fdg.signals.Kind == signalKindCrash {
-			kindTag = kindBad
+			kindTag = cli.KindBad
 		}
-		item.Evidence = append(item.Evidence, []reportSpan{
-			span(fdg.signals.Kind, kindTag),
-			span("on v"+text.OrDefault(fdg.signals.VersionFull, fmt.Sprintf("%d.x", fdg.signals.VersionMajor)), kindVer),
-			span("("+fdg.signals.VersionSource+")", kindDim),
+		item.Evidence = append(item.Evidence, []cli.ReportSpan{
+			cli.Span(fdg.signals.Kind, kindTag),
+			cli.Span("on v"+text.OrDefault(fdg.signals.VersionFull, fmt.Sprintf("%d.x", fdg.signals.VersionMajor)), cli.KindVer),
+			cli.Span("("+fdg.signals.VersionSource+")", cli.KindDim),
 		})
 		// a label-sourced quote is just "labelled v/3.x" — the source tag above
 		// already says that; only body/template/ai quotes add anything
 		if fdg.signals.VersionQuote != "" && fdg.signals.VersionSource != versionSourceLabel {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span("version evidence:", kindDim),
-				span("“"+text.TruncateRunes(text.OneLine(fdg.signals.VersionQuote), 120)+"”", kindQuote),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("version evidence:", cli.KindDim),
+				cli.Span("“"+text.TruncateRunes(text.OneLine(fdg.signals.VersionQuote), 120)+"”", cli.KindQuote),
 			})
 		}
 
@@ -471,49 +356,49 @@ func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 		const maxMentions = 6
 		for n, m := range mentions {
 			if n == maxMentions {
-				item.Evidence = append(item.Evidence, []reportSpan{
-					span(fmt.Sprintf("… and %d more version mentions in the thread", len(mentions)-maxMentions), kindDim),
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{
+					cli.Span(fmt.Sprintf("… and %d more version mentions in the thread", len(mentions)-maxMentions), cli.KindDim),
 				})
 				break
 			}
-			row := []reportSpan{
-				span(fmt.Sprintf("v%d.x", m.Major), kindVer),
-				span(fmt.Sprintf("%s ago · @%s:", text.HumanAge(m.At, now), m.Author), kindDim),
-				span("“"+text.TruncateRunes(text.OneLine(m.Quote), 110)+"”", kindQuote),
+			row := []cli.ReportSpan{
+				cli.Span(fmt.Sprintf("v%d.x", m.Major), cli.KindVer),
+				cli.Span(fmt.Sprintf("%s ago · @%s:", text.HumanAge(m.At, now), m.Author), cli.KindDim),
+				cli.Span("“"+text.TruncateRunes(text.OneLine(m.Quote), 110)+"”", cli.KindQuote),
 			}
 			if m.URL != "" {
-				row = append(row, linkSpan("view comment", m.URL))
+				row = append(row, cli.LinkSpan("view comment", m.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
 		}
 		if len(mentions) == 0 && len(comments) > 0 {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span(fmt.Sprintf("no version mentions in the thread's %d comments — nobody re-confirmed on a newer version", len(comments)), kindDim),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span(fmt.Sprintf("no version mentions in the thread's %d comments — nobody re-confirmed on a newer version", len(comments)), cli.KindDim),
 			})
 		}
 		// how the thread ended is the other half of the staleness call
 		if len(comments) > 0 {
 			last := &comments[len(comments)-1]
-			row := []reportSpan{
-				span(fmt.Sprintf("last comment %s ago · @%s:", text.HumanAge(last.CreatedAt, now), last.Author), kindDim),
-				span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(last.Body)), 140)+"”", kindQuote),
+			row := []cli.ReportSpan{
+				cli.Span(fmt.Sprintf("last comment %s ago · @%s:", text.HumanAge(last.CreatedAt, now), last.Author), cli.KindDim),
+				cli.Span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(last.Body)), 140)+"”", cli.KindQuote),
 			}
 			if last.URL != "" {
-				row = append(row, linkSpan("view comment", last.URL))
+				row = append(row, cli.LinkSpan("view comment", last.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
 		} else {
-			item.Evidence = append(item.Evidence, []reportSpan{span("no comments at all", kindDim)})
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{cli.Span("no comments at all", cli.KindDim)})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // commentsReportSection builds the "its own thread says it is done" section.
-func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passComments,
 		Question: "this issue's own thread says it can be closed — is the claim credible?",
 		Description: "Every open issue with a comment claiming it is done: \"this can be closed\", \"fixed in vX by #PR\", " +
@@ -526,12 +411,12 @@ func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classMaintainerSays, counts[classMaintainerSays], kindOK},
-		{classCommunitySays, counts[classCommunitySays], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classMaintainerSays, Count: counts[classMaintainerSays], Kind: cli.KindOK},
+		{Name: classCommunitySays, Count: counts[classCommunitySays], Kind: cli.KindWarn},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.commentsJudgeItems(d, findings)
@@ -541,12 +426,12 @@ func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		if verdicts, err = f.JudgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *commentsFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *commentsFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -554,37 +439,37 @@ func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		}
 		for n := range fdg.claims {
 			cl := &fdg.claims[n]
-			authorKind := kindWarn
+			authorKind := cli.KindWarn
 			assocName := ""
 			switch _, label := assocDisplay(cl.comment.AuthorAssociation); {
 			case maintainerAssoc(cl.comment.AuthorAssociation):
-				authorKind, assocName = kindOK, "("+label+") "
+				authorKind, assocName = cli.KindOK, "("+label+") "
 			case label != "":
 				authorKind, assocName = "", "("+label+") "
 			}
-			row := []reportSpan{
-				span("@"+cl.comment.Author, authorKind),
-				span(assocName+text.HumanAge(cl.comment.CreatedAt, now)+" ago:", kindDim),
-				span("“"+cl.quote+"”", kindQuote),
+			row := []cli.ReportSpan{
+				cli.Span("@"+cl.comment.Author, authorKind),
+				cli.Span(assocName+text.HumanAge(cl.comment.CreatedAt, now)+" ago:", cli.KindDim),
+				cli.Span("“"+cl.quote+"”", cli.KindQuote),
 			}
 			if cl.prNumber != 0 {
-				row = append(row, linkSpan(fmt.Sprintf("PR #%d", cl.prNumber), f.prHTMLURL(cl.prNumber)),
-					span("shipped in v"+cl.prVersion, kindVer))
+				row = append(row, cli.LinkSpan(fmt.Sprintf("PR #%d", cl.prNumber), f.prHTMLURL(cl.prNumber)),
+					cli.Span("shipped in v"+cl.prVersion, cli.KindVer))
 			}
 			if cl.comment.URL != "" {
-				row = append(row, linkSpan("view comment", cl.comment.URL))
+				row = append(row, cli.LinkSpan("view comment", cl.comment.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // questionsReportSection builds the "this question is done with" section.
-func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passQuestions,
 		Question: "this question was answered, or died unanswered long ago — close it out?",
 		Description: "Open question-labelled issues that look done with: answered (a substantive reply exists — the newest, " +
@@ -599,16 +484,16 @@ func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Tim
 	}
 	findings := col.findings
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classQAnswered, col.counts[classQAnswered], kindOK},
-		{classQDead, col.counts[classQDead], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classQAnswered, Count: col.counts[classQAnswered], Kind: cli.KindOK},
+		{Name: classQDead, Count: col.counts[classQDead], Kind: cli.KindWarn},
 	}
 	if col.questions > 0 {
 		s.Note = fmt.Sprintf("%d open question-labelled issues · %d with recent activity · %s",
 			col.questions, col.active, keepSummary(col.protected))
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.questionsJudgeItems(d, findings)
@@ -618,48 +503,48 @@ func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Tim
 		if verdicts, err = f.JudgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *questionsFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *questionsFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
 				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
 		}
 		if fdg.answer != nil {
-			authorKind := kindMid
+			authorKind := cli.KindMid
 			assocName := ""
 			switch _, label := assocDisplay(fdg.answer.AuthorAssociation); {
 			case fdg.answer.IsMaintainer():
-				authorKind, assocName = kindOK, "("+label+") "
+				authorKind, assocName = cli.KindOK, "("+label+") "
 			case label != "":
 				authorKind, assocName = "", "("+label+") "
 			}
-			row := []reportSpan{
-				span("candidate answer by", kindDim),
-				span("@"+fdg.answer.Author, authorKind),
-				span(assocName+text.HumanAge(fdg.answer.CreatedAt, now)+" ago:", kindDim),
-				span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.answer.Body)), 160)+"”", kindQuote),
+			row := []cli.ReportSpan{
+				cli.Span("candidate answer by", cli.KindDim),
+				cli.Span("@"+fdg.answer.Author, authorKind),
+				cli.Span(assocName+text.HumanAge(fdg.answer.CreatedAt, now)+" ago:", cli.KindDim),
+				cli.Span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.answer.Body)), 160)+"”", cli.KindQuote),
 			}
 			if fdg.answer.URL != "" {
-				row = append(row, linkSpan("view comment", fdg.answer.URL))
+				row = append(row, cli.LinkSpan("view comment", fdg.answer.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
 			if fdg.replies > 1 {
-				item.Evidence = append(item.Evidence, []reportSpan{
-					span(fmt.Sprintf("%d substantive replies in the thread", fdg.replies), kindDim),
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{
+					cli.Span(fmt.Sprintf("%d substantive replies in the thread", fdg.replies), cli.KindDim),
 				})
 			}
 		} else {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span("no substantive replies at all", kindWarn),
-				span("quiet for "+text.HumanAge(fdg.issue.UpdatedAt, now), kindDim),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("no substantive replies at all", cli.KindWarn),
+				cli.Span("quiet for "+text.HumanAge(fdg.issue.UpdatedAt, now), cli.KindDim),
 			})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
@@ -667,8 +552,8 @@ func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Tim
 
 // staleReportSection builds the "the maintainer's last word went unanswered"
 // section.
-func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passStale,
 		Question: "a maintainer had the last word over a year ago and nobody answered — close out the thread?",
 		Description: "Open issues whose thread ended on a maintainer's comment left unanswered for over a year: " +
@@ -683,13 +568,13 @@ func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 	}
 	findings := col.findings
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classStaleAsked, col.counts[classStaleAsked], kindOK},
-		{classStaleSaid, col.counts[classStaleSaid], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classStaleAsked, Count: col.counts[classStaleAsked], Kind: cli.KindOK},
+		{Name: classStaleSaid, Count: col.counts[classStaleSaid], Kind: cli.KindWarn},
 	}
 	s.Note = fmt.Sprintf("%d more end on a maintainer's word under a year old · %s", col.recent, keepSummary(col.protected))
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.staleJudgeItems(d, findings)
@@ -699,47 +584,47 @@ func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 		if verdicts, err = f.JudgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *staleFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *staleFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
 				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
 		}
-		verb, verbKind := "said", kindWarn
+		verb, verbKind := "said", cli.KindWarn
 		if fdg.class == classStaleAsked {
-			verb, verbKind = "asked", kindOK
+			verb, verbKind = "asked", cli.KindOK
 		}
 		_, label := assocDisplay(fdg.last.AuthorAssociation)
-		row := []reportSpan{
-			span("@"+fdg.last.Author, kindOK),
-			span("("+label+")", kindDim),
-			span(verb, verbKind),
-			span(text.HumanAge(fdg.last.CreatedAt, now)+" ago, unanswered since:", kindDim),
-			span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.last.Body)), 200)+"”", kindQuote),
+		row := []cli.ReportSpan{
+			cli.Span("@"+fdg.last.Author, cli.KindOK),
+			cli.Span("("+label+")", cli.KindDim),
+			cli.Span(verb, verbKind),
+			cli.Span(text.HumanAge(fdg.last.CreatedAt, now)+" ago, unanswered since:", cli.KindDim),
+			cli.Span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.last.Body)), 200)+"”", cli.KindQuote),
 		}
 		if fdg.last.URL != "" {
-			row = append(row, linkSpan("view comment", fdg.last.URL))
+			row = append(row, cli.LinkSpan("view comment", fdg.last.URL))
 		}
 		item.Evidence = append(item.Evidence, row)
 		if fdg.mentionsAuthor {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span("addressed the reporter @"+fdg.issue.Author+" directly", kindDim),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("addressed the reporter @"+fdg.issue.Author+" directly", cli.KindDim),
 			})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // existsReportSection builds the "the ask already exists" section.
-func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passExists,
 		Question: "this enhancement request appears to already exist in the provider — did it ship?",
 		Description: "Open enhancement requests whose ask already exists: the requested resource or data source is in the " +
@@ -752,12 +637,12 @@ func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classExistsResource, counts[classExistsResource], kindOK},
-		{classExistsProperty, counts[classExistsProperty], kindMid},
+	s.Classes = []cli.ReportClass{
+		{Name: classExistsResource, Count: counts[classExistsResource], Kind: cli.KindOK},
+		{Name: classExistsProperty, Count: counts[classExistsProperty], Kind: cli.KindMid},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.existsJudgeItems(d, findings)
@@ -767,12 +652,12 @@ func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 		if verdicts, err = f.JudgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *existsFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *existsFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -783,45 +668,45 @@ func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 			// evidence is dated when a changelog bullet names it and undated
 			// when only the docs do — the row must not claim a release either
 			// way it does not have
-			var row []reportSpan
+			var row []cli.ReportSpan
 			if e.kind == db.RemovalKindProperty {
-				row = []reportSpan{span(e.name, ""), span("on "+e.resource, kindDim)}
+				row = []cli.ReportSpan{cli.Span(e.name, ""), cli.Span("on "+e.resource, cli.KindDim)}
 				if e.version != "" {
-					row = append(row, span("shipped in v"+e.version, kindVer), linkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
+					row = append(row, cli.Span("shipped in v"+e.version, cli.KindVer), cli.LinkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
 				} else {
-					row = append(row, span("in the docs today", kindOK),
-						linkSpan("docs", registryDocURL(e.ownerKind(), e.resource)))
+					row = append(row, cli.Span("in the docs today", cli.KindOK),
+						cli.LinkSpan("docs", registryDocURL(e.ownerKind(), e.resource)))
 				}
 			} else {
-				row = []reportSpan{
-					span(e.name, kindOK), span("("+strings.ReplaceAll(e.kind, "-", " ")+")", kindDim),
-					span("now exists", kindOK),
+				row = []cli.ReportSpan{
+					cli.Span(e.name, cli.KindOK), cli.Span("("+strings.ReplaceAll(e.kind, "-", " ")+")", cli.KindDim),
+					cli.Span("now exists", cli.KindOK),
 				}
 				if e.version != "" {
-					row = append(row, span("arrived in v"+e.version, kindVer), linkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
+					row = append(row, cli.Span("arrived in v"+e.version, cli.KindVer), cli.LinkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
 				} else {
-					row = append(row, span("— arrival not dated", kindDim))
+					row = append(row, cli.Span("— arrival not dated", cli.KindDim))
 				}
-				row = append(row, linkSpan("docs", registryDocURL(e.kind, e.name)))
+				row = append(row, cli.LinkSpan("docs", registryDocURL(e.kind, e.name)))
 			}
 			if e.preAsk {
-				row = append(row, span("(predates the request)", kindDim))
+				row = append(row, cli.Span("(predates the request)", cli.KindDim))
 			}
 			item.Evidence = append(item.Evidence, row,
-				[]reportSpan{span("changelog:", kindDim), span("“"+e.bullet+"”", kindQuote)})
+				[]cli.ReportSpan{cli.Span("changelog:", cli.KindDim), cli.Span("“"+e.bullet+"”", cli.KindQuote)})
 			if e.quote != "" {
-				item.Evidence = append(item.Evidence, []reportSpan{span("the ask:", kindDim), span("“"+e.quote+"”", kindQuote)})
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{cli.Span("the ask:", cli.KindDim), cli.Span("“"+e.quote+"”", cli.KindQuote)})
 			}
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // duplicatesReportSection builds the "this is another open issue" section.
-func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passDuplicates,
 		Question: "this looks like an older open issue — is it the same one?",
 		Description: "Open issues that duplicate another OPEN issue: this one references it, or nobody linked them and " +
@@ -835,12 +720,12 @@ func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classDupLinked, counts[classDupLinked], kindOK},
-		{classDupSimilar, counts[classDupSimilar], kindMid},
+	s.Classes = []cli.ReportClass{
+		{Name: classDupLinked, Count: counts[classDupLinked], Kind: cli.KindOK},
+		{Name: classDupSimilar, Count: counts[classDupSimilar], Kind: cli.KindMid},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.duplicatesJudgeItems(d, findings)
@@ -850,12 +735,12 @@ func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		if verdicts, err = f.JudgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -863,17 +748,17 @@ func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		}
 		for n := range fdg.targets {
 			t := &fdg.targets[n]
-			how, kind := "referenced from this issue", kindOK
+			how, kind := "referenced from this issue", cli.KindOK
 			if t.class == classDupSimilar {
-				how, kind = fmt.Sprintf("%.0f%% title match, nothing links them", t.similarity*100), kindMid
+				how, kind = fmt.Sprintf("%.0f%% title match, nothing links them", t.similarity*100), cli.KindMid
 			}
-			item.Evidence = append(item.Evidence, []reportSpan{
-				linkSpan(fmt.Sprintf("#%d", t.issue.Number), t.issue.URL),
-				span(how, kind),
-				span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.issue.CreatedAt, now), t.issue.CommentCount, t.issue.ThumbsUp), kindDim),
-			}, []reportSpan{span("“"+text.OneLine(t.issue.Title)+"”", kindQuote)})
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.LinkSpan(fmt.Sprintf("#%d", t.issue.Number), t.issue.URL),
+				cli.Span(how, kind),
+				cli.Span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.issue.CreatedAt, now), t.issue.CommentCount, t.issue.ThumbsUp), cli.KindDim),
+			}, []cli.ReportSpan{cli.Span("“"+text.OneLine(t.issue.Title)+"”", cli.KindQuote)})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
@@ -882,8 +767,8 @@ func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 // errorsReportSection builds the "its quoted error is gone from the source"
 // section. Unlike every other check it needs a local provider checkout to grep;
 // without one configured the section stays empty and says how to enable it.
-func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passErrors,
 		Question: "this bug quotes error output that no longer exists in the provider source — obsolete as written?",
 		Description: "Open bug and crash reports whose quoted error or panic output no longer exists anywhere in the provider " +
@@ -905,17 +790,17 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 	}
 	findings := col.findings
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classErrVerified, col.counts[classErrVerified], kindOK},
-		{classErrPanic, col.counts[classErrPanic], kindMid},
-		{classErrUnverified, col.counts[classErrUnverified], kindWarn},
+	s.Classes = []cli.ReportClass{
+		{Name: classErrVerified, Count: col.counts[classErrVerified], Kind: cli.KindOK},
+		{Name: classErrPanic, Count: col.counts[classErrPanic], Kind: cli.KindMid},
+		{Name: classErrUnverified, Count: col.counts[classErrUnverified], Kind: cli.KindWarn},
 	}
 	if col.quoting > 0 {
 		s.Note = fmt.Sprintf("%d open bugs/crashes quote error output · %d still in the source · %d never provider text at the reported version · %s",
 			col.quoting, col.stillPresent, col.neverFound, keepSummary(col.protected))
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.errorsJudgeItems(d, findings, eo.Ref)
@@ -925,20 +810,20 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 		if verdicts, err = f.JudgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *errorsFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *errorsFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
 				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
 		}
 		if fdg.version != "" {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span("reported against", kindDim), span("v"+fdg.version, kindVer),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("reported against", cli.KindDim), cli.Span("v"+fdg.version, cli.KindVer),
 			})
 		}
 		for n := range fdg.probes {
@@ -947,16 +832,16 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 			if p.frag.Kind == issue.ErrFragPanic {
 				kind = "panic function"
 			}
-			row := []reportSpan{
-				span(kind, kindDim),
-				span("“"+p.frag.Text+"”", kindQuote),
-				span("gone from "+eo.Ref, kindWarn),
+			row := []cli.ReportSpan{
+				cli.Span(kind, cli.KindDim),
+				cli.Span("“"+p.frag.Text+"”", cli.KindQuote),
+				cli.Span("gone from "+eo.Ref, cli.KindWarn),
 			}
 			switch {
 			case p.foundAtTag:
-				row = append(row, span("was in the source at "+fdg.tag, kindOK))
+				row = append(row, cli.Span("was in the source at "+fdg.tag, cli.KindOK))
 			case fdg.tag != "":
-				row = append(row, span("never at "+fdg.tag+" — likely not provider text", kindDim))
+				row = append(row, cli.Span("never at "+fdg.tag+" — likely not provider text", cli.KindDim))
 			}
 			item.Evidence = append(item.Evidence, row)
 			if p.frag.Quote != "" {
@@ -964,12 +849,12 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 				if p.frag.FromComment {
 					src = "from a comment:"
 				}
-				item.Evidence = append(item.Evidence, []reportSpan{
-					span(src, kindDim), span("“"+p.frag.Quote+"”", kindQuote),
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{
+					cli.Span(src, cli.KindDim), cli.Span("“"+p.frag.Quote+"”", cli.KindQuote),
 				})
 			}
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
@@ -978,8 +863,8 @@ func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 // docsReportSection builds the "its doc page moved on" section. Like the
 // errors section it needs the provider checkout; without one configured the
 // section stays empty and says how to enable it.
-func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passDocs,
 		Question: "this documentation issue's page has been revised since — addressed now?",
 		Description: "Open documentation issues whose doc page has been edited since the report. Edits alone prove " +
@@ -1004,7 +889,7 @@ func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (r
 			col.docs, col.untouched, col.removed, col.unresolved, keepSummary(col.protected))
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.docsJudgeItems(d, findings, eo.Src, eo.Ref)
@@ -1014,41 +899,41 @@ func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (r
 		if verdicts, err = f.JudgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *docsFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *docsFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
 				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
 		}
 		for _, p := range fdg.pages {
-			row := []reportSpan{span(p.name, ""), span("("+p.kind+")", kindDim)}
+			row := []cli.ReportSpan{cli.Span(p.name, ""), cli.Span("("+p.kind+")", cli.KindDim)}
 			switch {
 			case !p.exists:
-				row = append(row, span("page no longer exists", kindBad))
+				row = append(row, cli.Span("page no longer exists", cli.KindBad))
 			case p.commits == 0:
-				row = append(row, span("untouched since the report", kindDim))
+				row = append(row, cli.Span("untouched since the report", cli.KindDim))
 			default:
 				row = append(row,
-					span(fmt.Sprintf("edited %d times since the report", p.commits), kindOK),
-					span("last "+p.lastEdit.Format("2006-01-02"), kindDim),
-					linkSpan("current docs", registryDocURL(p.kind, p.name)))
+					cli.Span(fmt.Sprintf("edited %d times since the report", p.commits), cli.KindOK),
+					cli.Span("last "+p.lastEdit.Format("2006-01-02"), cli.KindDim),
+					cli.LinkSpan("current docs", registryDocURL(p.kind, p.name)))
 			}
 			item.Evidence = append(item.Evidence, row)
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
 }
 
 // deprecatedReportSection builds the "the thing it leans on is gone" section.
-func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
-	s := reportSection{
+func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
 		Slug:     passDeprecated,
 		Question: "this issue leans on a removed or deprecated resource/property — moot where it stands?",
 		Description: "Every open issue referencing a resource, data source, or property that was removed or deprecated, " +
@@ -1061,14 +946,14 @@ func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		return s, err
 	}
 	s.Total = len(findings)
-	s.Classes = []reportClass{
-		{classRemovedResource, counts[classRemovedResource], kindBad},
-		{classRemovedProperty, counts[classRemovedProperty], kindWarn},
-		{classDeprecatedResource, counts[classDeprecatedResource], kindMid},
-		{classDeprecatedProperty, counts[classDeprecatedProperty], kindDim},
+	s.Classes = []cli.ReportClass{
+		{Name: classRemovedResource, Count: counts[classRemovedResource], Kind: cli.KindBad},
+		{Name: classRemovedProperty, Count: counts[classRemovedProperty], Kind: cli.KindWarn},
+		{Name: classDeprecatedResource, Count: counts[classDeprecatedResource], Kind: cli.KindMid},
+		{Name: classDeprecatedProperty, Count: counts[classDeprecatedProperty], Kind: cli.KindDim},
 	}
 
-	findings, s.Truncated = limitFindings(findings, o.Limit)
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
 	if o.WithAI && len(findings) > 0 {
 		promptText, items, jerr := f.deprecatedJudgeItems(d, findings)
@@ -1078,12 +963,12 @@ func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		if verdicts, err = f.JudgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
-		sortByVerdict(findings, func(x *deprecatedFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *deprecatedFinding) int { return x.issue.Number }, verdicts)
 	}
 
 	for i := range findings {
 		fdg := &findings[i]
-		item := reportItem{
+		item := cli.ReportItem{
 			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
 			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
 				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
@@ -1092,59 +977,41 @@ func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Ti
 		for n := range fdg.matches {
 			m := &fdg.matches[n]
 			r := m.removal
-			actionKind := kindMid
+			actionKind := cli.KindMid
 			if r.Action == db.RemovalRemoved {
-				actionKind = kindBad
+				actionKind = cli.KindBad
 			}
-			row := make([]reportSpan, 0, 6)
+			row := make([]cli.ReportSpan, 0, 6)
 			if r.Kind == db.RemovalKindProperty {
-				row = append(row, span(r.Property, ""), span("on "+r.Resource, kindDim))
+				row = append(row, cli.Span(r.Property, ""), cli.Span("on "+r.Resource, cli.KindDim))
 			} else {
-				row = append(row, span(r.Resource, ""), span("("+strings.ReplaceAll(r.Kind, "-", " ")+")", kindDim))
+				row = append(row, cli.Span(r.Resource, ""), cli.Span("("+strings.ReplaceAll(r.Kind, "-", " ")+")", cli.KindDim))
 			}
 			if v, ok := strings.CutPrefix(r.Source, "changelog "); ok {
-				row = append(row, span(r.Action, actionKind), linkSpan("in "+v, removalURL(r)))
+				row = append(row, cli.Span(r.Action, actionKind), cli.LinkSpan("in "+v, removalURL(r)))
 			} else {
-				row = append(row, span(r.Action, actionKind), linkSpan(fmt.Sprintf("in v%d.0 (%s)", r.Major, r.Source), removalURL(r)))
+				row = append(row, cli.Span(r.Action, actionKind), cli.LinkSpan(fmt.Sprintf("in v%d.0 (%s)", r.Major, r.Source), removalURL(r)))
 			}
 			if r.Successor != "" {
-				row = append(row, span("· use "+r.Successor, kindOK))
+				row = append(row, cli.Span("· use "+r.Successor, cli.KindOK))
 			}
 			item.Evidence = append(item.Evidence, row)
 			if m.quote != "" {
-				item.Evidence = append(item.Evidence, []reportSpan{
-					span("matched:", kindDim), span("“"+m.quote+"”", kindQuote),
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{
+					cli.Span("matched:", cli.KindDim), cli.Span("“"+m.quote+"”", cli.KindQuote),
 				})
 			}
 		}
 		if len(fdg.alive) > 0 {
-			item.Evidence = append(item.Evidence, []reportSpan{
-				span("also references (not removed or deprecated):", kindDim),
-				span(strings.Join(fdg.alive, " · "), kindOK),
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("also references (not removed or deprecated):", cli.KindDim),
+				cli.Span(strings.Join(fdg.alive, " · "), cli.KindOK),
 			})
 		}
-		attachVerdict(&item, verdicts[fdg.issue.Number])
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
 	}
 	return s, nil
-}
-
-func writeReportHTML(path string, data *reportData) error {
-	tmpl, err := template.New("report").Parse(assets.Styles() + assets.ReportHTML())
-	if err != nil {
-		return fmt.Errorf("parsing report template: %w", err)
-	}
-
-	out, err := os.Create(path) //nolint:gosec // G304: user-chosen output path is the point
-	if err != nil {
-		return fmt.Errorf("creating %s: %w", path, err)
-	}
-	defer func() { _ = out.Close() }()
-
-	if err := tmpl.Execute(out, data); err != nil {
-		return fmt.Errorf("rendering report: %w", err)
-	}
-	return nil
 }
 
 // Import reads a filled-in decisions.csv and records approve/reject decisions.

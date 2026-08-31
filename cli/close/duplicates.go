@@ -137,7 +137,7 @@ func (f *Flags) Duplicates(link string) error {
 		if verdicts, err = f.JudgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
 			return err
 		}
-		sortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
+		cli.SortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
 	} else {
 		cout.Printf("<gray>--ai=false: listing without duplicate scores</>\n")
 	}

@@ -4,9 +4,8 @@
 package milestone
 
 import (
-	"github.com/spf13/cobra"
-
 	"github.com/katbyte/koi/cli"
+	"github.com/spf13/cobra"
 )
 
 // Flags wraps the shared flag data so the audit keeps its method form; the

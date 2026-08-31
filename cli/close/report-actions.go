@@ -84,7 +84,7 @@ type actionSection struct {
 	Reason      string
 	StateReason string
 	Verb        string
-	Classes     []reportClass
+	Classes     []cli.ReportClass
 	Items       []actionItem
 }
 
@@ -95,7 +95,7 @@ type actionsData struct {
 	Total         int
 	Judged        int
 	AvgConfidence string
-	Models        []reportClass
+	Models        []cli.ReportClass
 	Sections      []actionSection
 }
 
@@ -193,7 +193,7 @@ func (f *Flags) actionItem(a *db.Action, titles map[int]string, verdicts map[str
 	}
 	if a.Confidence > 0 {
 		item.AIScore = fmt.Sprintf("%.2f", a.Confidence)
-		item.AIKind = reportAIKind(a.Confidence)
+		item.AIKind = cli.ReportAIKind(a.Confidence)
 	}
 	item.AIReason = text.OneLine(a.Evidence[evidenceKeyAI])
 	if item.AIReason == "" && v != nil {
@@ -247,7 +247,7 @@ func (f *Flags) actionsData(items []actionItem) actionsData {
 		data.AvgConfidence = fmt.Sprintf("%.2f", sum/float64(data.Judged))
 	}
 	for _, name := range text.SortedKeys(models) {
-		data.Models = append(data.Models, reportClass{Name: name, Count: models[name], Kind: kindDim})
+		data.Models = append(data.Models, cli.ReportClass{Name: name, Count: models[name], Kind: cli.KindDim})
 	}
 
 	for _, s := range bySlug {
@@ -273,14 +273,14 @@ func (f *Flags) actionsData(items []actionItem) actionsData {
 
 // bumpClass increments the named tally, appending it the first time it is seen
 // so the pills keep the order they were encountered in.
-func bumpClass(classes []reportClass, name, kind string) []reportClass {
+func bumpClass(classes []cli.ReportClass, name, kind string) []cli.ReportClass {
 	for i := range classes {
 		if classes[i].Name == name {
 			classes[i].Count++
 			return classes
 		}
 	}
-	return append(classes, reportClass{Name: name, Count: 1, Kind: kind})
+	return append(classes, cli.ReportClass{Name: name, Count: 1, Kind: kind})
 }
 
 // checkForAction names the check behind an action: the checks stamp themselves
@@ -295,13 +295,13 @@ func checkForAction(a *db.Action) string {
 func actionStatusKind(status string) string {
 	switch status {
 	case db.StatusApplied:
-		return kindOK
+		return cli.KindOK
 	case db.StatusFailed:
-		return kindBad
+		return cli.KindBad
 	case db.StatusReopened:
-		return kindWarn
+		return cli.KindWarn
 	default:
-		return kindMid
+		return cli.KindMid
 	}
 }
 

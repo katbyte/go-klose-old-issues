@@ -1,4 +1,4 @@
-package koi
+package cli
 
 import (
 	"fmt"
@@ -27,7 +27,7 @@ var cacheDomains = []cacheDomain{
 }
 
 // Cache lists the cache domains and their row counts, or clears one (or "all").
-func (f *Flags) Cache(domain string) error {
+func (f *FlagData) Cache(domain string) error {
 	d, err := f.OpenDB()
 	if err != nil {
 		return err

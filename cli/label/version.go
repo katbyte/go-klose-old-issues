@@ -6,14 +6,18 @@ package label
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/lib/gh"
 
-	"github.com/katbyte/koi/cli"
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
 	"github.com/katbyte/koi/lib/issue"
@@ -31,6 +35,7 @@ type versionEvidence struct {
 	quote  string
 	source string // "reported (template)" or "@author 2024-01-02"
 	url    string // deep link for comment claims ("" for the body)
+	bare   bool   // loose sweep, no context required — a lead, not a claim
 }
 
 // versionFinding is one open issue whose evidence names majors its v/N.x
@@ -44,6 +49,42 @@ type versionFinding struct {
 }
 
 var reVersionLabel = regexp.MustCompile(`^v/(\d+)\.x`)
+
+// reBareVersion finds version-shaped tokens for the loose comment sweep —
+// recall is the sweep's job, the judge's is precision, so no azurerm context
+// is required. Major 1 is left to the context-required sweep (a bare "1.5.7"
+// is nearly always Terraform Core, not provider v1).
+var reBareVersion = regexp.MustCompile(`\bv?([2-9])\.(\d{1,3})(?:\.(\d{1,3}))?\b`)
+
+// bareVersionSkip rejects a bare mention whose immediate context says it is
+// not a provider version: Terraform Core's, a dotted property path, a
+// requirement like "terraform >= 3.0".
+var bareVersionSkip = regexp.MustCompile(`(?i)terraform[^.\n]{0,20}$|core[^.\n]{0,10}$`)
+
+// bareMentions sweeps one comment for loose version tokens, one evidence per
+// major, skipping majors the strong sweep already claimed on this comment.
+func bareMentions(c *db.Comment, maxMajor int, claimed map[string]bool) map[int]versionEvidence {
+	out := map[int]versionEvidence{}
+	for _, m := range reBareVersion.FindAllStringSubmatchIndex(c.Body, -1) {
+		major := int(c.Body[m[2]] - '0')
+		if major > maxMajor || claimed[c.URL+"|"+strconv.Itoa(major)] {
+			continue
+		}
+		if _, ok := out[major]; ok {
+			continue
+		}
+		if bareVersionSkip.MatchString(c.Body[max(0, m[0]-24):m[0]]) {
+			continue
+		}
+		out[major] = versionEvidence{
+			quote:  text.TruncateRunes(text.OneLine(c.Body[max(0, m[0]-60):min(len(c.Body), m[1]+60)]), 140),
+			source: fmt.Sprintf("@%s %s, bare mention", c.Author, c.CreatedAt.Format("2006-01-02")),
+			url:    c.URL,
+			bare:   true,
+		}
+	}
+	return out
+}
 
 // Version finds OPEN issues whose affected-version evidence — the reported
 // version and comment claims — names majors their labels don't record, and
@@ -188,15 +229,24 @@ func (f *Flags) collectVersion(d *db.DB) ([]versionFinding, int, error) {
 		if cerr != nil {
 			return nil, 0, cerr
 		}
+		claimed := map[string]bool{}
 		for _, cl := range issue.VersionMentions(comments) {
 			if cl.Major < 1 || cl.Major > f.CurrentMajor {
 				continue
 			}
+			claimed[cl.URL+"|"+strconv.Itoa(cl.Major)] = true
 			evidence[cl.Major] = append(evidence[cl.Major], versionEvidence{
 				quote:  text.TruncateRunes(text.OneLine(cl.Quote), 140),
 				source: fmt.Sprintf("@%s %s", cl.Author, cl.At.Format("2006-01-02")),
 				url:    cl.URL,
 			})
+		}
+		// then the loose sweep: bare version tokens with no context required —
+		// the judge does the analysis, so the sweep only has to find them
+		for ci := range comments {
+			for major, e := range bareMentions(&comments[ci], f.CurrentMajor, claimed) {
+				evidence[major] = append(evidence[major], e)
+			}
 		}
 		if len(evidence) == 0 {
 			continue
@@ -339,7 +389,24 @@ func (f *Flags) versionJudgeItems(findings []versionFinding) (string, []issue.Ju
 		b.WriteString("PROPOSED LABELS AND THEIR EVIDENCE:\n")
 		for _, m := range fdg.add {
 			fmt.Fprintf(&b, "- v/%d.x:\n", m)
-			for _, e := range fdg.evidence[m] {
+			// contextual claims first, bare mentions after, capped per major so
+			// a chatty thread cannot flood the block
+			ev := slices.Clone(fdg.evidence[m])
+			slices.SortStableFunc(ev, func(a, b versionEvidence) int {
+				switch {
+				case a.bare == b.bare:
+					return 0
+				case b.bare:
+					return -1
+				default:
+					return 1
+				}
+			})
+			for n, e := range ev {
+				if n == 5 {
+					fmt.Fprintf(&b, "  ... and %d more mentions\n", len(ev)-n)
+					break
+				}
 				fmt.Fprintf(&b, "  [%s] %q\n", e.source, e.quote)
 			}
 		}
@@ -372,4 +439,147 @@ func (f *Flags) printVersionCard(fdg *versionFinding, pos, total int, v *issue.V
 		}
 	}
 	cli.PrintVerdict(v)
+}
+
+// Report writes label.html: every issue the version labeller would touch,
+// with the evidence for each proposed label — the shared report scaffolding
+// with one section per label family.
+func (f *Flags) Report() error {
+	o := f.Cmd.Report
+	if !f.NoAutoFetch {
+		if err := f.AutoFetch(); err != nil {
+			return err
+		}
+	}
+	if o.WithAI && !f.AI.Enabled {
+		return errors.New("--with-ai needs the AI (--ai=false is set)")
+	}
+
+	d, err := f.OpenDB()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+
+	now := time.Now()
+	data := cli.ReportData{Repo: f.GH.Repo, Noun: "label candidates", WithAI: o.WithAI, GeneratedAt: now.Format("2006-01-02 15:04")}
+
+	version, err := f.versionReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []cli.ReportSection{version}
+	for _, s := range data.Sections {
+		data.Total += s.Total
+	}
+	if data.Total == 0 {
+		cout.Printf("no label candidates — is the db fetched? (<cyan>koi fetch</>)\n")
+		return nil
+	}
+
+	if err := os.MkdirAll(o.Out, 0o750); err != nil {
+		return fmt.Errorf("creating %s: %w", o.Out, err)
+	}
+	htmlPath := filepath.Join(o.Out, "label.html")
+	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
+		return err
+	}
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> label candidates <gray>(version %d)</>\n", htmlPath, data.Total, version.Total)
+	if !o.WithAI {
+		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
+	}
+	// a file:// url so the terminal makes the path clickable
+	if abs, aerr := filepath.Abs(htmlPath); aerr == nil {
+		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
+	}
+	return nil
+}
+
+// versionReportSection builds the version labeller's section: each issue with
+// its existing labels, every proposed label, and the quotes behind it.
+func (f *Flags) versionReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
+	s := cli.ReportSection{
+		Slug:     "label-version",
+		Name:     "label version",
+		Question: "this issue's evidence names affected versions its v/N.x labels don't record — label them?",
+		Description: "Open issues whose affected-version evidence — the version the issue reports plus every comment " +
+			"version mention (bare mentions swept with no context requirement; the AI does the analysis) — names majors " +
+			"their labels don't record. Labels are only ever added, using the repo's canonical names.",
+		Command: "koi label version --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	findings, open, err := f.collectVersion(d)
+	if err != nil {
+		return s, err
+	}
+	s.Total = len(findings)
+	byMajor := map[int]int{}
+	for i := range findings {
+		for _, m := range findings[i].add {
+			byMajor[m]++
+		}
+	}
+	for m := 1; m <= f.CurrentMajor; m++ {
+		if byMajor[m] > 0 {
+			s.Classes = append(s.Classes, cli.ReportClass{Name: fmt.Sprintf("v%d.x", m), Count: byMajor[m], Kind: cli.KindVer})
+		}
+	}
+	s.Note = fmt.Sprintf("%d open issues scanned · labels are add-only, existing labels are never touched", open)
+
+	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.versionJudgeItems(findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.JudgeBlocks(d, passLabelVersion, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		cli.SortByVerdict(findings, func(x *versionFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := cli.ReportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		if len(fdg.existing) > 0 {
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("labelled:", cli.KindDim), cli.Span(strings.Join(fdg.existing, " "), cli.KindOK),
+			})
+		}
+		for n, m := range fdg.add {
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("add", cli.KindDim), cli.Span(fdg.labels[n], cli.KindVer),
+			})
+			shown := 0
+			for _, e := range fdg.evidence[m] {
+				if shown == 4 {
+					item.Evidence = append(item.Evidence, []cli.ReportSpan{
+						cli.Span(fmt.Sprintf("… and %d more mentions", len(fdg.evidence[m])-shown), cli.KindDim),
+					})
+					break
+				}
+				shown++
+				kind := cli.KindOK
+				if e.bare {
+					kind = cli.KindWarn
+				}
+				row := []cli.ReportSpan{
+					cli.Span("["+e.source+"]", kind),
+					cli.Span("“"+e.quote+"”", cli.KindQuote),
+				}
+				if e.url != "" {
+					row = append(row, cli.LinkSpan("view comment", e.url))
+				}
+				item.Evidence = append(item.Evidence, row)
+			}
+		}
+		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
 }

@@ -236,24 +236,3 @@ func printScannedIssue(pos, total int, b *db.MSBundle) {
 	cout.Printf("  <gray>%6d/%d</> <cyan>#%-6d</> %s %s%s\n",
 		pos, total, i.Number, state, text.TruncateRunes(text.OneLine(i.Title), 65), extra.String())
 }
-
-// LinkCited marks a milestone determined from a changelog bullet citing the
-// issue number directly (between linked and mention in strength).
-const LinkCited = "cited"
-
-// ClassTag is the one colour per evidence class, strongest to weakest: green
-// closed-by, lightBlue linked, yellow cited, orange mention. lightMagenta is
-// reserved for milestones/versions — cited must not blend into the version
-// printed beside it.
-func ClassTag(class string) string {
-	switch class {
-	case db.LinkClosedBy:
-		return TagGreen
-	case db.LinkLinked:
-		return TagLightBlue
-	case LinkCited:
-		return TagYellow
-	default:
-		return TagOrange
-	}
-}

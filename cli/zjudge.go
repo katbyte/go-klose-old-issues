@@ -17,38 +17,6 @@ import (
 	"github.com/katbyte/koi/lib/text"
 )
 
-const (
-	// JudgeThreshold is the minimum AI confidence for an apply mode to act;
-	// below it the finding is reported and skipped. Also --apply-with-ai-auto's
-	// bare-flag default.
-	JudgeThreshold = 0.7
-
-	// judge-block budgets: how much of an issue body, an evidence PR body, and
-	// a single comment go in — accuracy beats cost, so the slices are generous.
-	IssueBodyRunes = 3000
-	PRBodyRunes    = 2000
-	CommentRunes   = 400
-
-	// TypePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
-	TypePullRequest = "PullRequest"
-
-	// shared colour tag names for the class/score/state tag helpers.
-	TagGreen     = "green"
-	TagYellow    = "yellow"
-	TagOrange    = "fg=208"
-	TagRed       = "red"
-	TagLightBlue = "lightBlue"
-)
-
-// PrintVerdict prints the AI's score and reason for a judged finding.
-func PrintVerdict(v *issue.Verdict) {
-	if v == nil {
-		return
-	}
-	cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", ScoreTag(v.Confidence), v.Confidence)
-	cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
-}
-
 // JudgeBlocks runs the shared judge (issue.Judge) configured from the flags.
 // The model canonicalises inside NewJudge; it is copied back so every later
 // display matches the identity verdicts are cached under.
@@ -140,19 +108,6 @@ func (f *FlagData) FetchTexts(d *db.DB, want []int) error {
 	return nil
 }
 
-// ScoreTag colours a match confidence: green at or above the apply threshold,
-// orange in the murky middle, red for a clear non-match.
-func ScoreTag(confidence float64) string {
-	switch {
-	case confidence >= JudgeThreshold:
-		return TagGreen
-	case confidence >= 0.4:
-		return TagOrange
-	default:
-		return TagRed
-	}
-}
-
 // PreparePrompt loads a prompt template and substitutes the version
 // placeholders, so a prompt can talk about "majors 1 to 3" without the
 // current release being baked into the file.
@@ -168,12 +123,78 @@ func (f *FlagData) PreparePrompt(name string) (string, error) {
 	return p, nil
 }
 
+const (
+	// JudgeThreshold is the minimum AI confidence for an apply mode to act;
+	// below it the finding is reported and skipped. Also --apply-with-ai-auto's
+	// bare-flag default.
+	JudgeThreshold = 0.7
+
+	// judge-block budgets: how much of an issue body, an evidence PR body, and
+	// a single comment go in — accuracy beats cost, so the slices are generous.
+	IssueBodyRunes = 3000
+	PRBodyRunes    = 2000
+	CommentRunes   = 400
+
+	// TypePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
+	TypePullRequest = "PullRequest"
+
+	// shared colour tag names for the class/score/state tag helpers.
+	TagGreen     = "green"
+	TagYellow    = "yellow"
+	TagOrange    = "fg=208"
+	TagRed       = "red"
+	TagLightBlue = "lightBlue"
+)
+
+// PrintVerdict prints the AI's score and reason for a judged finding.
+func PrintVerdict(v *issue.Verdict) {
+	if v == nil {
+		return
+	}
+	cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", ScoreTag(v.Confidence), v.Confidence)
+	cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
+}
+
+// ScoreTag colours a match confidence: green at or above the apply threshold,
+// orange in the murky middle, red for a clear non-match.
+func ScoreTag(confidence float64) string {
+	switch {
+	case confidence >= JudgeThreshold:
+		return TagGreen
+	case confidence >= 0.4:
+		return TagOrange
+	default:
+		return TagRed
+	}
+}
+
 // Column names shared by every csv this tool writes.
 const (
 	CSVColNumber = "number"
 	CSVColTitle  = "title"
 	CSVColURL    = "url"
 )
+
+// LinkCited marks a milestone determined from a changelog bullet citing the
+// issue number directly (between linked and mention in strength).
+const LinkCited = "cited"
+
+// ClassTag is the one colour per evidence class, strongest to weakest: green
+// closed-by, lightBlue linked, yellow cited, orange mention. lightMagenta is
+// reserved for milestones/versions — cited must not blend into the version
+// printed beside it.
+func ClassTag(class string) string {
+	switch class {
+	case db.LinkClosedBy:
+		return TagGreen
+	case db.LinkLinked:
+		return TagLightBlue
+	case LinkCited:
+		return TagYellow
+	default:
+		return TagOrange
+	}
+}
 
 // OrDash renders an empty string as an em-dash for tabular output.
 func OrDash(s string) string {
