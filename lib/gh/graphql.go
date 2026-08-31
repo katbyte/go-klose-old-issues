@@ -164,6 +164,9 @@ func (c *Client) post(payload []byte) (body []byte, status int, err error) {
 	if err != nil {
 		return nil, 0, fmt.Errorf("building graphql request: %w", err)
 	}
+	// every query here is a read that travels as a POST, so the shared
+	// client's retry-on-5xx is safe to keep
+	req = chttp.MarkRetrySafe(req)
 	req.Header.Set("Authorization", "bearer "+c.token)
 	req.Header.Set("Content-Type", "application/json")
 

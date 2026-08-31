@@ -47,7 +47,7 @@ func (f *FlagData) Apply() error {
 	for _, a := range actions {
 		counts["close/"+a.Reason]++
 	}
-	cout.Printf("applying <yellow>%d</> closes to <white>%s</>%s:\n", len(actions), f.GH.Repo, dryRunTag(f.DryRun))
+	cout.Printf("applying <yellow>%d</> closes to <white>%s</>%s:\n", len(actions), f.GH.Repo, issue.DryRunTag(f.DryRun))
 	cout.PrintCounts(counts)
 
 	if !f.DryRun && !f.Yes {
@@ -219,9 +219,24 @@ func newThrottle() func() {
 	}
 }
 
-func dryRunTag(dryRun bool) string {
-	if dryRun {
-		return " <yellow>(dry-run)</>"
+// applyPass wires the flag-level knobs shared by every check into the
+// harness (lib/issue's ApplyPass); the caller fills the per-pass wording
+// (Noun, GateLabel, ConfirmAll, ConfirmAI).
+func (f *FlagData) applyPass(m FlagsApplyModes, title func(int) string, closeOne issue.CloseFunc) *issue.ApplyPass {
+	threshold := m.Threshold
+	if threshold <= 0 {
+		threshold = judgeThreshold
 	}
-	return ""
+	return &issue.ApplyPass{
+		RepoTag:   f.repoTag(),
+		DryRun:    f.DryRun,
+		Yes:       f.Yes,
+		Auto:      m.ApplyWithAIAuto,
+		Max:       m.Max,
+		Threshold: threshold,
+		Title:     title,
+		URL:       f.issueURL,
+		ScoreTag:  scoreTag,
+		Close:     closeOne,
+	}
 }

@@ -49,7 +49,11 @@ func ParseChangelog(content string) []db.ChangelogEntry {
 		if res := reResource.FindString(bullet); res != "" {
 			e.Resource = res
 		}
-		if m := reBulletPR.FindStringSubmatch(bullet); m != nil {
+		// the citing PR is the trailing "([#N](...))" link, but bullets may
+		// reference other PRs/issues in prose first ("fix regression introduced
+		// in #X ([#Y](...))") — so the LAST reference is the citation
+		if ms := reBulletPR.FindAllStringSubmatch(bullet, -1); ms != nil {
+			m := ms[len(ms)-1]
 			n := m[1]
 			if n == "" {
 				n = m[2]

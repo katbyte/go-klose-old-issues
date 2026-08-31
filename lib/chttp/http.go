@@ -3,6 +3,7 @@ package chttp
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -13,6 +14,32 @@ import (
 	"github.com/katbyte/koi/lib/clog"
 	"github.com/sirupsen/logrus"
 )
+
+type ctxKey int
+
+const retrySafeKey ctxKey = 0
+
+// MarkRetrySafe declares a request safe to re-send even though its method
+// isn't idempotent — a GraphQL query is a read that happens to travel as a
+// POST. Reads with idempotent methods (GET/HEAD/OPTIONS) need no mark.
+func MarkRetrySafe(req *http.Request) *http.Request {
+	return req.WithContext(context.WithValue(req.Context(), retrySafeKey, true))
+}
+
+// retrySafe reports whether a request may be re-sent when its outcome is
+// unknown (a transport error or a 5xx): true for idempotent methods and
+// marked reads. A mutation that gets no response may still have been applied
+// server-side, so re-sending it risks doing the work twice.
+func retrySafe(req *http.Request) bool {
+	if v, _ := req.Context().Value(retrySafeKey).(bool); v {
+		return true
+	}
+	switch req.Method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	}
+	return false
+}
 
 // NewBaseTransport returns http.DefaultTransport tuned with per-attempt timeouts so a
 // stalled connection or unresponsive server fails fast and gets retried by the
@@ -72,8 +99,9 @@ func NewTransport(name string, t http.RoundTripper) *Transport {
 	return &Transport{name, t}
 }
 
-// RetryTransport wraps an http.RoundTripper with retry logic for transient failures.
-// It retries on connection errors, 429 (rate limited), and 5xx (server error) responses.
+// RetryTransport wraps an http.RoundTripper with retry logic for transient
+// failures: 429 (rate limited) for every request, plus connection errors and
+// 5xx (server error) responses for retry-safe requests only (see retrySafe).
 type RetryTransport struct {
 	name      string
 	transport http.RoundTripper
@@ -89,9 +117,10 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	var err error
 
 	// a request body is consumed by each attempt, so it must be rewound via GetBody
-	// before a retry; requests with a body but no GetBody cannot be retried safely
+	// before a retry; requests with a body but no GetBody cannot be retried safely.
+	// http.NoBody counts as bodyless — NewRequest leaves GetBody nil for it
 	rewind := func() bool {
-		if req.Body == nil {
+		if req.Body == nil || req.Body == http.NoBody {
 			return true
 		}
 		if req.GetBody == nil {
@@ -105,10 +134,14 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return true
 	}
 
+	safe := retrySafe(req)
 	for attempt := range t.maxRetry {
 		resp, err = t.transport.RoundTrip(req)
 		if err != nil {
-			if attempt < t.maxRetry-1 && rewind() {
+			// a transport error can land after the server committed the write
+			// (the response just never made it back), so only retry-safe
+			// requests go again — re-posting a comment would duplicate it
+			if attempt < t.maxRetry-1 && safe && rewind() {
 				wait := time.Duration(1<<attempt) * time.Second
 				clog.Log.Debugf("%s request failed (attempt %d/%d), retrying in %s: %v", t.name, attempt+1, t.maxRetry, wait, err)
 				time.Sleep(wait)
@@ -117,8 +150,10 @@ func (t *RetryTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			return nil, err
 		}
 
-		// retry on 429 (rate limited) or 5xx (server error)
-		if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		// 429 (rate limited) was rejected before it was acted on, so every
+		// request may retry it; a 5xx leaves a mutation's fate unknown, so
+		// only retry-safe requests ride through those
+		if resp.StatusCode == http.StatusTooManyRequests || (safe && resp.StatusCode >= 500) {
 			if attempt < t.maxRetry-1 && rewind() {
 				wait := time.Duration(1<<attempt) * time.Second
 				clog.Log.Debugf("%s got status %d (attempt %d/%d), retrying in %s", t.name, resp.StatusCode, attempt+1, t.maxRetry, wait)

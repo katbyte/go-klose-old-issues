@@ -175,10 +175,13 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		}
 		consecFails = 0
 		cout.Printf(" <green>ok</> %s\n", timing)
-		// the model resolved up front; flag any mid-run drift (e.g. a CLI
-		// fallback) since those verdicts would be another model's opinions
+		// the model resolved up front; on mid-run drift (e.g. a CLI fallback)
+		// the verdicts are another model's opinions — still used this run, but
+		// cached under the answering model so they never come back as j.ident's
+		ident := j.ident
 		if res.model != "" && res.model != j.model {
 			cout.Printf("  <yellow>note: this batch was answered by %s, not %s</>\n", res.model, j.model)
+			ident = aiIdent(j.cmd, res.model)
 		}
 
 		byNumber := map[int]*Verdict{}
@@ -197,7 +200,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 			}
 			if err := j.db.SaveVerdict(&db.Verdict{
 				IssueNumber: t.item.Number, Pass: pass, PromptHash: t.hash,
-				Model: j.ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
+				Model: ident, Verdict: string(raw), Confidence: v.Confidence, CreatedAt: db.Now(),
 			}); err != nil {
 				return err
 			}

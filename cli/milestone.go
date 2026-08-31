@@ -734,7 +734,7 @@ func (f *FlagData) applyMilestones(d *db.DB, findings []msFinding, milestones ma
 		return err
 	}
 
-	cout.Printf("setting milestones on <yellow>%d</> issues in %s%s\n", len(todo), f.repoTag(), dryRunTag(f.DryRun))
+	cout.Printf("setting milestones on <yellow>%d</> issues in %s%s\n", len(todo), f.repoTag(), issue.DryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
 		ok, err := issue.Confirm(fmt.Sprintf("set milestones on <yellow>%d</> issues in %s?", len(todo), f.repoTag()))
 		if err != nil {

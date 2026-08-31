@@ -29,11 +29,8 @@ const (
 	// prLabelMerged is shared between the state labels and the fixed subcommand.
 	prLabelMerged = "merged"
 
-	// shared apply-mode strings and evidence keys across the closing commands.
-	modePreviewEveryClose = "<gray>previewing every close</>"
-	modeCloseEverything   = "<gray>closing everything listed</>"
-	modeConfirmEachClose  = "<gray>you confirm each close</>"
-	evidenceKeyVersion    = "version"
+	// evidence key shared across the closing commands.
+	evidenceKeyVersion = "version"
 )
 
 // FixedOpts configures the fixed audit and its apply modes.
@@ -97,10 +94,10 @@ func (f *FlagData) Fixed(link string) error {
 		if !f.AI.Enabled {
 			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
 		}
-		return f.applyFixedAI(d, findings, prVersions, o)
+		return f.applyFixed(d, findings, prVersions, o, true)
 	case o.Apply:
 		// plain --apply closes what's listed with no AI involved
-		return f.applyFixed(d, findings, prVersions, o)
+		return f.applyFixed(d, findings, prVersions, o, false)
 	}
 
 	// report: score everything (pipelined, cached) and list best matches first
@@ -209,83 +206,14 @@ func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding,
 	return findings, counts, prVersions, len(issues), nil
 }
 
-// applyFixed is plain --apply: close everything listed, no AI involved.
-func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
-	mode := modeCloseEverything
-	if f.DryRun {
-		mode = modePreviewEveryClose
-	}
-	cout.Printf("closing <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
-
-	if !f.DryRun && !f.Yes {
-		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag()))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			cout.Printf("aborted\n")
-			return nil
-		}
-	}
-
-	repo, err := f.NewRepo()
-	if err != nil {
-		return err
-	}
-	throttle := newThrottle()
-
-	closed, failed, previewed, skipped := 0, 0, 0, 0
-	for n := range findings {
-		res, err := f.closeOneFixed(d, repo, &findings[n], nil, n+1, len(findings), prVersions, throttle, false)
-		if err != nil {
-			return err
-		}
-		switch res {
-		case issue.ApplySet:
-			closed++
-		case issue.ApplyFailed:
-			failed++
-		case issue.ApplyPreviewed:
-			previewed++
-		case issue.ApplySkipped:
-			skipped++
-		}
-		if !f.DryRun && o.Max > 0 && closed >= o.Max {
-			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
-			break
-		}
-	}
-	return f.fixedSummary(closed, skipped, 0, failed, previewed)
-}
-
-// applyFixedAI is --apply-with-ai[-auto]: judging and closing are pipelined
-// like the milestone apply — batch N's candidates are reviewed and closed while
-// batch N+1 is already off being scored, and auto mode's confirm comes right
-// after batch 1 so answer time overlaps judging.
-func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts) error {
-	threshold := o.Threshold
-	if threshold <= 0 {
-		threshold = judgeThreshold
-	}
-	auto := o.ApplyWithAIAuto
-	interactive := !auto && !f.DryRun
-
-	mode := modeConfirmEachClose
-	switch {
-	case f.DryRun:
-		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
-	case auto:
-		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
-	}
-	cout.Printf("closing up to <yellow>%d</> candidates as fixed in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
-
-	promptText, items, err := f.fixedJudgeItems(d, findings, prVersions)
-	if err != nil {
-		return err
-	}
+// applyFixed is both apply modes on the shared harness: plain --apply closes
+// everything listed; --apply-with-ai[-auto] gates each close on the judge.
+func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts, withAI bool) error {
 	byNumber := map[int]*fixedFinding{}
+	numbers := make([]int, len(findings))
 	for i := range findings {
 		byNumber[findings[i].issue.Number] = &findings[i]
+		numbers[i] = findings[i].issue.Number
 	}
 
 	repo, err := f.NewRepo()
@@ -294,88 +222,27 @@ func (f *FlagData) applyFixedAI(d *db.DB, findings []fixedFinding, prVersions ma
 	}
 	throttle := newThrottle()
 
-	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []issue.Judged) (bool, error) {
-		for _, t := range ts {
-			pos++
-			fdg, v := byNumber[t.Number], t.Verdict
-			switch {
-			case v == nil:
-				unanswered++
-				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <yellow>no verdict</> %s\n",
-					pos, len(findings), fdg.issue.Number, text.TruncateRunes(text.OneLine(fdg.issue.Title), 70))
-			case !interactive && v.Confidence < threshold:
-				below++
-				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <%s>%.2f</> %s <darkGray>%s</>\n",
-					pos, len(findings), fdg.issue.Number, scoreTag(v.Confidence), v.Confidence,
-					text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
-				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
-			default:
-				res, cerr := f.closeOneFixed(d, repo, fdg, v, pos, len(findings), prVersions, throttle, interactive)
-				if cerr != nil {
-					return true, cerr
-				}
-				switch res {
-				case issue.ApplySet:
-					closed++
-				case issue.ApplyFailed:
-					failed++
-				case issue.ApplyPreviewed:
-					previewed++
-				case issue.ApplySkipped:
-					if interactive {
-						humanSkipped++
-					} else {
-						skipped++
-					}
-				case issue.ApplyQuit:
-					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
-					return true, nil
-				}
-				if !f.DryRun && o.Max > 0 && closed >= o.Max {
-					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
-					return true, nil
-				}
-			}
-		}
-		return false, nil
-	}
-	onReady := func() (bool, error) {
-		if !auto || f.DryRun || f.Yes {
-			return true, nil
-		}
-		ok, err := issue.Confirm(fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
-		if err == nil && !ok {
-			cout.Printf("aborted\n")
-		}
-		return ok, err
-	}
+	p := f.applyPass(o.FlagsApplyModes,
+		func(n int) string { return byNumber[n].issue.Title },
+		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
+			return f.closeOneFixed(d, repo, byNumber[n], v, pos, total, prVersions, throttle, interactive)
+		})
+	p.Noun = "candidates as fixed"
+	p.GateLabel = "match"
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
 
-	if _, err := f.judgeBlocks(d, passFixed, promptText, items, onReady, process); err != nil {
-		return err
+	if !withAI {
+		return p.ApplyAll(numbers)
 	}
-	if below+unanswered > 0 {
-		cout.Printf("\nAI match gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", below, threshold, unanswered)
-	}
-	return f.fixedSummary(closed, skipped, humanSkipped, failed, previewed)
-}
-
-// fixedSummary is the closing tally for both apply modes.
-func (f *FlagData) fixedSummary(closed, skipped, humanSkipped, failed, previewed int) error {
-	if f.DryRun {
-		cout.Printf("\n<yellow>dry-run:</> %d closes previewed, nothing changed\n", previewed)
-		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to close these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n")
-		return nil
-	}
-	line := fmt.Sprintf("\n<green>%d closed</> · %d already closed", closed, skipped)
-	if humanSkipped > 0 {
-		line += fmt.Sprintf(" · %d skipped by you", humanSkipped)
-	}
-	cout.Printf("%s · %d failed\n", line, failed)
-	if failed > 0 {
-		return fmt.Errorf("%d closes failed", failed)
-	}
-	return nil
+	return p.ApplyAI(len(findings), func(onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error)) error {
+		promptText, items, jerr := f.fixedJudgeItems(d, findings, prVersions)
+		if jerr != nil {
+			return jerr
+		}
+		_, jerr = f.judgeBlocks(d, passFixed, promptText, items, onReady, onBatch)
+		return jerr
+	})
 }
 
 // closeOneFixed handles one candidate: card, comment, and the close itself (or

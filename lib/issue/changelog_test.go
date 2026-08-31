@@ -20,6 +20,7 @@ ENHANCEMENTS:
 BUG FIXES:
 
 * ` + "`azurerm_subnet`" + ` - fix crash when nil ([#12345](https://github.com/hashicorp/terraform-provider-azurerm/issues/12345))
+* ` + "`azurerm_subnet`" + ` - fix regression introduced in #21500 ([#21688](https://github.com/hashicorp/terraform-provider-azurerm/issues/21688))
 
 ## 4.80.0 (July 7, 2026)
 
@@ -32,8 +33,8 @@ func TestParseChangelog(t *testing.T) {
 	t.Parallel()
 
 	entries := issue.ParseChangelog(changelogSample)
-	if len(entries) != 5 {
-		t.Fatalf("expected 5 entries, got %d: %+v", len(entries), entries)
+	if len(entries) != 6 {
+		t.Fatalf("expected 6 entries, got %d: %+v", len(entries), entries)
 	}
 
 	first := entries[0]
@@ -47,7 +48,13 @@ func TestParseChangelog(t *testing.T) {
 		t.Fatalf("unexpected deps entry: %+v", deps)
 	}
 
-	last := entries[4]
+	// a bullet naming another PR in prose still credits the trailing citation
+	regression := entries[4]
+	if regression.PRNumber != 21688 {
+		t.Fatalf("expected regression bullet to cite #21688, got: %+v", regression)
+	}
+
+	last := entries[5]
 	if last.Version != "4.80.0" || last.Resource != "azurerm_subnet" || last.PRNumber != 11111 {
 		t.Fatalf("unexpected last entry: %+v", last)
 	}

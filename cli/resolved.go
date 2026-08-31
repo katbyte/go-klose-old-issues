@@ -102,9 +102,9 @@ func (f *FlagData) Resolved(link string) error {
 		if !f.AI.Enabled {
 			return errors.New("--apply-with-ai needs the AI (--ai=false is set)")
 		}
-		return f.applyResolvedAI(d, findings, o)
+		return f.applyResolved(d, findings, o, true)
 	case o.Apply:
-		return f.applyResolved(d, findings, o)
+		return f.applyResolved(d, findings, o, false)
 	}
 
 	// report: score everything (pipelined, cached) and list surest first
@@ -254,80 +254,15 @@ func resolvedRank(t resolvedTarget) int {
 	}
 }
 
-// applyResolved is plain --apply: close everything listed, no AI.
-func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
-	mode := modeCloseEverything
-	if f.DryRun {
-		mode = modePreviewEveryClose
-	}
-	cout.Printf("closing <yellow>%d</> duplicates in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
-
-	if !f.DryRun && !f.Yes {
-		ok, err := issue.Confirm(fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag()))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			cout.Printf("aborted\n")
-			return nil
-		}
-	}
-
-	repo, err := f.NewRepo()
-	if err != nil {
-		return err
-	}
-	throttle := newThrottle()
-
-	closed, failed, previewed, skipped := 0, 0, 0, 0
-	for n := range findings {
-		res, err := f.closeOneResolved(d, repo, &findings[n], nil, n+1, len(findings), throttle, false)
-		if err != nil {
-			return err
-		}
-		switch res {
-		case issue.ApplySet:
-			closed++
-		case issue.ApplyFailed:
-			failed++
-		case issue.ApplyPreviewed:
-			previewed++
-		case issue.ApplySkipped:
-			skipped++
-		}
-		if !f.DryRun && o.Max > 0 && closed >= o.Max {
-			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
-			break
-		}
-	}
-	return f.fixedSummary(closed, skipped, 0, failed, previewed)
-}
-
-// applyResolvedAI is --apply-with-ai[-auto], pipelined on the shared judge.
-func (f *FlagData) applyResolvedAI(d *db.DB, findings []resolvedFinding, o ResolvedOpts) error {
-	threshold := o.Threshold
-	if threshold <= 0 {
-		threshold = judgeThreshold
-	}
-	auto := o.ApplyWithAIAuto
-	interactive := !auto && !f.DryRun
-
-	mode := modeConfirmEachClose
-	switch {
-	case f.DryRun:
-		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", threshold)
-	case auto:
-		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", threshold)
-	}
-	cout.Printf("closing up to <yellow>%d</> duplicates in %s <gray>·</> %s%s\n", len(findings), f.repoTag(), mode, dryRunTag(f.DryRun))
-
-	promptText, items, err := f.resolvedJudgeItems(d, findings)
-	if err != nil {
-		return err
-	}
+// applyResolved is both apply modes on the shared harness: plain --apply
+// closes everything listed; --apply-with-ai[-auto] gates each close on the
+// judge.
+func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o ResolvedOpts, withAI bool) error {
 	byNumber := map[int]*resolvedFinding{}
+	numbers := make([]int, len(findings))
 	for i := range findings {
 		byNumber[findings[i].issue.Number] = &findings[i]
+		numbers[i] = findings[i].issue.Number
 	}
 
 	repo, err := f.NewRepo()
@@ -336,70 +271,27 @@ func (f *FlagData) applyResolvedAI(d *db.DB, findings []resolvedFinding, o Resol
 	}
 	throttle := newThrottle()
 
-	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
-	process := func(ts []issue.Judged) (bool, error) {
-		for _, t := range ts {
-			pos++
-			fdg, v := byNumber[t.Number], t.Verdict
-			switch {
-			case v == nil:
-				unanswered++
-				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <yellow>no verdict</> %s\n",
-					pos, len(findings), fdg.issue.Number, text.TruncateRunes(text.OneLine(fdg.issue.Title), 70))
-			case !interactive && v.Confidence < threshold:
-				below++
-				cout.Printf("\n  <gray>%d/%d</> <gray>skip</> <cyan>#%d</> <%s>%.2f</> %s <darkGray>%s</>\n",
-					pos, len(findings), fdg.issue.Number, scoreTag(v.Confidence), v.Confidence,
-					text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), f.issueURL(fdg.issue.Number))
-				cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
-			default:
-				res, cerr := f.closeOneResolved(d, repo, fdg, v, pos, len(findings), throttle, interactive)
-				if cerr != nil {
-					return true, cerr
-				}
-				switch res {
-				case issue.ApplySet:
-					closed++
-				case issue.ApplyFailed:
-					failed++
-				case issue.ApplyPreviewed:
-					previewed++
-				case issue.ApplySkipped:
-					if interactive {
-						humanSkipped++
-					} else {
-						skipped++
-					}
-				case issue.ApplyQuit:
-					cout.Printf("<gray>quitting — %d candidates left unreviewed</>\n", len(findings)-pos)
-					return true, nil
-				}
-				if !f.DryRun && o.Max > 0 && closed >= o.Max {
-					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", o.Max)
-					return true, nil
-				}
-			}
-		}
-		return false, nil
-	}
-	onReady := func() (bool, error) {
-		if !auto || f.DryRun || f.Yes {
-			return true, nil
-		}
-		ok, err := issue.Confirm(fmt.Sprintf("comment and close duplicates the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", threshold, len(findings), f.repoTag()))
-		if err == nil && !ok {
-			cout.Printf("aborted\n")
-		}
-		return ok, err
-	}
+	p := f.applyPass(o.FlagsApplyModes,
+		func(n int) string { return byNumber[n].issue.Title },
+		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
+			return f.closeOneResolved(d, repo, byNumber[n], v, pos, total, throttle, interactive)
+		})
+	p.Noun = "duplicates"
+	p.GateLabel = "match"
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close duplicates the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
 
-	if _, err := f.judgeBlocks(d, passResolved, promptText, items, onReady, process); err != nil {
-		return err
+	if !withAI {
+		return p.ApplyAll(numbers)
 	}
-	if below+unanswered > 0 {
-		cout.Printf("\nAI match gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", below, threshold, unanswered)
-	}
-	return f.fixedSummary(closed, skipped, humanSkipped, failed, previewed)
+	return p.ApplyAI(len(findings), func(onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error)) error {
+		promptText, items, jerr := f.resolvedJudgeItems(d, findings)
+		if jerr != nil {
+			return jerr
+		}
+		_, jerr = f.judgeBlocks(d, passResolved, promptText, items, onReady, onBatch)
+		return jerr
+	})
 }
 
 // closeOneResolved handles one candidate: card, the duplicate comment, and the
