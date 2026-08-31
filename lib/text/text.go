@@ -83,3 +83,22 @@ func VersionLess(a, b string) bool {
 	}
 	return false
 }
+
+// LowerASCII lowercases A-Z only, preserving byte length — offsets into the
+// result are valid in the original, unlike strings.ToLower where characters
+// like İ or K change byte length when folded.
+func LowerASCII(s string) string {
+	var b []byte
+	for i := range len(s) {
+		if c := s[i]; c >= 'A' && c <= 'Z' {
+			if b == nil {
+				b = []byte(s)
+			}
+			b[i] = c + 32
+		}
+	}
+	if b == nil {
+		return s
+	}
+	return string(b)
+}

@@ -59,7 +59,7 @@ func (f *FlagData) Fixed(link string) error {
 	// stay fresh by default: the incremental fetch is cheap and stale crossref
 	// or issue state here means judging (or closing!) on old information
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

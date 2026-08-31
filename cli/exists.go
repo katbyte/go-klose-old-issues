@@ -153,7 +153,7 @@ type existsFinding struct {
 func (f *FlagData) Exists(link string) error {
 	o := ExistsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}
@@ -321,6 +321,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 		tokens map[string]bool
 	}
 	texts := map[int]issueText{}
+	signals := map[int]*db.Signals{}
 	var enhancements []*db.Issue
 	unclassified, unconfirmed := 0, map[int]bool{}
 	for _, i := range issues {
@@ -331,6 +332,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 		if s == nil {
 			continue
 		}
+		signals[i.Number] = s
 		// the rules read kind from the labels and the issue template, and a
 		// third of recent issues carry neither. An unlabelled issue whose
 		// TITLE asks for something is carried as a probable request, with the
@@ -367,10 +369,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 
 	counts = map[string]int{}
 	for _, i := range enhancements {
-		s, serr := d.GetSignals(i.Number)
-		if serr != nil {
-			return nil, nil, 0, serr
-		}
+		s := signals[i.Number]
 		t := texts[i.Number]
 		fdg := existsFinding{issue: i, kindUnconfirmed: unconfirmed[i.Number]}
 

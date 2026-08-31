@@ -82,7 +82,7 @@ type duplicateFinding struct {
 func (f *FlagData) Duplicates(link string) error {
 	o := DuplicatesOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

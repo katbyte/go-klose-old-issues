@@ -39,31 +39,31 @@ var commentsPatterns = []struct {
 	noNeg bool
 	re    *regexp.Regexp
 }{
-	{"can be closed", false, regexp.MustCompile(`(?i)(?:can|could|should|may|might|safe to|ok(?:ay)? to|good to|fine to|feel free to|happy to|time to)\s+(?:be\s+|probably be\s+|just be\s+|now be\s+)?clos(?:e|ed|ing)\b`)},
-	{"will close", false, regexp.MustCompile(`(?i)(?:going to|gonna|will|about to|let'?s)\s+(?:go ahead and\s+)?close\s+(?:this|it|the issue)|closing this (?:issue|one|out|as)`)},
-	{"close this", false, regexp.MustCompile(`(?i)(?:please\s+)?close\s+(?:this|it|the)\s+(?:issue|one|ticket)|mark(?:ing)?\s+(?:this\s+|the\s+)?(?:issue\s+)?as\s+(?:closed|resolved|done|completed?)`)},
-	{"fixed in", false, regexp.MustCompile(`(?i)(?:fixed|resolved|implemented|addressed|released|shipped|solved|added|included|landed|merged|delivered|available|supported)\s+(?:in|with|by|via|as of|since|per|through)\s+(?:\[?v?\d|\[?#\d|pr\b|pull\b|release)`)},
-	{"is fixed", false, regexp.MustCompile(`(?i)(?:this|it|issue|that|which|bug|problem|error)\s+(?:is now|has (?:now |since )?been|got|was|seems(?: to (?:be|have been))?|appears(?: to (?:be|have been))?|should (?:now )?be|looks? (?:to be|like it'?s|fixed)|is)\s*(?:fixed|resolved|implemented|addressed|solved|sorted|completed?|merged|released|closed elsewhere)`)},
-	{"already done", false, regexp.MustCompile(`(?i)already\s+(?:fixed|resolved|implemented|supported|possible|available|exists?|done|works|covered|been (?:fixed|implemented|added|resolved|addressed))|is now\s+(?:possible|available|supported|implemented|in the provider|part of)|now\s+(?:supported|available|possible|implemented)\b|(?:feature|this|it)\s+(?:now\s+)?exists\b`)},
-	{"no longer", false, regexp.MustCompile(`(?i)no longer\s+(?:an issue|relevant|needed|necessary|a problem|applicable|reproducible|happens|occurs|the case|valid|blocked|affected)|(?:isn'?t|not)\s+(?:an issue|a problem|relevant|reproducible|happening)\s+(?:any\s?more|now|these days)|\bobsolete\b|\boutdated\b|superseded by|\bmoot\b|redundant now`)},
-	{"cannot reproduce", true, regexp.MustCompile(`(?i)(?:can\s?not|can'?t|couldn'?t|could not|unable to|no longer able to|not able to|failed to)\s+(?:reproduce|repro\b|replicate)|(?:doesn'?t|does not|no longer)\s+(?:reproduce|happen|occur)\b`)},
-	{"works now", false, regexp.MustCompile(`(?i)now (?:it )?works|works? now|working (?:now|again|fine|as expected|correctly)|works (?:fine|again|for me|as expected|correctly|perfectly|ok(?:ay)?|well)(?: now| again)?|works (?:with|on|in|since|as of|after|using) v?\d|(?:issue|problem|error) (?:is |has )?gone\b|went away|resolved itself|behaving (?:correctly|as expected)`)},
+	{"can be closed", false, regexp.MustCompile(`(?:can|could|should|may|might|safe to|ok(?:ay)? to|good to|fine to|feel free to|happy to|time to)\s+(?:be\s+|probably be\s+|just be\s+|now be\s+)?clos(?:e|ed|ing)\b`)},
+	{"will close", false, regexp.MustCompile(`(?:going to|gonna|will|about to|let'?s)\s+(?:go ahead and\s+)?close\s+(?:this|it|the issue)|closing this (?:issue|one|out|as)`)},
+	{"close this", false, regexp.MustCompile(`(?:please\s+)?close\s+(?:this|it|the)\s+(?:issue|one|ticket)|mark(?:ing)?\s+(?:this\s+|the\s+)?(?:issue\s+)?as\s+(?:closed|resolved|done|completed?)`)},
+	{"fixed in", false, regexp.MustCompile(`(?:fixed|resolved|implemented|addressed|released|shipped|solved|added|included|landed|merged|delivered|available|supported)\s+(?:in|with|by|via|as of|since|per|through)\s+(?:\[?v?\d|\[?#\d|pr\b|pull\b|release)`)},
+	{"is fixed", false, regexp.MustCompile(`(?:this|it|issue|that|which|bug|problem|error)\s+(?:is now|has (?:now |since )?been|got|was|seems(?: to (?:be|have been))?|appears(?: to (?:be|have been))?|should (?:now )?be|looks? (?:to be|like it'?s|fixed)|is)\s*(?:fixed|resolved|implemented|addressed|solved|sorted|completed?|merged|released|closed elsewhere)`)},
+	{"already done", false, regexp.MustCompile(`already\s+(?:fixed|resolved|implemented|supported|possible|available|exists?|done|works|covered|been (?:fixed|implemented|added|resolved|addressed))|is now\s+(?:possible|available|supported|implemented|in the provider|part of)|now\s+(?:supported|available|possible|implemented)\b|(?:feature|this|it)\s+(?:now\s+)?exists\b`)},
+	{"no longer", false, regexp.MustCompile(`no longer\s+(?:an issue|relevant|needed|necessary|a problem|applicable|reproducible|happens|occurs|the case|valid|blocked|affected)|(?:isn'?t|not)\s+(?:an issue|a problem|relevant|reproducible|happening)\s+(?:any\s?more|now|these days)|\bobsolete\b|\boutdated\b|superseded by|\bmoot\b|redundant now`)},
+	{"cannot reproduce", true, regexp.MustCompile(`(?:can\s?not|can'?t|couldn'?t|could not|unable to|no longer able to|not able to|failed to)\s+(?:reproduce|repro\b|replicate)|(?:doesn'?t|does not|no longer)\s+(?:reproduce|happen|occur)\b`)},
+	{"works now", false, regexp.MustCompile(`now (?:it )?works|works? now|working (?:now|again|fine|as expected|correctly)|works (?:fine|again|for me|as expected|correctly|perfectly|ok(?:ay)?|well)(?: now| again)?|works (?:with|on|in|since|as of|after|using) v?\d|(?:issue|problem|error) (?:is |has )?gone\b|went away|resolved itself|behaving (?:correctly|as expected)`)},
 }
 
 // commentsShortWorks catches bare confirmations — a tiny comment that just
 // says "works!" or "working" is a thumbs-up, while "works" buried in a long
 // comment usually is not.
-var commentsShortWorks = regexp.MustCompile(`(?i)\bwork(?:s|ing|ed)\b`)
+var commentsShortWorks = regexp.MustCompile(`\bwork(?:s|ing|ed)\b`)
 
 // commentsPRRef finds pull request references: the explicit forms and bare
 // #N. Only refs that resolve to a changelog-shipped PR become claims — a
 // linked PR that never shipped is work-in-flight, the opposite of closeable.
-var commentsPRRef = regexp.MustCompile(`(?i)(?:\bpr\s*#?|\bpull request\s*#?|pull/|#)(\d{2,6})\b`)
+var commentsPRRef = regexp.MustCompile(`(?:\bpr\s*#?|\bpull request\s*#?|pull/|#)(\d{2,6})\b`)
 
 // commentsNegation rejects claims that are negated, hypothetical, or refuted
 // in the immediate context ("can't be closed", "until this is fixed", "still
 // an issue"). The AI re-checks the full thread; this just trims obvious noise.
-var commentsNegation = regexp.MustCompile(`(?i)(?:can'?t|can\s?not|cannot|shouldn'?t|should not|won'?t|not\s+(?:yet\s+)?be|until|unless|once|when|hope|hoping|wish|if)\s+[^.]{0,40}$|still (?:not|an issue|happening|broken|occurs|failing|seeing|getting)|not (?:yet )?(?:fixed|resolved|working)`)
+var commentsNegation = regexp.MustCompile(`(?:can'?t|can\s?not|cannot|shouldn'?t|should not|won'?t|not\s+(?:yet\s+)?be|until|unless|once|when|hope|hoping|wish|if)\s+[^.]{0,40}$|still (?:not|an issue|happening|broken|occurs|failing|seeing|getting)|not (?:yet )?(?:fixed|resolved|working)`)
 
 // CommentsOpts configures the closeable audit and its apply modes.
 type CommentsOpts struct {
@@ -119,7 +119,7 @@ func maintainerAssoc(assoc string) bool {
 func (f *FlagData) Comments(link string) error {
 	o := CommentsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}
@@ -220,19 +220,20 @@ func (f *FlagData) collectComments(d *db.DB, link string) (findings []commentsFi
 		fdg := commentsFinding{issue: i, class: classCommunitySays}
 		for ci := range comments {
 			c := &comments[ci]
-			// the patterns are case-insensitive and run on the original body:
-			// offsets from a ToLower copy can be displaced by characters whose
-			// lowercase form has a different byte length (İ, K), garbling quotes
+			// LowerASCII, not ToLower: byte length is preserved, so offsets
+			// found in low slice c.Body correctly — full case folding can
+			// shift them (İ, K) and garble the quotes
+			low := text.LowerASCII(c.Body)
 			claimed := false
 			for _, p := range commentsPatterns {
-				m := p.re.FindStringIndex(c.Body)
+				m := p.re.FindStringIndex(low)
 				if m == nil {
 					continue
 				}
 				start := max(0, m[0]-60)
-				ctx := c.Body[start:min(len(c.Body), m[1]+60)]
+				ctx := low[start:min(len(low), m[1]+60)]
 				// a question mark right after the claim is a question, not a claim
-				if (!p.noNeg && commentsNegation.MatchString(ctx)) || strings.Contains(c.Body[m[1]:min(len(c.Body), m[1]+15)], "?") {
+				if (!p.noNeg && commentsNegation.MatchString(ctx)) || strings.Contains(low[m[1]:min(len(low), m[1]+15)], "?") {
 					continue
 				}
 				quote := text.TruncateRunes(text.OneLine(c.Body[max(0, m[0]-50):min(len(c.Body), m[1]+90)]), 140)
@@ -241,7 +242,7 @@ func (f *FlagData) collectComments(d *db.DB, link string) (findings []commentsFi
 				break
 			}
 			// a tiny comment that just says "works!" is a confirmation
-			if !claimed && len(strings.TrimSpace(c.Body)) <= 40 && commentsShortWorks.MatchString(c.Body) && !strings.Contains(c.Body, "?") && !commentsNegation.MatchString(c.Body) {
+			if !claimed && len(strings.TrimSpace(c.Body)) <= 40 && commentsShortWorks.MatchString(low) && !strings.Contains(low, "?") && !commentsNegation.MatchString(low) {
 				fdg.claims = append(fdg.claims, commentsClaim{kind: "works", comment: *c, quote: text.TruncateRunes(text.OneLine(c.Body), 140)})
 				claimed = true
 			}
@@ -249,8 +250,8 @@ func (f *FlagData) collectComments(d *db.DB, link string) (findings []commentsFi
 			// unshipped links are work-in-flight, the opposite of closeable
 			prNum, prVer := 0, ""
 			var prLoc []int
-			for _, m := range commentsPRRef.FindAllStringSubmatchIndex(c.Body, -1) {
-				n, aerr := strconv.Atoi(c.Body[m[2]:m[3]])
+			for _, m := range commentsPRRef.FindAllStringSubmatchIndex(low, -1) {
+				n, aerr := strconv.Atoi(low[m[2]:m[3]])
 				if aerr != nil {
 					continue
 				}

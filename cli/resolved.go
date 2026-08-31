@@ -65,7 +65,7 @@ type resolvedFinding struct {
 func (f *FlagData) Resolved(link string) error {
 	o := ResolvedOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

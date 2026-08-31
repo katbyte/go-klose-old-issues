@@ -39,6 +39,10 @@ type FlagData struct {
 	Yes           bool   `mapstructure:"yes"`
 	NoAutoFetch   bool   `mapstructure:"no-auto-fetch"`
 	AutoReconcile bool   `mapstructure:"auto-reconcile"`
+
+	// staticsTTL is set by AutoFetch for the duration of the call: fetch skips
+	// the release-cadence artefacts refreshed more recently than this.
+	staticsTTL time.Duration
 }
 
 type FlagsGitHub struct {

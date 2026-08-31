@@ -59,7 +59,7 @@ type legacyFinding struct {
 func (f *FlagData) Legacy() error {
 	o := LegacyOpts{Majors: f.Cmd.LegacyMajors, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

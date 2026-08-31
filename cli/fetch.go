@@ -25,7 +25,38 @@ const (
 	// fetch redoes it. It exists to catch closes the search-index lag swallowed
 	// — a rare, slow drift — so back-to-back auto-fetches skip the ~33 requests.
 	reconcileEvery = 15 * time.Minute
+
+	// staticsEvery is how long the release-cadence artefacts (changelogs,
+	// upgrade guides, provider docs, the milestone scan) stay fresh for the
+	// checks' auto-fetch — they cost ~10 requests plus their throttle gaps
+	// every run while changing roughly weekly. An explicit koi fetch always
+	// refreshes them.
+	staticsEvery    = 30 * time.Minute
+	metaStaticsSync = "statics_sync"
 )
+
+// AutoFetch is the freshness pass every check runs before consuming the db: a
+// normal Fetch, except artefacts on release cadence are skipped when they
+// were refreshed within staticsEvery.
+func (f *FlagData) AutoFetch() error {
+	f.staticsTTL = staticsEvery
+	defer func() { f.staticsTTL = 0 }()
+	return f.Fetch(false)
+}
+
+// staticsFresh reports whether the release-cadence artefacts were refreshed
+// within the auto-fetch TTL. Explicit fetches (no TTL set) never skip.
+func (f *FlagData) staticsFresh(d *db.DB) (bool, error) {
+	if f.staticsTTL <= 0 {
+		return false, nil
+	}
+	last, err := d.GetMeta(metaStaticsSync)
+	if err != nil || last == "" {
+		return false, err
+	}
+	t, terr := time.Parse(time.RFC3339, last)
+	return terr == nil && time.Since(t) < f.staticsTTL, nil
+}
 
 // Fetch pulls issues (with all comments), cross-referenced PRs, and changelogs
 // into the database. The first run is a full walk, committed page-by-page with
@@ -103,22 +134,32 @@ func (f *FlagData) Fetch(full bool) error {
 		return err
 	}
 
-	if err := f.fetchChangelogs(d, client, owner, name); err != nil {
-		return err
-	}
+	if fresh, ferr := f.staticsFresh(d); ferr != nil {
+		return ferr
+	} else if fresh {
+		cout.Printf("<gray>changelogs, docs and milestones refreshed within %s — skipped (koi fetch refreshes them)</>\n", staticsEvery)
+	} else {
+		if err := f.fetchChangelogs(d, client, owner, name); err != nil {
+			return err
+		}
 
-	if err := f.fetchRemovals(d, client, owner, name); err != nil {
-		return err
-	}
+		if err := f.fetchRemovals(d, client, owner, name); err != nil {
+			return err
+		}
 
-	if err := f.fetchProviderDocs(d, client, owner, name); err != nil {
-		return err
-	}
+		if err := f.fetchProviderDocs(d, client, owner, name); err != nil {
+			return err
+		}
 
-	// front-load the milestone scan too: fetch does everything non-AI so every
-	// other command can run offline afterwards (incremental, so cheap when fresh)
-	if err := f.milestoneScan(d, false); err != nil {
-		return err
+		// front-load the milestone scan too: fetch does everything non-AI so every
+		// other command can run offline afterwards (incremental, so cheap when fresh)
+		if err := f.milestoneScan(d, false); err != nil {
+			return err
+		}
+
+		if err := d.SetMeta(metaStaticsSync, db.Now().Format(time.RFC3339)); err != nil {
+			return err
+		}
 	}
 
 	total, open, err := d.CountIssues()

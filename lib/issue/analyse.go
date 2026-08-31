@@ -1,6 +1,7 @@
 package issue
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -44,8 +45,12 @@ func AnalyseAll(d *db.DB, repo string, cfg RuleConfig) (map[string]int, error) {
 			s.Kind = prev.Kind // labels gave nothing, so the previous kind was AI's
 		}
 
-		if err := d.SaveSignals(s); err != nil {
-			return nil, err
+		// re-analysing an unchanged issue must not cost a write: ComputedAt
+		// alone moving would dirty every row on every run
+		if prev == nil || !signalsEqual(prev, s) {
+			if err := d.SaveSignals(s); err != nil {
+				return nil, err
+			}
 		}
 
 		if a := Propose(i, s, cfg); a != nil {
@@ -75,6 +80,23 @@ func AnalyseAll(d *db.DB, repo string, cfg RuleConfig) (map[string]int, error) {
 	}
 	cout.Printf("<gray>analysed %d open issues — %d close proposals up to date</>\n", len(issues), closes)
 	return counts, nil
+}
+
+// signalsEqual reports whether two signal rows carry the same facts, ignoring
+// ComputedAt. Keep in sync with db.Signals — a field missed here means its
+// changes stop being persisted.
+func signalsEqual(a, b *db.Signals) bool {
+	return a.IssueNumber == b.IssueNumber && a.Kind == b.Kind &&
+		a.VersionMajor == b.VersionMajor && a.VersionFull == b.VersionFull &&
+		a.VersionSource == b.VersionSource && a.VersionQuote == b.VersionQuote &&
+		slices.Equal(a.Resources, b.Resources) && a.Service == b.Service &&
+		a.LastActivity.Equal(b.LastActivity) && a.MaintainerCommented == b.MaintainerCommented &&
+		a.Participants == b.Participants &&
+		a.NewestClaimMajor == b.NewestClaimMajor && a.NewestClaimAt.Equal(b.NewestClaimAt) &&
+		a.NewestClaimQuote == b.NewestClaimQuote && a.NewestClaimAuthor == b.NewestClaimAuthor &&
+		a.OpenLinkedPRs == b.OpenLinkedPRs && a.MergedLinkedPRs == b.MergedLinkedPRs &&
+		a.MergedPRNumber == b.MergedPRNumber && a.MergedPRTitle == b.MergedPRTitle &&
+		a.MultiVersionLabels == b.MultiVersionLabels
 }
 
 // computeSignals derives everything the rules and the review card need for one issue.

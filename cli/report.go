@@ -152,7 +152,7 @@ func attachVerdict(item *reportItem, v *issue.Verdict) {
 func (f *FlagData) Report() error {
 	o := f.Cmd.Report
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

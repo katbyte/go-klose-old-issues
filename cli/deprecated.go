@@ -95,7 +95,7 @@ func deprecatedClassOf(r db.Removal) string {
 func (f *FlagData) Deprecated(link string) error {
 	o := DeprecatedOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
-		if err := f.Fetch(false); err != nil {
+		if err := f.AutoFetch(); err != nil {
 			return err
 		}
 	}

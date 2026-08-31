@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -34,13 +35,25 @@ const requestThrottle = 2 * time.Second
 const secondaryLimitWait = 90 * time.Second
 
 type Client struct {
-	token      string
-	httpClient *http.Client
-	lastReq    time.Time
+	token       string
+	httpClient  *http.Client
+	lastReq     time.Time
+	throttleGap time.Duration
 }
 
 func NewClient(token string) *Client {
-	return &Client{token: token, httpClient: chttp.NewHTTPClient("GraphQL")}
+	gap := requestThrottle
+	// KOI_GH_THROTTLE overrides the gap between GraphQL requests (e.g. "1s",
+	// "500ms") for experimenting — going low risks the secondary rate limit's
+	// 90s penalty, which quickly costs more than the gap saves.
+	if v := os.Getenv("KOI_GH_THROTTLE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			gap = d
+		} else {
+			clog.Log.Warnf("ignoring unparseable KOI_GH_THROTTLE %q", v)
+		}
+	}
+	return &Client{token: token, httpClient: chttp.NewHTTPClient("GraphQL"), throttleGap: gap}
 }
 
 // repoVars builds the standard owner/name(/cursor) variable map.
@@ -66,10 +79,10 @@ type graphqlError struct {
 	Message string `json:"message"`
 }
 
-// throttle sleeps to keep at least requestThrottle between requests.
+// throttle sleeps to keep at least throttleGap between requests.
 func (c *Client) throttle() {
 	if !c.lastReq.IsZero() {
-		if wait := requestThrottle - time.Since(c.lastReq); wait > 0 {
+		if wait := c.throttleGap - time.Since(c.lastReq); wait > 0 {
 			time.Sleep(wait)
 		}
 	}
