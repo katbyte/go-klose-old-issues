@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	// judgeBatchSize is pairings per AI call — blocks carry full issue and PR
-	// bodies, so batches stay small in favour of judgement quality.
+	// judgeBatchSize is the default pairings per AI call — blocks carry full
+	// issue and PR bodies, so batches stay small in favour of judgement
+	// quality. Passes with even bigger blocks lower Judge.BatchSize further.
 	judgeBatchSize = 10
 	// judgePrefetch is how many batches are kept in flight ahead of the one
 	// being reviewed. One is enough when reading each card takes longer than a
@@ -65,6 +66,11 @@ type Judge struct {
 	model string // canonical, post-resolution
 	ident string // how verdicts record who answered: cmd, or cmd/model
 	db    *db.DB
+
+	// BatchSize is pairings per AI call; set lower for passes whose blocks are
+	// huge (docs ships page content). Does not affect the verdict cache — the
+	// hash covers prompt and block, not batching.
+	BatchSize int
 }
 
 // NewJudge resolves the canonical model first — an aliased model name (fable
@@ -81,7 +87,7 @@ func NewJudge(d *db.DB, cmd, model string, timeout time.Duration) *Judge {
 		model = resolved
 		a = ai.New(cmd, model, timeout)
 	}
-	return &Judge{ai: a, cmd: cmd, model: model, ident: aiIdent(cmd, model), db: d}
+	return &Judge{ai: a, cmd: cmd, model: model, ident: aiIdent(cmd, model), db: d, BatchSize: judgeBatchSize}
 }
 
 // Model returns the canonical model the judge runs as.
@@ -136,7 +142,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		return prompt.String()
 	}
 	launch := func(start int) <-chan judgedBatch {
-		batch := uncached[start:min(start+judgeBatchSize, len(uncached))]
+		batch := uncached[start:min(start+j.BatchSize, len(uncached))]
 		ch := make(chan judgedBatch, 1)
 		go func() {
 			raw, respModel, err := j.ai.PromptWithModel(buildPrompt(batch))
@@ -164,7 +170,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 
 	consecFails := 0
 	harvest := func(start int, ch <-chan judgedBatch) error {
-		end := min(start+judgeBatchSize, len(uncached))
+		end := min(start+j.BatchSize, len(uncached))
 		cout.Printf("  batch <yellow>%d</>-<yellow>%d</> of <yellow>%d</>...", start+1, end, len(uncached))
 
 		// say whether the pipeline actually paid off: a batch judged while the
@@ -275,7 +281,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		return onReady()
 	}
 	slice := func(start int) []Judged {
-		end := min(start+judgeBatchSize, len(uncached))
+		end := min(start+j.BatchSize, len(uncached))
 		out := make([]Judged, 0, end-start)
 		for _, t := range uncached[start:end] {
 			out = append(out, Judged{Number: t.item.Number, Verdict: t.verdict})
@@ -304,7 +310,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		queue = append(queue, pending{start: start, ch: launch(start)})
 		if start > 0 {
 			cout.Printf("<gray>starting batch</> <yellow>%d</>-<yellow>%d</> <gray>in the background...</>\n",
-				start+1, min(start+judgeBatchSize, len(uncached)))
+				start+1, min(start+j.BatchSize, len(uncached)))
 		}
 	}
 	take := func() (pending, bool) {
@@ -324,7 +330,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 	// fill the pipeline: reviewing one batch should cover the next few being
 	// judged, so a fast reviewer never waits on the AI
 	for i := 1; i <= judgePrefetch; i++ {
-		launchAt(i * judgeBatchSize)
+		launchAt(i * j.BatchSize)
 	}
 	if ok, err := ready(); err != nil || !ok {
 		return verdicts, err
@@ -335,7 +341,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 	if err := emit(slice(0)); err != nil {
 		return verdicts, err
 	}
-	for start := judgeBatchSize; start < len(uncached) && !stopped; start += judgeBatchSize {
+	for start := j.BatchSize; start < len(uncached) && !stopped; start += j.BatchSize {
 		next, ok := take()
 		if !ok {
 			launchAt(start)
@@ -345,7 +351,7 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 			return verdicts, err
 		}
 		// top the pipeline back up to depth
-		launchAt(start + judgePrefetch*judgeBatchSize)
+		launchAt(start + judgePrefetch*j.BatchSize)
 		if err := emit(slice(start)); err != nil {
 			return verdicts, err
 		}

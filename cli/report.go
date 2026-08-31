@@ -933,7 +933,7 @@ func (f *FlagData) docsReportSection(d *db.DB, o FlagsReport, now time.Time) (re
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDocs, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *docsFinding) int { return x.issue.Number }, verdicts)

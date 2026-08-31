@@ -29,10 +29,14 @@ const (
 	// the signal kind this check owns
 	signalKindDocs = "documentation"
 
-	// docsPageRunes is how much of a current doc page's digest a judge block
-	// carries, and docsMaxPages / docsMaxContent cap how many pages one issue
-	// resolves to and how many of those ship content to the judge.
-	docsPageRunes  = 5000
+	// docsJudgeBatch is this pass's pairings per AI call: blocks ship whole doc
+	// pages, so fewer per call buys each one more room (p90 page ≈ 8.6KB).
+	docsJudgeBatch = 5
+	// docsPageRunes is the size up to which a page ships to the judge WHOLE;
+	// bigger pages (p99 ≈ 32KB) are condensed around the issue's terms instead,
+	// with the same budget. docsMaxPages / docsMaxContent cap how many pages an
+	// issue resolves to and how many of those ship content.
+	docsPageRunes  = 16000
 	docsMaxPages   = 3
 	docsMaxContent = 2
 	// docsMaxAskTokens caps the issue terms a page digest is built around.
@@ -119,7 +123,7 @@ func (f *FlagData) Docs() error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDocs, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b docsFinding) int {
@@ -342,7 +346,7 @@ func (f *FlagData) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withA
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passDocs, promptText, items, onReady, onBatch)
+		_, jerr = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -508,8 +512,12 @@ func (f *FlagData) docsJudgeItems(d *db.DB, findings []docsFinding, src, ref str
 				c = docsGitShow(src, ref, p.path)
 				contents[p.path] = c
 			}
-			if c != "" {
-				fmt.Fprintf(&b, "CURRENT PAGE CONTENT for `%s` (condensed around the issue's terms):\n%s\n", p.name, docsPageDigest(c, tokens))
+			switch {
+			case c == "":
+			case len([]rune(c)) > docsPageRunes:
+				fmt.Fprintf(&b, "CURRENT PAGE CONTENT for `%s` (large page, condensed around the issue's terms):\n%s\n", p.name, docsPageDigest(c, tokens))
+			default:
+				fmt.Fprintf(&b, "CURRENT PAGE CONTENT for `%s` (complete):\n%s\n%s", p.name, c, docsMissingTerms(c, tokens))
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
@@ -616,6 +624,13 @@ func docsPageDigest(content string, tokens []string) string {
 		b.WriteString(ln)
 		b.WriteByte('\n')
 	}
+	b.WriteString(docsMissingTerms(content, tokens))
+	return b.String()
+}
+
+// docsMissingTerms names the issue terms absent from the entire page ("" when
+// none) — for a "please document X" ask, absence is decisive evidence.
+func docsMissingTerms(content string, tokens []string) string {
 	var missing []string
 	low := strings.ToLower(content)
 	for _, t := range tokens {
@@ -623,10 +638,10 @@ func docsPageDigest(content string, tokens []string) string {
 			missing = append(missing, "`"+t+"`")
 		}
 	}
-	if len(missing) > 0 {
-		fmt.Fprintf(&b, "ISSUE TERMS THAT APPEAR NOWHERE IN THIS PAGE: %s\n", strings.Join(missing, ", "))
+	if len(missing) == 0 {
+		return ""
 	}
-	return b.String()
+	return "ISSUE TERMS THAT APPEAR NOWHERE IN THIS PAGE: " + strings.Join(missing, ", ") + "\n"
 }
 
 // Git plumbing for reading doc pages out of the checkout at the ref.

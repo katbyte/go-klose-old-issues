@@ -33,10 +33,22 @@ const (
 func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []issue.JudgeItem,
 	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
 ) (map[int]*issue.Verdict, error) {
+	return f.judgeBlocksBatch(d, pass, promptText, 0, items, onReady, onBatch)
+}
+
+// judgeBlocksBatch is judgeBlocks with a smaller batch for passes whose blocks
+// are huge — docs ships page content, so fewer pairings per call buys each one
+// more room. batch <= 0 keeps the judge's default.
+func (f *FlagData) judgeBlocksBatch(d *db.DB, pass, promptText string, batch int, items []issue.JudgeItem,
+	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
+) (map[int]*issue.Verdict, error) {
 	if err := f.RequireAI(); err != nil {
 		return nil, err
 	}
 	j := issue.NewJudge(d, f.AI.Cmd, f.AI.Model, time.Duration(f.AI.TimeoutMinutes)*time.Minute)
+	if batch > 0 {
+		j.BatchSize = batch
+	}
 	f.AI.Model = j.Model()
 	return j.Blocks(pass, promptText, items, onReady, onBatch)
 }
