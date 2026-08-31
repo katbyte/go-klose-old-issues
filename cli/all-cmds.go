@@ -99,7 +99,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, exists, legacy, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, exists, legacy, errors, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
@@ -119,6 +119,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		},
 	}
 	addReportFlags(reportCmd)
+	addErrorsFlags(reportCmd) // the errors section greps the same provider checkout
 	reportCmd.AddCommand(&cobra.Command{
 		Use:           "actions-taken",
 		Short:         "writes the ledger of everything koi has closed, with the AI decision behind each one",
@@ -389,6 +390,39 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		})
 	}
 	root.AddCommand(existsCmd)
+
+	errRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Errors(link)
+		}
+	}
+	errorsCmd := &cobra.Command{
+		Use:           "errors",
+		Aliases:       []string{"error"},
+		Short:         "these bugs quote error output that no longer exists in the provider source — obsolete as written? AI-scored, closeable",
+		Long:          `Open bug and crash reports whose quoted error or panic output no longer exists anywhere in the provider source (vendored SDKs included) — the code that produced it has been rewritten or removed since the report. Fragments are the stable runs of each Error: line (dynamic values cut away) and the provider functions panic stacks name, searched with git grep in a local clone (--provider-src) at --provider-ref. Classes by how sure we are the output was ever the provider's, strongest first: verified (the fragment existed in the source at the version the issue reported against), panic (the panicking function is gone), unverified (gone today, reported version uncheckable); text absent at the reported version too was never provider output (Azure API responses, Terraform core) and is dropped. The AI judges whether each report is really obsolete as written — provider wording vs API noise, later still-happening claims, substance broader than the error. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the gone output and closes as not planned inviting a fresh issue on the current provider.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+		SilenceErrors: true,
+		RunE:          errRunE(""),
+	}
+	addErrorsFlags(errorsCmd)
+	for _, sub := range []struct{ use, short string }{
+		{classErrVerified, "only issues whose error text existed at the reported version and is gone now (strongest evidence)"},
+		{classErrPanic, "only issues whose panicking provider function no longer exists"},
+		{classErrUnverified, "only issues whose error text is gone but the reported version could not be checked (the AI earns its keep here)"},
+	} {
+		errorsCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+			SilenceErrors: true,
+			RunE:          errRunE(sub.use),
+		})
+	}
+	root.AddCommand(errorsCmd)
 
 	dupRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {

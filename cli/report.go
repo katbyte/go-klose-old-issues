@@ -143,8 +143,8 @@ func attachVerdict(item *reportItem, v *issue.Verdict) {
 }
 
 // Report writes report.html: every close candidate each check sees (fixed,
-// resolved, comments, exists, legacy, deprecated), with the evidence for why it
-// is listed and links to
+// resolved, duplicates, comments, exists, legacy, errors, deprecated), with
+// the evidence for why it is listed and links to
 // everything cited. --with-ai scores each candidate with the check's judge
 // (cached verdicts are reused) and sorts surest first; --limit N keeps test
 // runs cheap. The old analyse-based report and its decisions.csv are gone —
@@ -197,7 +197,11 @@ func (f *FlagData) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, duplicates, comments, exists, legacy, deprecated}
+	errorsSec, err := f.errorsReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, duplicates, comments, exists, legacy, errorsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -213,8 +217,8 @@ func (f *FlagData) Report() error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · exists %d · legacy %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, exists.Total, legacy.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · exists %d · legacy %d · errors %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, exists.Total, legacy.Total, errorsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -699,6 +703,98 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Tim
 				span(how, kind),
 				span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.issue.CreatedAt, now), t.issue.CommentCount, t.issue.ThumbsUp), kindDim),
 			}, []reportSpan{span("“"+text.OneLine(t.issue.Title)+"”", kindQuote)})
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// errorsReportSection builds the "its quoted error is gone from the source"
+// section. Unlike every other check it needs a local provider checkout to grep;
+// without one configured the section stays empty and says how to enable it.
+func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passErrors,
+		Question: "this bug quotes error output that no longer exists in the provider source — obsolete as written?",
+		Description: "Open bug and crash reports whose quoted error or panic output no longer exists anywhere in the provider " +
+			"source (vendored SDKs included) — the code that produced it has been rewritten since the report. " +
+			"verified means the text existed in the source at the version the issue reported against; text absent there too " +
+			"was never the provider's (Azure API responses, Terraform core) and is dropped. " +
+			"Applying closes as not planned inviting a fresh issue on the current provider.",
+		Command: "koi errors [verified|panic|unverified] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	eo := ErrorsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
+	if eo.Src == "" {
+		s.Note = "not scanned — point --provider-src (or provider-src in .koi) at a local clone of the provider to include this check"
+		cout.Printf("<yellow>errors check skipped: no --provider-src configured</>\n")
+		return s, nil
+	}
+	col, err := f.collectErrors(d, eo)
+	if err != nil {
+		return s, err
+	}
+	findings := col.findings
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classErrVerified, col.counts[classErrVerified], kindOK},
+		{classErrPanic, col.counts[classErrPanic], kindMid},
+		{classErrUnverified, col.counts[classErrUnverified], kindWarn},
+	}
+	if col.quoting > 0 {
+		s.Note = fmt.Sprintf("%d open bugs/crashes quote error output · %d still in the source · %d never provider text at the reported version · %d protected by keep signals",
+			col.quoting, col.stillPresent, col.neverFound, col.protected)
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.errorsJudgeItems(d, findings, eo.Ref)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *errorsFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		if fdg.version != "" {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span("reported against", kindDim), span("v"+fdg.version, kindVer),
+			})
+		}
+		for n := range fdg.probes {
+			p := &fdg.probes[n]
+			kind := "error text"
+			if p.frag.Kind == issue.ErrFragPanic {
+				kind = "panic function"
+			}
+			row := []reportSpan{
+				span(kind, kindDim),
+				span("“"+p.frag.Text+"”", kindQuote),
+				span("gone from "+eo.Ref, kindWarn),
+			}
+			switch {
+			case p.foundAtTag:
+				row = append(row, span("was in the source at "+fdg.tag, kindOK))
+			case fdg.tag != "":
+				row = append(row, span("never at "+fdg.tag+" — likely not provider text", kindDim))
+			}
+			item.Evidence = append(item.Evidence, row)
+			if p.frag.Quote != "" {
+				item.Evidence = append(item.Evidence, []reportSpan{
+					span("from:", kindDim), span("“"+p.frag.Quote+"”", kindQuote),
+				})
+			}
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

@@ -73,6 +73,13 @@ type FlagsCommands struct {
 	ReopenComment string         `mapstructure:"comment"`
 	MS            FlagsMilestone `mapstructure:",squash"`
 	LegacyMajors  []int          `mapstructure:"major"`
+	Errors        FlagsErrors    `mapstructure:",squash"`
+}
+
+// FlagsErrors points the errors check at a provider checkout to search.
+type FlagsErrors struct {
+	ProviderSrc string `mapstructure:"provider-src"`
+	ProviderRef string `mapstructure:"provider-ref"`
 }
 
 // FlagsReview filters which proposals koi review walks.
@@ -259,6 +266,13 @@ func addMilestoneFlags(cmd *cobra.Command) {
 
 func addLegacyFlags(cmd *cobra.Command) {
 	cmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
+}
+
+func addErrorsFlags(cmd *cobra.Command) {
+	// persistent so the class subcommands share them; also settable via .koi
+	f := cmd.PersistentFlags()
+	f.String("provider-src", "", "path to a local git clone of the provider whose source the quoted errors are searched in")
+	f.String("provider-ref", "origin/main", "git ref of that clone to treat as the current source")
 }
 
 // GetFlags returns the fully populated FlagData.
