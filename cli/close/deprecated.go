@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -37,8 +39,8 @@ const (
 
 // DeprecatedOpts configures the deprecated audit and its apply modes.
 type DeprecatedOpts struct {
-	Link            string // resource | property ("" = both types)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // resource | property ("" = both types)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // deprecatedMatch is one removal the issue leans on, with the issue line that
@@ -92,7 +94,7 @@ func deprecatedClassOf(r db.Removal) string {
 // way out — where the ask is moot as filed. The AI judges whether each issue's
 // substance actually centres on the dead thing; the apply modes close as not
 // planned with a comment pointing at the successor.
-func (f *FlagData) Deprecated(link string) error {
+func (f *Flags) Deprecated(link string) error {
 	o := DeprecatedOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -117,9 +119,9 @@ func (f *FlagData) Deprecated(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open issues lean on something removed or deprecated:</>\n", len(findings), open)
 	for _, c := range []struct{ class, tag string }{
-		{classRemovedResource, tagRed},
-		{classRemovedProperty, tagOrange},
-		{classDeprecatedResource, tagYellow},
+		{classRemovedResource, cli.TagRed},
+		{classRemovedProperty, cli.TagOrange},
+		{classDeprecatedResource, cli.TagYellow},
 		{classDeprecatedProperty, "gray"},
 	} {
 		if n := counts[c.class]; n > 0 {
@@ -150,7 +152,7 @@ func (f *FlagData) Deprecated(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b deprecatedFinding) int {
@@ -177,7 +179,7 @@ func (f *FlagData) Deprecated(link string) error {
 	for n := range findings {
 		f.printDeprecatedCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi deprecated --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close deprecated --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -185,7 +187,7 @@ func (f *FlagData) Deprecated(link string) error {
 // removed/deprecated resource, or whose text word-matches a removed/deprecated
 // property of one of its resources. Returns findings (matches sorted strongest
 // first), per-class counts, the skipped too-generic tokens, and the open total.
-func (f *FlagData) collectDeprecated(d *db.DB, link string) (findings []deprecatedFinding, counts map[string]int, noisy []string, open int, err error) {
+func (f *Flags) collectDeprecated(d *db.DB, link string) (findings []deprecatedFinding, counts map[string]int, noisy []string, open int, err error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, nil, nil, 0, err
@@ -332,7 +334,7 @@ func (f *FlagData) collectDeprecated(d *db.DB, link string) (findings []deprecat
 // closes everything listed (the raw evidence includes incidental mentions, so
 // it exists for pattern consistency); --apply-with-ai[-auto] gates each close
 // on the judge and is the recommended path.
-func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o DeprecatedOpts, withAI bool) error {
+func (f *Flags) applyDeprecated(d *db.DB, findings []deprecatedFinding, o DeprecatedOpts, withAI bool) error {
 	byNumber := map[int]*deprecatedFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -344,17 +346,17 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneDeprecated(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "issues that lean on removed/deprecated things"
 	p.GateLabel = "moot"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -364,7 +366,7 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passDeprecated, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passDeprecated, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -372,10 +374,10 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 // closeOneDeprecated handles one candidate: card, the deprecated-close comment
 // (citing the strongest match and its successor), and the close as not planned
 // (or preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDeprecatedCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -405,7 +407,7 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -456,7 +458,7 @@ func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFin
 }
 
 // renderDeprecatedComment renders the close comment citing the strongest match.
-func (f *FlagData) renderDeprecatedComment(fdg *deprecatedFinding) (string, error) {
+func (f *Flags) renderDeprecatedComment(fdg *deprecatedFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateDeprecatedClose)
 	if err != nil {
 		return "", err
@@ -509,7 +511,7 @@ func (f *FlagData) renderDeprecatedComment(fdg *deprecatedFinding) (string, erro
 // deprecatedJudgeItems renders one judge block per finding: the issue's
 // substance (body + comment digest) and every removed/deprecated thing it
 // leans on, so the AI can tell a moot ask from an incidental mention.
-func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) (string, []issue.JudgeItem, error) {
+func (f *Flags) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptDeprecated)
 	if err != nil {
 		return "", nil, err
@@ -526,12 +528,12 @@ func (f *FlagData) deprecatedJudgeItems(d *db.DB, findings []deprecatedFinding) 
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		b.WriteString("REMOVED/DEPRECATED THINGS THE ISSUE REFERENCES:\n")
@@ -610,10 +612,10 @@ func matchLine(t string, re *regexp.Regexp) string {
 
 // printDeprecatedCard is one issue with every removed/deprecated thing it
 // leans on, successors included, and the AI's moot score when judged.
-func (f *FlagData) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	shown := 0
 	for _, m := range fdg.matches {
 		if shown == 6 {
@@ -622,9 +624,9 @@ func (f *FlagData) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v
 		}
 		shown++
 		r := m.removal
-		actionTag := tagYellow
+		actionTag := cli.TagYellow
 		if r.Action == db.RemovalRemoved {
-			actionTag = tagRed
+			actionTag = cli.TagRed
 		}
 		var b strings.Builder
 		if r.Kind == db.RemovalKindProperty {
@@ -651,5 +653,5 @@ func (f *FlagData) printDeprecatedCard(fdg *deprecatedFinding, pos, total int, v
 		cout.Printf("      <gray>also references (not removed or deprecated):</> <green>%s</>\n",
 			strings.Join(fdg.alive, "</> <gray>·</> <green>"))
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }

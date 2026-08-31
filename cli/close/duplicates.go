@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -54,8 +56,8 @@ var dupWord = regexp.MustCompile(`[a-z][a-z0-9_]*`)
 
 // DuplicatesOpts configures the duplicates audit and its apply modes.
 type DuplicatesOpts struct {
-	Link            string // linked | similar ("" = both classes)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // linked | similar ("" = both classes)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // duplicateTarget is the older open issue this one appears to duplicate.
@@ -79,7 +81,7 @@ type duplicateFinding struct {
 // references it, or nobody linked anything and the two titles say the same
 // thing. The issue carrying more of the discussion survives, weighted towards
 // the older one; the AI judges whether the two are really the same ask.
-func (f *FlagData) Duplicates(link string) error {
+func (f *Flags) Duplicates(link string) error {
 	o := DuplicatesOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -104,8 +106,8 @@ func (f *FlagData) Duplicates(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open issues appear to duplicate another open issue:</>\n", len(findings), open)
 	for _, c := range []struct{ class, tag, note string }{
-		{classDupLinked, tagGreen, "this issue links the other one"},
-		{classDupSimilar, tagLightBlue, "nothing links them, the titles match"},
+		{classDupLinked, cli.TagGreen, "this issue links the other one"},
+		{classDupSimilar, cli.TagLightBlue, "nothing links them, the titles match"},
 	} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-8s</> <yellow>%d</> <gray>(%s)</>\n", c.tag, c.class, n, c.note)
@@ -132,7 +134,7 @@ func (f *FlagData) Duplicates(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		sortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
@@ -143,7 +145,7 @@ func (f *FlagData) Duplicates(link string) error {
 	for n := range findings {
 		f.printDuplicatesCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi duplicates --apply-with-ai</> to confirm each close, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close duplicates --apply-with-ai</> to confirm each close, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -151,7 +153,7 @@ func (f *FlagData) Duplicates(link string) error {
 // that link each other, and title overlap for the ones nobody ever linked. For
 // each pair the issue with less engagement is the candidate to close (see
 // dupSurvivor), so the thread people are actually using is the one that stays.
-func (f *FlagData) collectDuplicates(d *db.DB, link string) (findings []duplicateFinding, counts map[string]int, open int, err error) {
+func (f *Flags) collectDuplicates(d *db.DB, link string) (findings []duplicateFinding, counts map[string]int, open int, err error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, nil, 0, err
@@ -214,7 +216,7 @@ func (f *FlagData) collectDuplicates(d *db.DB, link string) (findings []duplicat
 			}
 			other := byNumber[r.RefNumber]
 			if other == nil {
-				continue // closed, or never fetched — koi resolved owns those
+				continue // closed, or never fetched — koi close resolved owns those
 			}
 			addPair(i, other, classDupLinked, 0, nil)
 		}
@@ -464,7 +466,7 @@ func titleOverlap(a, b map[string]bool) (similarity float64, shared []string) {
 // closes everything listed (title wording is thin evidence for the similar
 // class, so it exists for pattern consistency); --apply-with-ai[-auto] gates
 // each close on the judge and is the recommended path.
-func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o DuplicatesOpts, withAI bool) error {
+func (f *Flags) applyDuplicates(d *db.DB, findings []duplicateFinding, o DuplicatesOpts, withAI bool) error {
 	byNumber := map[int]*duplicateFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -476,17 +478,17 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneDuplicate(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = passDuplicates
 	p.GateLabel = "duplicate"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as duplicates in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -496,17 +498,17 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passDuplicates, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passDuplicates, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
 
 // closeOneDuplicate handles one candidate: card, the pointer comment, and the
 // close as a duplicate (or preview under dry-run, or the a/s ask).
-func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDuplicatesCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -536,7 +538,7 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -548,8 +550,8 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 		cout.Errorf("      <red>fetching #%d: %v</>\n", fdg.best.issue.Number, err)
 		return issue.ApplyFailed, nil
 	}
-	if target.State != restStateOpen {
-		cout.Printf("      <gray>#%d is closed now — skipped, koi resolved covers that case</>\n", fdg.best.issue.Number)
+	if target.State != cli.RESTStateOpen {
+		cout.Printf("      <gray>#%d is closed now — skipped, koi close resolved covers that case</>\n", fdg.best.issue.Number)
 		return issue.ApplySkipped, nil
 	}
 
@@ -606,31 +608,31 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 
 // printDuplicatesCard is one finding: the newer issue, every older issue it
 // appears to duplicate, and the AI's score when judged.
-func (f *FlagData) printDuplicatesCard(fdg *duplicateFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printDuplicatesCard(fdg *duplicateFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <gray>· opened %s · 💬 %d · 👍 %d</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
 		text.TruncateRunes(text.OneLine(fdg.issue.Title), 80), fdg.issue.CreatedAt.Format("2006-01-02"),
-		fdg.issue.CommentCount, fdg.issue.ThumbsUp, f.issueURL(fdg.issue.Number))
+		fdg.issue.CommentCount, fdg.issue.ThumbsUp, f.IssueURL(fdg.issue.Number))
 	for i := range fdg.targets {
 		cout.Printf("      %s\n", f.duplicateTargetLine(fdg.issue, &fdg.targets[i]))
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }
 
 // duplicateTargetLine renders one older issue: how it was found, how long it
 // has been open, what engagement it carries, and its title.
-func (f *FlagData) duplicateTargetLine(closing *db.Issue, t *duplicateTarget) string {
+func (f *Flags) duplicateTargetLine(closing *db.Issue, t *duplicateTarget) string {
 	var b strings.Builder
 	if t.class == classDupLinked {
-		fmt.Fprintf(&b, "<gray>links</> <cyan>#%d</> <%s>referenced from this issue</>", t.issue.Number, tagGreen)
+		fmt.Fprintf(&b, "<gray>links</> <cyan>#%d</> <%s>referenced from this issue</>", t.issue.Number, cli.TagGreen)
 	} else {
-		fmt.Fprintf(&b, "<gray>matches</> <cyan>#%d</> <%s>%.0f%% of the title</>", t.issue.Number, tagLightBlue, t.similarity*100)
+		fmt.Fprintf(&b, "<gray>matches</> <cyan>#%d</> <%s>%.0f%% of the title</>", t.issue.Number, cli.TagLightBlue, t.similarity*100)
 	}
 	fmt.Fprintf(&b, " <gray>· opened %s · 💬 %d · 👍 %d</>", t.issue.CreatedAt.Format("2006-01-02"), t.issue.CommentCount, t.issue.ThumbsUp)
 	if t.issue.Number > closing.Number {
 		fmt.Fprintf(&b, " <fg=208>· newer, but %d vs %d engagement</>", dupEngagement(t.issue), dupEngagement(closing))
 	}
-	fmt.Fprintf(&b, "\n        <gray>%s</> <darkGray>%s</>", text.TruncateRunes(text.OneLine(t.issue.Title), 80), f.issueURL(t.issue.Number))
+	fmt.Fprintf(&b, "\n        <gray>%s</> <darkGray>%s</>", text.TruncateRunes(text.OneLine(t.issue.Title), 80), f.IssueURL(t.issue.Number))
 	if len(t.shared) > 0 {
 		fmt.Fprintf(&b, "\n        <gray>shared wording:</> %s", strings.Join(t.shared, ", "))
 	}
@@ -638,7 +640,7 @@ func (f *FlagData) duplicateTargetLine(closing *db.Issue, t *duplicateTarget) st
 }
 
 // renderDuplicatesComment renders the close pointing at the surviving issue.
-func (f *FlagData) renderDuplicatesComment(fdg *duplicateFinding) (string, error) {
+func (f *Flags) renderDuplicatesComment(fdg *duplicateFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateDuplicateOpen)
 	if err != nil {
 		return "", err
@@ -661,7 +663,7 @@ func (f *FlagData) renderDuplicatesComment(fdg *duplicateFinding) (string, error
 // duplicatesJudgeItems renders one judge block per finding: both issues in
 // full, so the AI compares what they actually ask rather than how they are
 // worded.
-func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (string, []issue.JudgeItem, error) {
+func (f *Flags) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptDuplicates)
 	if err != nil {
 		return "", nil, err
@@ -675,7 +677,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 		fmt.Fprintf(&b, "opened %s, last activity %s, 💬 %d, 👍 %d\n",
 			fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"),
 			fdg.issue.CommentCount, fdg.issue.ThumbsUp)
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		comments, cerr := d.CommentsFor(fdg.issue.Number)
 		if cerr != nil {
 			return "", nil, cerr
@@ -684,7 +686,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 
@@ -706,7 +708,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 				t.issue.Number, how, side, t.issue.CreatedAt.Format("2006-01-02"),
 				t.issue.CommentCount, t.issue.ThumbsUp, text.OneLine(t.issue.Title))
 			if t.issue.Body != "" {
-				fmt.Fprintf(&b, "  THAT ISSUE'S BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.issue.Body), msPRBodyRunes))
+				fmt.Fprintf(&b, "  THAT ISSUE'S BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.issue.Body), cli.PRBodyRunes))
 			}
 			tc, terr := d.CommentsFor(t.issue.Number)
 			if terr != nil {
@@ -716,7 +718,7 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 				fmt.Fprintf(&b, "  THAT ISSUE'S COMMENTS (%d of %d):\n", len(picked), len(tc))
 				for _, c := range picked {
 					fmt.Fprintf(&b, "  - [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-						text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+						text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 				}
 			}
 		}

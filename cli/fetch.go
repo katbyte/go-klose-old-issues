@@ -18,7 +18,7 @@ import (
 
 const (
 	metaFetchCursor   = "fetch_cursor"
-	metaLastSync      = "last_sync"
+	MetaLastSync      = "last_sync"
 	metaLastReconcile = "last_reconcile"
 
 	// reconcileEvery is how stale the open-set verification may get before a
@@ -81,7 +81,7 @@ func (f *FlagData) Fetch(full bool) error {
 	if err != nil {
 		return err
 	}
-	lastSync, err := d.GetMeta(metaLastSync)
+	lastSync, err := d.GetMeta(MetaLastSync)
 	if err != nil {
 		return err
 	}
@@ -110,7 +110,7 @@ func (f *FlagData) Fetch(full bool) error {
 		}
 	}
 
-	if err := d.SetMeta(metaLastSync, started.Format(time.RFC3339)); err != nil {
+	if err := d.SetMeta(MetaLastSync, started.Format(time.RFC3339)); err != nil {
 		return err
 	}
 	if err := d.DeleteMeta(metaFetchCursor); err != nil {
@@ -153,7 +153,7 @@ func (f *FlagData) Fetch(full bool) error {
 
 		// front-load the milestone scan too: fetch does everything non-AI so every
 		// other command can run offline afterwards (incremental, so cheap when fresh)
-		if err := f.milestoneScan(d, false); err != nil {
+		if err := f.MilestoneScan(d, false); err != nil {
 			return err
 		}
 
@@ -170,10 +170,10 @@ func (f *FlagData) Fetch(full bool) error {
 
 	// run the rules straight away so fetch is the only setup step — everything
 	// downstream (review, report, stats) also re-runs this itself
-	if err := f.ensureAnalysed(d); err != nil {
+	if err := f.EnsureAnalysed(d); err != nil {
 		return err
 	}
-	cout.Printf("next: <cyan>koi report</> for every close candidate with its evidence, or act on one check: <cyan>koi fixed</> · <cyan>koi resolved</> · <cyan>koi comments</> · <cyan>koi exists</> · <cyan>koi legacy</> · <cyan>koi deprecated</>\n")
+	cout.Printf("next: <cyan>koi report</> for every close candidate with its evidence, or act on one check: <cyan>koi close fixed</> · <cyan>koi close resolved</> · <cyan>koi close comments</> · <cyan>koi close exists</> · <cyan>koi close legacy</> · <cyan>koi close deprecated</>\n")
 	return nil
 }
 
@@ -616,7 +616,7 @@ func nodeToBundle(n *gh.IssueNode) db.IssueBundle {
 			IssueNumber: n.Number,
 			RefRepo:     s.Repository.NameWithOwner,
 			RefNumber:   s.Number,
-			IsPR:        s.Typename == typePullRequest,
+			IsPR:        s.Typename == TypePullRequest,
 			Merged:      s.Merged,
 			MergedAt:    s.MergedAt,
 			Title:       s.Title,
@@ -644,11 +644,11 @@ func commentFromNode(n *gh.CommentNode, issueNumber int) db.Comment {
 	}
 }
 
-// ensureAnalysed refreshes signals and rule proposals before a consumer command
+// EnsureAnalysed refreshes signals and rule proposals before a consumer command
 // runs. Analyse is deterministic, takes seconds, and never overwrites human
 // decisions or AI enrichment — so commands re-run it themselves rather than
 // making the user remember to.
-func (f *FlagData) ensureAnalysed(d *db.DB) error {
+func (f *FlagData) EnsureAnalysed(d *db.DB) error {
 	_, err := issue.AnalyseAll(d, f.GH.Repo, f.RuleConfig())
 	return err
 }

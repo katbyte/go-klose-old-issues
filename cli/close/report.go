@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"encoding/csv"
@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -81,15 +83,15 @@ type reportData struct {
 
 func span(t, kind string) reportSpan    { return reportSpan{Text: t, Kind: kind} }
 func linkSpan(t, url string) reportSpan { return reportSpan{Text: t, URL: url} }
-func (f *FlagData) prHTMLURL(n int) string {
+func (f *Flags) prHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, n)
 }
 
-func (f *FlagData) issHTMLURL(n int) string {
+func (f *Flags) issHTMLURL(n int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, n)
 }
 
-// reportAIKind buckets a confidence for colouring, matching scoreTag's bands.
+// reportAIKind buckets a confidence for colouring, matching ScoreTag's bands.
 func reportAIKind(c float64) string {
 	switch {
 	case c >= 0.7:
@@ -149,7 +151,7 @@ func attachVerdict(item *reportItem, v *issue.Verdict) {
 // (cached verdicts are reused) and sorts surest first; --limit N keeps test
 // runs cheap. The old analyse-based report and its decisions.csv are gone —
 // the checks' apply modes are the review flow now.
-func (f *FlagData) Report() error {
+func (f *Flags) Report() error {
 	o := f.Cmd.Report
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -242,14 +244,14 @@ func (f *FlagData) Report() error {
 }
 
 // fixedReportSection builds the "a merged PR touches this" check section.
-func (f *FlagData) fixedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passFixed,
 		Question: "a merged PR touches this open issue — did it fix it?",
 		Description: "Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. " +
 			"fixed-by means the PR declared it closes the issue with a closing keyword; mentioned-by is a bare mention. " +
 			"Applying closes with a comment citing the fix PR and its shipped release, closed as completed.",
-		Command: "koi fixed [fixed-by|mentioned-by] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close fixed [fixed-by|mentioned-by] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, prVersions, _, err := f.collectFixed(d, "")
 	if err != nil {
@@ -268,7 +270,7 @@ func (f *FlagData) fixedReportSection(d *db.DB, o FlagsReport, now time.Time) (r
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *fixedFinding) int { return x.issue.Number }, verdicts)
@@ -311,14 +313,14 @@ func (f *FlagData) fixedReportSection(d *db.DB, o FlagsReport, now time.Time) (r
 }
 
 // resolvedReportSection builds the "a linked issue was dealt with" check section.
-func (f *FlagData) resolvedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passResolved,
 		Question: "a linked issue was dealt with — does its outcome cover this open one?",
 		Description: "Every open issue that cross-references a CLOSED issue in the same repository: likely duplicates of something already dealt with. " +
 			"Classes by how the linked issue was closed: completed (with the fixing PR and release when the changelog records them), duplicate, then not planned. " +
 			"Applying closes as a duplicate pointing at the linked issue and its resolution.",
-		Command: "koi resolved [completed|duplicate|not-planned] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close resolved [completed|duplicate|not-planned] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, err := f.collectResolved(d, "")
 	if err != nil {
@@ -338,7 +340,7 @@ func (f *FlagData) resolvedReportSection(d *db.DB, o FlagsReport, now time.Time)
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passResolved, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passResolved, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *resolvedFinding) int { return x.issue.Number }, verdicts)
@@ -385,7 +387,7 @@ func (f *FlagData) resolvedReportSection(d *db.DB, o FlagsReport, now time.Time)
 }
 
 // legacyReportSection builds the "this bug is old and unconfirmed" check section.
-func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) legacyReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	col, err := f.collectLegacy(d, nil)
 	if err != nil {
 		return reportSection{Slug: passLegacy}, err
@@ -396,7 +398,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (
 		Description: fmt.Sprintf("Open bug and crash reports against legacy majors (v1–v%d) that the keep rules cleared for closing: "+
 			"no credible recent-version repro claim, no open linked PR, not highly engaged. Enhancements are not touched. "+
 			"Applying closes with the legacy-bug comment, closed as not planned.", col.maxMajor),
-		Command: "koi legacy [--major N] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close legacy [--major N] --apply / --apply-with-ai / --apply-with-ai-auto",
 		Total:   len(col.findings),
 	}
 	for m := 1; m <= col.maxMajor; m++ {
@@ -414,7 +416,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (
 			note += " · protected from closing: " + strings.Join(parts, " · ")
 		}
 		if col.diverted > 0 {
-			note += fmt.Sprintf(" · %d have a merged PR and belong to koi fixed", col.diverted)
+			note += fmt.Sprintf(" · %d have a merged PR and belong to koi close fixed", col.diverted)
 		}
 		s.Note = note
 	}
@@ -427,7 +429,7 @@ func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *legacyFinding) int { return x.issue.Number }, verdicts)
@@ -510,14 +512,14 @@ func (f *FlagData) legacyReportSection(d *db.DB, o FlagsReport, now time.Time) (
 }
 
 // commentsReportSection builds the "its own thread says it is done" section.
-func (f *FlagData) commentsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) commentsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passComments,
 		Question: "this issue's own thread says it can be closed — is the claim credible?",
 		Description: "Every open issue with a comment claiming it is done: \"this can be closed\", \"fixed in vX by #PR\", " +
 			"\"no longer an issue\", or a maintainer saying they will close it. Classes by who says so. " +
 			"Applying closes as completed with a comment citing the claim and its author.",
-		Command: "koi comments [maintainer-says|community-says] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close comments [maintainer-says|community-says] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, err := f.collectComments(d, "")
 	if err != nil {
@@ -536,7 +538,7 @@ func (f *FlagData) commentsReportSection(d *db.DB, o FlagsReport, now time.Time)
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *commentsFinding) int { return x.issue.Number }, verdicts)
@@ -581,7 +583,7 @@ func (f *FlagData) commentsReportSection(d *db.DB, o FlagsReport, now time.Time)
 }
 
 // questionsReportSection builds the "this question is done with" section.
-func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) questionsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passQuestions,
 		Question: "this question was answered, or died unanswered long ago — close it out?",
@@ -589,7 +591,7 @@ func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time
 			"maintainers preferred, is the candidate answer — and the thread has settled) or dead (no substantive reply and " +
 			"over a year of silence). Answered closes as completed citing the answer; dead closes as not planned pointing " +
 			"at the community forum.",
-		Command: "koi questions [answered|dead] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close questions [answered|dead] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	col, err := f.collectQuestions(d, "")
 	if err != nil {
@@ -613,7 +615,7 @@ func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *questionsFinding) int { return x.issue.Number }, verdicts)
@@ -665,7 +667,7 @@ func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time
 
 // staleReportSection builds the "the maintainer's last word went unanswered"
 // section.
-func (f *FlagData) staleReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) staleReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passStale,
 		Question: "a maintainer had the last word over a year ago and nobody answered — close out the thread?",
@@ -673,7 +675,7 @@ func (f *FlagData) staleReportSection(d *db.DB, o FlagsReport, now time.Time) (r
 			"asked (they requested information that never came) or said (they stated a position — by design, API " +
 			"limitation, upstream — nobody disputed). A last word that committed to action scores low; the ball stays " +
 			"with the maintainers. Applying closes as not planned citing the comment.",
-		Command: "koi stale [asked|said] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close stale [asked|said] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	col, err := f.collectStale(d, "")
 	if err != nil {
@@ -694,7 +696,7 @@ func (f *FlagData) staleReportSection(d *db.DB, o FlagsReport, now time.Time) (r
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *staleFinding) int { return x.issue.Number }, verdicts)
@@ -736,14 +738,14 @@ func (f *FlagData) staleReportSection(d *db.DB, o FlagsReport, now time.Time) (r
 }
 
 // existsReportSection builds the "the ask already exists" section.
-func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passExists,
 		Question: "this enhancement request appears to already exist in the provider — did it ship?",
 		Description: "Open enhancement requests whose ask already exists: the requested resource or data source is in the " +
 			"provider docs today and arrived after the request, or a property the request's prose names shipped for one of " +
 			"its resources in a later release. Applying closes as completed with the good news and a documentation link.",
-		Command: "koi exists [resource|property] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close exists [resource|property] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, err := f.collectExists(d, "")
 	if err != nil {
@@ -762,7 +764,7 @@ func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *existsFinding) int { return x.issue.Number }, verdicts)
@@ -818,7 +820,7 @@ func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 }
 
 // duplicatesReportSection builds the "this is another open issue" section.
-func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passDuplicates,
 		Question: "this looks like an older open issue — is it the same one?",
@@ -826,7 +828,7 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Tim
 			"the titles say the same thing. The issue with more engagement survives, weighted towards the older one; " +
 			"applying closes this one as a duplicate pointing at it. Duplicates of already-closed issues belong to " +
 			"the resolved check.",
-		Command: "koi duplicates [linked|similar] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close duplicates [linked|similar] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, err := f.collectDuplicates(d, "")
 	if err != nil {
@@ -845,7 +847,7 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Tim
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
@@ -880,7 +882,7 @@ func (f *FlagData) duplicatesReportSection(d *db.DB, o FlagsReport, now time.Tim
 // errorsReportSection builds the "its quoted error is gone from the source"
 // section. Unlike every other check it needs a local provider checkout to grep;
 // without one configured the section stays empty and says how to enable it.
-func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) errorsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passErrors,
 		Question: "this bug quotes error output that no longer exists in the provider source — obsolete as written?",
@@ -889,7 +891,7 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 			"verified means the text existed in the source at the version the issue reported against; text absent there too " +
 			"was never the provider's (Azure API responses, Terraform core) and is dropped. " +
 			"Applying closes as not planned inviting a fresh issue on the current provider.",
-		Command: "koi errors [verified|panic|unverified] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close errors [verified|panic|unverified] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	eo := ErrorsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
 	if eo.Src == "" {
@@ -920,7 +922,7 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *errorsFinding) int { return x.issue.Number }, verdicts)
@@ -976,14 +978,14 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 // docsReportSection builds the "its doc page moved on" section. Like the
 // errors section it needs the provider checkout; without one configured the
 // section stays empty and says how to enable it.
-func (f *FlagData) docsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) docsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passDocs,
 		Question: "this documentation issue's page has been revised since — addressed now?",
 		Description: "Open documentation issues whose doc page has been edited since the report. Edits alone prove " +
 			"nothing — doc pages churn constantly — so the AI reads the current page content against the issue's " +
 			"specific ask. Applying closes as completed pointing at the revised page.",
-		Command: "koi docs --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close docs --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	eo := DocsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
 	if eo.Src == "" {
@@ -1009,7 +1011,7 @@ func (f *FlagData) docsReportSection(d *db.DB, o FlagsReport, now time.Time) (re
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *docsFinding) int { return x.issue.Number }, verdicts)
@@ -1045,14 +1047,14 @@ func (f *FlagData) docsReportSection(d *db.DB, o FlagsReport, now time.Time) (re
 }
 
 // deprecatedReportSection builds the "the thing it leans on is gone" section.
-func (f *FlagData) deprecatedReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+func (f *Flags) deprecatedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (reportSection, error) {
 	s := reportSection{
 		Slug:     passDeprecated,
 		Question: "this issue leans on a removed or deprecated resource/property — moot where it stands?",
 		Description: "Every open issue referencing a resource, data source, or property that was removed or deprecated, " +
 			"per the 4.0/5.0 upgrade guides and the changelog's DEPRECATIONS bullets. " +
 			"Applying closes as not planned with a comment naming what is gone, when, and the successor to use.",
-		Command: "koi deprecated [removed-resource|removed-property|...] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Command: "koi close deprecated [removed-resource|removed-property|...] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, _, err := f.collectDeprecated(d, "")
 	if err != nil {
@@ -1073,7 +1075,7 @@ func (f *FlagData) deprecatedReportSection(d *db.DB, o FlagsReport, now time.Tim
 		if jerr != nil {
 			return s, jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passDeprecated, promptText, items, nil, nil); err != nil {
 			return s, err
 		}
 		sortByVerdict(findings, func(x *deprecatedFinding) int { return x.issue.Number }, verdicts)
@@ -1146,7 +1148,7 @@ func writeReportHTML(path string, data *reportData) error {
 }
 
 // Import reads a filled-in decisions.csv and records approve/reject decisions.
-func (f *FlagData) Import(path string) error {
+func (f *Flags) Import(path string) error {
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -1229,10 +1231,3 @@ func (f *FlagData) Import(path string) error {
 	}
 	return nil
 }
-
-// Column names shared by every csv this tool writes.
-const (
-	csvColNumber = "number"
-	csvColTitle  = "title"
-	csvColURL    = "url"
-)

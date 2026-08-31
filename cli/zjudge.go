@@ -18,28 +18,50 @@ import (
 )
 
 const (
-	// judgeThreshold is the minimum AI confidence for an apply mode to act;
+	// JudgeThreshold is the minimum AI confidence for an apply mode to act;
 	// below it the finding is reported and skipped. Also --apply-with-ai-auto's
 	// bare-flag default.
-	judgeThreshold = 0.7
+	JudgeThreshold = 0.7
 
-	// how much of a single comment goes into a judge block
-	commentRunesFor = 400
+	// judge-block budgets: how much of an issue body, an evidence PR body, and
+	// a single comment go in — accuracy beats cost, so the slices are generous.
+	IssueBodyRunes = 3000
+	PRBodyRunes    = 2000
+	CommentRunes   = 400
+
+	// TypePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
+	TypePullRequest = "PullRequest"
+
+	// shared colour tag names for the class/score/state tag helpers.
+	TagGreen     = "green"
+	TagYellow    = "yellow"
+	TagOrange    = "fg=208"
+	TagRed       = "red"
+	TagLightBlue = "lightBlue"
 )
 
-// judgeBlocks runs the shared judge (issue.Judge) configured from the flags.
-// The model canonicalises inside NewJudge; it is copied back so every later
-// display matches the identity verdicts are cached under.
-func (f *FlagData) judgeBlocks(d *db.DB, pass, promptText string, items []issue.JudgeItem,
-	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
-) (map[int]*issue.Verdict, error) {
-	return f.judgeBlocksBatch(d, pass, promptText, 0, items, onReady, onBatch)
+// PrintVerdict prints the AI's score and reason for a judged finding.
+func PrintVerdict(v *issue.Verdict) {
+	if v == nil {
+		return
+	}
+	cout.Printf("\n      <gray>AI:</> <%s>%.2f</>\n", ScoreTag(v.Confidence), v.Confidence)
+	cout.Printf("        <lightWhite>%s</>\n", text.OneLine(v.Reason))
 }
 
-// judgeBlocksBatch is judgeBlocks with a smaller batch for passes whose blocks
+// JudgeBlocks runs the shared judge (issue.Judge) configured from the flags.
+// The model canonicalises inside NewJudge; it is copied back so every later
+// display matches the identity verdicts are cached under.
+func (f *FlagData) JudgeBlocks(d *db.DB, pass, promptText string, items []issue.JudgeItem,
+	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
+) (map[int]*issue.Verdict, error) {
+	return f.JudgeBlocksBatch(d, pass, promptText, 0, items, onReady, onBatch)
+}
+
+// JudgeBlocksBatch is JudgeBlocks with a smaller batch for passes whose blocks
 // are huge — docs ships page content, so fewer pairings per call buys each one
 // more room. batch <= 0 keeps the judge's default.
-func (f *FlagData) judgeBlocksBatch(d *db.DB, pass, promptText string, batch int, items []issue.JudgeItem,
+func (f *FlagData) JudgeBlocksBatch(d *db.DB, pass, promptText string, batch int, items []issue.JudgeItem,
 	onReady func() (bool, error), onBatch func([]issue.Judged) (bool, error),
 ) (map[int]*issue.Verdict, error) {
 	if err := f.RequireAI(); err != nil {
@@ -53,10 +75,10 @@ func (f *FlagData) judgeBlocksBatch(d *db.DB, pass, promptText string, batch int
 	return j.Blocks(pass, promptText, items, onReady, onBatch)
 }
 
-// fetchTexts fills the texts cache for every wanted number not yet cached, 25
+// FetchTexts fills the texts cache for every wanted number not yet cached, 25
 // per aliased query. Numbers that no longer resolve are cached empty so they
 // aren't refetched forever.
-func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
+func (f *FlagData) FetchTexts(d *db.DB, want []int) error {
 	cached, err := d.Texts()
 	if err != nil {
 		return err
@@ -102,10 +124,10 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 				fmt.Fprintf(&tail, "(%d earlier comments not shown)\n", hidden)
 			}
 			for _, c := range node.Comments.Nodes {
-				fmt.Fprintf(&tail, "[%s] %s: %s\n", c.CreatedAt, c.Author.Login, text.TruncateRunes(text.OneLine(c.Body), commentRunesFor))
+				fmt.Fprintf(&tail, "[%s] %s: %s\n", c.CreatedAt, c.Author.Login, text.TruncateRunes(text.OneLine(c.Body), CommentRunes))
 			}
 			texts = append(texts, db.Text{
-				Number: n, IsPR: node.Typename == typePullRequest,
+				Number: n, IsPR: node.Typename == TypePullRequest,
 				State: node.State, Title: node.Title, Body: node.Body, Tail: tail.String(),
 			})
 		}
@@ -118,38 +140,23 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	return nil
 }
 
-// keepSummary renders a check's keep-guard tallies as one line, e.g.
-// "15 protected (high-engagement 12 · open-pr 3)".
-func keepSummary(protected map[string]int) string {
-	total := 0
-	parts := make([]string, 0, len(protected))
-	for _, k := range text.SortedKeys(protected) {
-		total += protected[k]
-		parts = append(parts, fmt.Sprintf("%s %d", k, protected[k]))
-	}
-	if total == 0 {
-		return "0 protected"
-	}
-	return fmt.Sprintf("%d protected (%s)", total, strings.Join(parts, " · "))
-}
-
-// scoreTag colours a match confidence: green at or above the apply threshold,
+// ScoreTag colours a match confidence: green at or above the apply threshold,
 // orange in the murky middle, red for a clear non-match.
-func scoreTag(confidence float64) string {
+func ScoreTag(confidence float64) string {
 	switch {
-	case confidence >= judgeThreshold:
-		return tagGreen
+	case confidence >= JudgeThreshold:
+		return TagGreen
 	case confidence >= 0.4:
-		return tagOrange
+		return TagOrange
 	default:
-		return tagRed
+		return TagRed
 	}
 }
 
-// preparePrompt loads a prompt template and substitutes the version
+// PreparePrompt loads a prompt template and substitutes the version
 // placeholders, so a prompt can talk about "majors 1 to 3" without the
 // current release being baked into the file.
-func (f *FlagData) preparePrompt(name string) (string, error) {
+func (f *FlagData) PreparePrompt(name string) (string, error) {
 	p, err := assets.Prompt(name)
 	if err != nil {
 		return "", err
@@ -159,4 +166,19 @@ func (f *FlagData) preparePrompt(name string) (string, error) {
 	p = strings.ReplaceAll(p, "{{LEGACY_MAX}}", strconv.Itoa(f.CurrentMajor-2))
 	p = strings.ReplaceAll(p, "{{RECENT_MAJORS}}", recent)
 	return p, nil
+}
+
+// Column names shared by every csv this tool writes.
+const (
+	CSVColNumber = "number"
+	CSVColTitle  = "title"
+	CSVColURL    = "url"
+)
+
+// OrDash renders an empty string as an em-dash for tabular output.
+func OrDash(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
 }

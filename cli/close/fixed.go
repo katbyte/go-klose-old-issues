@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -35,8 +37,8 @@ const (
 
 // FixedOpts configures the fixed audit and its apply modes.
 type FixedOpts struct {
-	Link            string // fixed-by | mentioned-by ("" = both)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // fixed-by | mentioned-by ("" = both)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // fixedFinding is one open issue with the merged same-repo PRs referencing it.
@@ -54,7 +56,7 @@ type fixedFinding struct {
 // fixed-by (closing keyword) then mentioned-by (bare mention). The AI judges
 // whether the PR(s) actually fix each issue on full text, and the apply modes
 // close the confirmed ones with a comment citing the PR and shipped version.
-func (f *FlagData) Fixed(link string) error {
+func (f *Flags) Fixed(link string) error {
 	o := FixedOpts{Link: link, FlagsApplyModes: f.Modes}
 	// stay fresh by default: the incremental fetch is cheap and stale crossref
 	// or issue state here means judging (or closing!) on old information
@@ -80,7 +82,7 @@ func (f *FlagData) Fixed(link string) error {
 	}
 
 	cout.Printf("\n<bold>%d of %d open issues are referenced by a merged PR:</>\n", len(findings), open)
-	for _, c := range []struct{ class, tag string }{{classFixedBy, tagGreen}, {classMentionedBy, tagOrange}} {
+	for _, c := range []struct{ class, tag string }{{classFixedBy, cli.TagGreen}, {classMentionedBy, cli.TagOrange}} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-12s</> <yellow>%d</>\n", c.tag, c.class, n)
 		}
@@ -107,7 +109,7 @@ func (f *FlagData) Fixed(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passFixed, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b fixedFinding) int {
@@ -135,7 +137,7 @@ func (f *FlagData) Fixed(link string) error {
 		fdg := &findings[n]
 		f.printFixedCard(fdg, n+1, len(findings), prVersions, verdicts[fdg.issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi fixed --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close fixed --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -143,7 +145,7 @@ func (f *FlagData) Fixed(link string) error {
 // issue a merged same-repo PR references, classed fixed-by (closing keyword)
 // then mentioned-by, optionally scoped to one class. Returns the findings,
 // per-class counts, the changelog's PR→release map, and the open-issue total.
-func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding, counts map[string]int, prVersions map[int][]string, open int, err error) {
+func (f *Flags) collectFixed(d *db.DB, link string) (findings []fixedFinding, counts map[string]int, prVersions map[int][]string, open int, err error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, nil, nil, 0, err
@@ -216,7 +218,7 @@ func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding,
 
 // applyFixed is both apply modes on the shared harness: plain --apply closes
 // everything listed; --apply-with-ai[-auto] gates each close on the judge.
-func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts, withAI bool) error {
+func (f *Flags) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[int][]string, o FixedOpts, withAI bool) error {
 	byNumber := map[int]*fixedFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -228,17 +230,17 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneFixed(d, repo, byNumber[n], v, pos, total, prVersions, throttle, interactive)
 		})
 	p.Noun = "candidates as fixed"
 	p.GateLabel = "match"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -248,17 +250,17 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passFixed, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passFixed, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
 
 // closeOneFixed handles one candidate: card, comment, and the close itself (or
 // a preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *issue.Verdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *issue.Verdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
 	f.printFixedCard(fdg, pos, total, prVersions, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -288,7 +290,7 @@ func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *i
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -311,21 +313,21 @@ func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *i
 
 // printFixedCard is one finding: the open issue, its merged PR references, the
 // reopen callout when the scan saw one, and the AI's score when judged.
-func (f *FlagData) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *issue.Verdict) {
+func (f *Flags) printFixedCard(fdg *fixedFinding, pos, total int, prVersions map[int][]string, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	for i := range fdg.prs {
 		cout.Printf("      %s\n", fixedPRLine(&fdg.prs[i], prVersions))
 	}
 	if fdg.reopenedBy != 0 {
 		cout.Printf("      <red>closed by PR #%d and then reopened</>\n", fdg.reopenedBy)
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }
 
 // recordFixedClose writes the applied action row for one close.
-func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *issue.Verdict) error {
+func (f *Flags) recordFixedClose(d *db.DB, fdg *fixedFinding, v *issue.Verdict) error {
 	a := &db.Action{
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: issue.ReasonFixedMergedPR,
 		StateReason: issue.StateCompleted, Template: templateFixedShipped,
@@ -353,7 +355,7 @@ func (f *FlagData) recordFixedClose(d *db.DB, fdg *fixedFinding, v *issue.Verdic
 }
 
 // renderFixedComment renders the close comment citing the fix PR and version.
-func (f *FlagData) renderFixedComment(fdg *fixedFinding) (string, error) {
+func (f *Flags) renderFixedComment(fdg *fixedFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateFixedShipped)
 	if err != nil {
 		return "", err
@@ -380,9 +382,9 @@ func (f *FlagData) renderFixedComment(fdg *fixedFinding) (string, error) {
 func fixedPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 	var b strings.Builder
 	if pr.WillClose {
-		fmt.Fprintf(&b, "<%s>fixed by</> PR <lightCyan>#%d</>", tagGreen, pr.RefNumber)
+		fmt.Fprintf(&b, "<%s>fixed by</> PR <lightCyan>#%d</>", cli.TagGreen, pr.RefNumber)
 	} else {
-		fmt.Fprintf(&b, "<%s>mentioned by</> PR <lightCyan>#%d</>", tagOrange, pr.RefNumber)
+		fmt.Fprintf(&b, "<%s>mentioned by</> PR <lightCyan>#%d</>", cli.TagOrange, pr.RefNumber)
 	}
 	if vs := prVersions[pr.RefNumber]; len(vs) > 0 {
 		fmt.Fprintf(&b, " <gray>— shipped in</> <lightMagenta>v%s</>", vs[0])
@@ -396,7 +398,7 @@ func fixedPRLine(pr *db.Crossref, prVersions map[int][]string) string {
 // fixedJudgeItems fetches the PR texts and renders one judge block per finding:
 // the issue's title and body, every merged reference with its shipping release
 // and body, and the reopen note when the scan saw one.
-func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (string, []issue.JudgeItem, error) {
+func (f *Flags) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions map[int][]string) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptFixed)
 	if err != nil {
 		return "", nil, err
@@ -408,7 +410,7 @@ func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions
 			prNumbers[pr.RefNumber] = true
 		}
 	}
-	if err := f.fetchTexts(d, text.SortedKeys(prNumbers)); err != nil {
+	if err := f.FetchTexts(d, text.SortedKeys(prNumbers)); err != nil {
 		return "", nil, err
 	}
 	texts, err := d.Texts()
@@ -421,7 +423,7 @@ func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions
 		fdg := &findings[i]
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		b.WriteString("REFERENCED PRS:\n")
 		for _, pr := range fdg.prs {
 			state := prLabelMerged
@@ -434,7 +436,7 @@ func (f *FlagData) fixedJudgeItems(d *db.DB, findings []fixedFinding, prVersions
 			}
 			fmt.Fprintf(&b, "- PR #%d (%s%s): %s\n", pr.RefNumber, state, link, text.OneLine(pr.Title))
 			if t, ok := texts[pr.RefNumber]; ok && t.Body != "" {
-				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.Body), msPRBodyRunes))
+				fmt.Fprintf(&b, "  PR BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(t.Body), cli.PRBodyRunes))
 			}
 		}
 		if fdg.reopenedBy != 0 {

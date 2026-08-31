@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"bytes"
@@ -13,6 +13,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"golang.org/x/term"
 
@@ -48,10 +50,10 @@ var errClassRank = map[string]int{classErrVerified: 2, classErrPanic: 1, classEr
 
 // ErrorsOpts configures the gone-errors audit and its apply modes.
 type ErrorsOpts struct {
-	Link            string // verified | panic | unverified ("" = all)
-	Src             string // local provider checkout to search
-	Ref             string // git ref treated as the current source
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // verified | panic | unverified ("" = all)
+	Src                 string // local provider checkout to search
+	Ref                 string // git ref treated as the current source
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // errorsProbe is one fragment's fate against the provider source.
@@ -81,7 +83,7 @@ type errorsFinding struct {
 // The AI judges whether each report is really obsolete as written (provider
 // wording vs Azure API noise, later still-happening claims); the apply modes
 // close as not planned inviting a re-test on the current provider.
-func (f *FlagData) Errors(link string) error {
+func (f *Flags) Errors(link string) error {
 	o := ErrorsOpts{Link: link, Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -107,9 +109,9 @@ func (f *FlagData) Errors(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open bugs/crashes quote error output that is gone from the provider source:</>\n", len(findings), col.quoting)
 	for _, c := range []struct{ class, tag, desc string }{
-		{classErrVerified, tagRed, "was in the source at the reported version, gone now"},
-		{classErrPanic, tagOrange, "panicking provider function no longer exists"},
-		{classErrUnverified, tagYellow, "gone now, reported version unverifiable"},
+		{classErrVerified, cli.TagRed, "was in the source at the reported version, gone now"},
+		{classErrPanic, cli.TagOrange, "panicking provider function no longer exists"},
+		{classErrUnverified, cli.TagYellow, "gone now, reported version unverifiable"},
 	} {
 		if n := col.counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-12s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
@@ -138,7 +140,7 @@ func (f *FlagData) Errors(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passErrors, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b errorsFinding) int {
@@ -165,7 +167,7 @@ func (f *FlagData) Errors(link string) error {
 	for n := range findings {
 		f.printErrorsCard(&findings[n], n+1, len(findings), o.Ref, verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi errors --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close errors --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -185,7 +187,7 @@ type errorsCollection struct {
 // the current ref (any hit means the code path lives — skip), then the
 // survivors against the tag of the version each issue reported, which sorts
 // provider-origin text (verified) from Azure API noise (never found).
-func (f *FlagData) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, error) {
+func (f *Flags) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, error) {
 	col := &errorsCollection{counts: map[string]int{}, protected: map[string]int{}}
 	issues, err := d.OpenIssues()
 	if err != nil {
@@ -380,7 +382,7 @@ func (f *FlagData) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, err
 // everything listed (the raw evidence cannot tell provider wording from API
 // noise, so it exists for pattern consistency); --apply-with-ai[-auto] gates
 // each close on the judge and is the recommended path.
-func (f *FlagData) applyErrors(d *db.DB, findings []errorsFinding, o ErrorsOpts, withAI bool) error {
+func (f *Flags) applyErrors(d *db.DB, findings []errorsFinding, o ErrorsOpts, withAI bool) error {
 	byNumber := map[int]*errorsFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -392,17 +394,17 @@ func (f *FlagData) applyErrors(d *db.DB, findings []errorsFinding, o ErrorsOpts,
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneErrors(d, repo, byNumber[n], v, pos, total, o.Ref, throttle, interactive)
 		})
 	p.Noun = "issues quoting error output the source has moved past"
 	p.GateLabel = "obsolete"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -412,7 +414,7 @@ func (f *FlagData) applyErrors(d *db.DB, findings []errorsFinding, o ErrorsOpts,
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passErrors, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passErrors, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -420,10 +422,10 @@ func (f *FlagData) applyErrors(d *db.DB, findings []errorsFinding, o ErrorsOpts,
 // closeOneErrors handles one candidate: card, the errors-close comment citing
 // the gone fragment, and the close as not planned (or preview under dry-run,
 // or the a/s ask when interactive).
-func (f *FlagData) closeOneErrors(d *db.DB, repo gh.Repo, fdg *errorsFinding, v *issue.Verdict, pos, total int, ref string, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneErrors(d *db.DB, repo gh.Repo, fdg *errorsFinding, v *issue.Verdict, pos, total int, ref string, throttle func(), ask bool) (int, error) {
 	f.printErrorsCard(fdg, pos, total, ref, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -453,7 +455,7 @@ func (f *FlagData) closeOneErrors(d *db.DB, repo gh.Repo, fdg *errorsFinding, v 
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -503,7 +505,7 @@ func (f *FlagData) closeOneErrors(d *db.DB, repo gh.Repo, fdg *errorsFinding, v 
 
 // renderErrorsComment renders the close comment citing the strongest gone
 // fragment.
-func (f *FlagData) renderErrorsComment(fdg *errorsFinding) (string, error) {
+func (f *Flags) renderErrorsComment(fdg *errorsFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateErrorsClose)
 	if err != nil {
 		return "", err
@@ -532,8 +534,8 @@ func (f *FlagData) renderErrorsComment(fdg *errorsFinding) (string, error) {
 // (body + comment digest), the reported version, and every fragment with its
 // verification status, so the AI can tell provider wording from API noise and
 // spot still-happening claims.
-func (f *FlagData) errorsJudgeItems(d *db.DB, findings []errorsFinding, ref string) (string, []issue.JudgeItem, error) {
-	promptText, err := f.preparePrompt(promptErrors)
+func (f *Flags) errorsJudgeItems(d *db.DB, findings []errorsFinding, ref string) (string, []issue.JudgeItem, error) {
+	promptText, err := f.PreparePrompt(promptErrors)
 	if err != nil {
 		return "", nil, err
 	}
@@ -554,12 +556,12 @@ func (f *FlagData) errorsJudgeItems(d *db.DB, findings []errorsFinding, ref stri
 		} else if fdg.sig.VersionMajor > 0 {
 			fmt.Fprintf(&b, "reported provider version: v%d.x\n", fdg.sig.VersionMajor)
 		}
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		fmt.Fprintf(&b, "QUOTED OUTPUT SEARCHED IN THE PROVIDER SOURCE (none of it exists at %s):\n", ref)
@@ -589,10 +591,10 @@ func (f *FlagData) errorsJudgeItems(d *db.DB, findings []errorsFinding, ref stri
 
 // printErrorsCard is one candidate: the issue, each gone fragment with its
 // verification status, and the AI's score when judged.
-func (f *FlagData) printErrorsCard(fdg *errorsFinding, pos, total int, ref string, v *issue.Verdict) {
+func (f *Flags) printErrorsCard(fdg *errorsFinding, pos, total int, ref string, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	if fdg.version != "" {
 		cout.Printf("      <gray>reported against</> <lightMagenta>v%s</>\n", fdg.version)
 	}
@@ -601,10 +603,10 @@ func (f *FlagData) printErrorsCard(fdg *errorsFinding, pos, total int, ref strin
 		if p.frag.Kind == issue.ErrFragPanic {
 			kind = "panic in"
 		}
-		status := fmt.Sprintf("<%s>gone</> <gray>from</> <lightMagenta>%s</>", tagYellow, ref)
+		status := fmt.Sprintf("<%s>gone</> <gray>from</> <lightMagenta>%s</>", cli.TagYellow, ref)
 		switch {
 		case p.foundAtTag:
-			status += fmt.Sprintf(" <gray>·</> <%s>was present at</> <lightMagenta>%s</>", tagRed, fdg.tag)
+			status += fmt.Sprintf(" <gray>·</> <%s>was present at</> <lightMagenta>%s</>", cli.TagRed, fdg.tag)
 		case fdg.tag != "":
 			status += fmt.Sprintf(" <gray>· never at %s</>", fdg.tag)
 		}
@@ -617,7 +619,7 @@ func (f *FlagData) printErrorsCard(fdg *errorsFinding, pos, total int, ref strin
 			cout.Printf("        <gray>%s</> %s\n", src, text.TruncateRunes(p.frag.Quote, 110))
 		}
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }
 
 // srcGrep runs fixed-string searches over a provider checkout at a ref via

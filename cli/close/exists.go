@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"text/template"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -106,8 +108,8 @@ func existsArgAsked(arg string, words map[string]bool) bool {
 
 // ExistsOpts configures the exists audit and its apply modes.
 type ExistsOpts struct {
-	Link            string // resource | property ("" = both classes)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // resource | property ("" = both classes)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // existsEvidence is one shipped thing that appears to deliver the ask.
@@ -150,7 +152,7 @@ type existsFinding struct {
 // arrived after the ask, or a property the request names shipped in a later
 // release. The AI judges whether what shipped actually delivers the specific
 // request; the apply modes close as completed with the good news.
-func (f *FlagData) Exists(link string) error {
+func (f *Flags) Exists(link string) error {
 	o := ExistsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -175,7 +177,7 @@ func (f *FlagData) Exists(link string) error {
 
 	cout.Printf("\n<bold>%d of %d requests appear to already exist in the provider:</>\n", len(findings), enh)
 	for _, c := range []struct{ class, tag string }{
-		{classExistsResource, tagGreen}, {classExistsProperty, tagLightBlue},
+		{classExistsResource, cli.TagGreen}, {classExistsProperty, cli.TagLightBlue},
 	} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-10s</> <yellow>%d</>\n", c.tag, c.class, n)
@@ -202,7 +204,7 @@ func (f *FlagData) Exists(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passExists, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b existsFinding) int {
@@ -229,7 +231,7 @@ func (f *FlagData) Exists(link string) error {
 	for n := range findings {
 		f.printExistsCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi exists --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close exists --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -239,7 +241,7 @@ func (f *FlagData) Exists(link string) error {
 // The third return is how many open ENHANCEMENT requests were considered —
 // the check only ever looks at those, so every open issue is the wrong
 // denominator to report findings against.
-func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFinding, counts map[string]int, enh int, err error) {
+func (f *Flags) collectExists(d *db.DB, link string) (findings []existsFinding, counts map[string]int, enh int, err error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, nil, 0, err
@@ -565,7 +567,7 @@ func registryDocURL(kind, name string) string {
 // applyExists is both apply modes on the shared harness: plain --apply
 // closes everything listed; --apply-with-ai[-auto] gates each close on the
 // judge.
-func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts, withAI bool) error {
+func (f *Flags) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts, withAI bool) error {
 	if !withAI {
 		// nothing here confirms the hypothesis that an unlabelled issue is a
 		// request, so those wait for an AI mode rather than closing on a guess
@@ -595,17 +597,17 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts,
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneExists(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "delivered requests"
 	p.GateLabel = "delivered"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> requests as completed in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close requests the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> requests as completed in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close requests the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -615,17 +617,17 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts,
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passExists, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passExists, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
 
 // closeOneExists handles one candidate: card, the good-news comment, and the
 // close as completed (or preview under dry-run, or the a/s ask).
-func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printExistsCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -655,7 +657,7 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -706,7 +708,7 @@ func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v 
 }
 
 // renderExistsComment renders the good-news close citing the best evidence.
-func (f *FlagData) renderExistsComment(fdg *existsFinding) (string, error) {
+func (f *Flags) renderExistsComment(fdg *existsFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateExistsClose)
 	if err != nil {
 		return "", err
@@ -742,7 +744,7 @@ func (f *FlagData) renderExistsComment(fdg *existsFinding) (string, error) {
 
 // existsJudgeItems renders one judge block per finding: the request's
 // substance and everything that shipped which appears to deliver it.
-func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string, []issue.JudgeItem, error) {
+func (f *Flags) existsJudgeItems(d *db.DB, findings []existsFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptExists)
 	if err != nil {
 		return "", nil, err
@@ -762,12 +764,12 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 			b.WriteString("KIND UNKNOWN: nothing labels this issue. Judge first whether it is a REQUEST for something at all — a bug report, a question or a discussion is not a request and scores 0.\n")
 		}
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "REQUEST BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "REQUEST COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		b.WriteString("WHAT SHIPPED THAT APPEARS TO DELIVER IT:\n")
@@ -800,10 +802,10 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 
 // printExistsCard is one candidate: the request and everything that shipped
 // which appears to deliver it, with the AI's score when judged.
-func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printExistsCard(fdg *existsFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	if fdg.kindUnconfirmed {
 		cout.Printf("      <yellow>unlabelled — carried as a probable request, the AI confirms it</>\n")
 	}
@@ -831,5 +833,5 @@ func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *issue.
 			cout.Printf("        <gray>the ask:</> %s\n", e.quote)
 		}
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }

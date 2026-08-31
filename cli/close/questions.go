@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -45,8 +47,8 @@ var questionsClassRank = map[string]int{classQAnswered: 1, classQDead: 0}
 
 // QuestionsOpts configures the questions audit and its apply modes.
 type QuestionsOpts struct {
-	Link            string // answered | dead ("" = both)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // answered | dead ("" = both)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // questionsFinding is one open question whose thread says it is done with:
@@ -71,7 +73,7 @@ func questionsBot(author string) bool {
 // resolve the ask, did the asker push back after it, is this a bug report
 // wearing a question label — before blessing a close. Answered closes as
 // completed citing the answer; dead closes as not planned.
-func (f *FlagData) Questions(link string) error {
+func (f *Flags) Questions(link string) error {
 	o := QuestionsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -97,8 +99,8 @@ func (f *FlagData) Questions(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open questions look done with:</>\n", len(findings), col.questions)
 	for _, c := range []struct{ class, tag, desc string }{
-		{classQAnswered, tagGreen, "a reply looks like the answer and the thread settled"},
-		{classQDead, tagOrange, "no substantive reply, quiet for over a year"},
+		{classQAnswered, cli.TagGreen, "a reply looks like the answer and the thread settled"},
+		{classQDead, cli.TagOrange, "no substantive reply, quiet for over a year"},
 	} {
 		if n := col.counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-9s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
@@ -126,7 +128,7 @@ func (f *FlagData) Questions(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b questionsFinding) int {
@@ -153,7 +155,7 @@ func (f *FlagData) Questions(link string) error {
 	for n := range findings {
 		f.printQuestionsCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi questions --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close questions --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -173,7 +175,7 @@ type questionsCollection struct {
 // quiet long enough for the asker to have disputed it, or dead (no substantive
 // reply and over a year of silence). Anything with recent activity is a live
 // conversation and stays out.
-func (f *FlagData) collectQuestions(d *db.DB, link string) (*questionsCollection, error) {
+func (f *Flags) collectQuestions(d *db.DB, link string) (*questionsCollection, error) {
 	col := &questionsCollection{counts: map[string]int{}, protected: map[string]int{}}
 	issues, err := d.OpenIssues()
 	if err != nil {
@@ -256,7 +258,7 @@ func (f *FlagData) collectQuestions(d *db.DB, link string) (*questionsCollection
 // closes everything listed; --apply-with-ai[-auto] gates each close on the
 // judge and is the recommended path (the candidate answer is only a guess
 // until the AI reads the thread).
-func (f *FlagData) applyQuestions(d *db.DB, findings []questionsFinding, o QuestionsOpts, withAI bool) error {
+func (f *Flags) applyQuestions(d *db.DB, findings []questionsFinding, o QuestionsOpts, withAI bool) error {
 	byNumber := map[int]*questionsFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -268,17 +270,17 @@ func (f *FlagData) applyQuestions(d *db.DB, findings []questionsFinding, o Quest
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneQuestions(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "questions that look done with"
 	p.GateLabel = "closeable"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> questions in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close questions the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> questions in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close questions the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -288,7 +290,7 @@ func (f *FlagData) applyQuestions(d *db.DB, findings []questionsFinding, o Quest
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passQuestions, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passQuestions, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -296,10 +298,10 @@ func (f *FlagData) applyQuestions(d *db.DB, findings []questionsFinding, o Quest
 // closeOneQuestions handles one candidate: card, the questions-close comment
 // (citing the answer for the answered class), and the close — completed when
 // answered, not planned when dead.
-func (f *FlagData) closeOneQuestions(d *db.DB, repo gh.Repo, fdg *questionsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneQuestions(d *db.DB, repo gh.Repo, fdg *questionsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printQuestionsCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -334,7 +336,7 @@ func (f *FlagData) closeOneQuestions(d *db.DB, repo gh.Repo, fdg *questionsFindi
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -386,7 +388,7 @@ func (f *FlagData) closeOneQuestions(d *db.DB, repo gh.Repo, fdg *questionsFindi
 
 // renderQuestionsComment renders the close comment: answered cites the answer
 // with a deep link, dead gets the gentle staleness wording.
-func (f *FlagData) renderQuestionsComment(fdg *questionsFinding) (string, error) {
+func (f *Flags) renderQuestionsComment(fdg *questionsFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateQuestionsClose)
 	if err != nil {
 		return "", err
@@ -414,8 +416,8 @@ func (f *FlagData) renderQuestionsComment(fdg *questionsFinding) (string, error)
 // questionsJudgeItems renders one judge block per finding: the question, its
 // class, the candidate answer with the author's standing, and the thread
 // digest so the AI can spot pushback after the answer or a bug in disguise.
-func (f *FlagData) questionsJudgeItems(d *db.DB, findings []questionsFinding) (string, []issue.JudgeItem, error) {
-	promptText, err := f.preparePrompt(promptQuestions)
+func (f *Flags) questionsJudgeItems(d *db.DB, findings []questionsFinding) (string, []issue.JudgeItem, error) {
+	promptText, err := f.PreparePrompt(promptQuestions)
 	if err != nil {
 		return "", nil, err
 	}
@@ -433,7 +435,7 @@ func (f *FlagData) questionsJudgeItems(d *db.DB, findings []questionsFinding) (s
 		fmt.Fprintf(&b, "asked by @%s, opened %s, last activity %s\n",
 			fdg.issue.Author, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
 		fmt.Fprintf(&b, "CLASS: %s\n", strings.ToUpper(fdg.class))
-		fmt.Fprintf(&b, "QUESTION BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "QUESTION BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		if fdg.answer != nil {
 			fmt.Fprintf(&b, "CANDIDATE ANSWER by %s (%s) on %s:\n%s\n",
 				fdg.answer.Author, fdg.answer.AuthorAssociation, fdg.answer.CreatedAt.Format("2006-01-02"),
@@ -445,7 +447,7 @@ func (f *FlagData) questionsJudgeItems(d *db.DB, findings []questionsFinding) (s
 			fmt.Fprintf(&b, "THREAD (%d of %d comments — watch for pushback AFTER the candidate answer):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
@@ -455,10 +457,10 @@ func (f *FlagData) questionsJudgeItems(d *db.DB, findings []questionsFinding) (s
 
 // printQuestionsCard is one candidate: the question, its thread's state, the
 // candidate answer with the author's standing, and the AI's score when judged.
-func (f *FlagData) printQuestionsCard(fdg *questionsFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printQuestionsCard(fdg *questionsFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	now := time.Now()
 	cout.Printf("      <gray>asked by</> @%s <gray>%s ago · quiet for %s · %d replies</>\n",
 		fdg.issue.Author, text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now), fdg.replies)
@@ -474,5 +476,5 @@ func (f *FlagData) printQuestionsCard(fdg *questionsFinding, pos, total int, v *
 	} else {
 		cout.Printf("      <fg=208>no substantive replies at all</>\n")
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }

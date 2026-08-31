@@ -1,4 +1,4 @@
-package cli
+package milestone
 
 import (
 	"encoding/csv"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
@@ -18,7 +20,7 @@ import (
 // release's milestone. This inverts the issue audit — the changelog is the
 // ground truth of what shipped where, and it covers exactly the PRs that need
 // milestones without walking the repository's full PR history.
-func (f *FlagData) ChangelogCheck() error {
+func (f *Flags) ChangelogCheck() error {
 	o := MilestoneOpts{FlagsMilestone: f.Cmd.MS, FlagsApplyModes: f.Modes}
 	d, err := f.OpenDB()
 	if err != nil {
@@ -95,14 +97,14 @@ func (f *FlagData) ChangelogCheck() error {
 		if current == "" {
 			current = "(none)"
 		}
-		target, note := orDash(fdg.expected), ""
+		target, note := cli.OrDash(fdg.expected), ""
 		if fdg.expected == "" && fdg.wanted != "" {
 			target = fdg.wanted
 			note = fmt.Sprintf(" <red>no %s milestone — create it to fix</>", fdg.wanted)
 		}
 		cout.Printf("  <gray>%-14s</> <cyan>#%d</> %s → <lightMagenta>%s</> <gray>(cited in the %s changelog)</>%s %s <darkGray>%s</>\n",
 			fdg.bucket, fdg.pr.Number, current, target, joinVersions(fdg.versions), note,
-			text.TruncateRunes(fdg.pr.Title, 60), f.prURL(fdg.pr.Number))
+			text.TruncateRunes(fdg.pr.Title, 60), f.PRURL(fdg.pr.Number))
 	}
 	if o.Bucket == "" && len(findings) > 10 {
 		cout.Printf("<gray>(showing up to 10 per bucket — use</> <cyan>--csv</> <gray>for the full list,</> <cyan>--bucket <name></> <gray>for one bucket)</>\n")
@@ -172,7 +174,7 @@ func auditChangelogPR(pr *db.MSPR, versions []string, milestones map[string]db.M
 
 // fetchChangelogPRs fills the PR cache for every changelog-cited number not yet
 // known (all of them with rescan), 50 per aliased query.
-func (f *FlagData) fetchChangelogPRs(d *db.DB, prVersions map[int][]string, cache map[int]db.MSPR, rescan bool) error {
+func (f *Flags) fetchChangelogPRs(d *db.DB, prVersions map[int][]string, cache map[int]db.MSPR, rescan bool) error {
 	var need []int
 	for _, pr := range text.SortedKeys(prVersions) {
 		if _, ok := cache[pr]; !ok || rescan {
@@ -242,7 +244,7 @@ func printCheckedPR(pos, total int, p *db.MSPR) {
 // ground truth of what shipped where, so the citing release overwrites a
 // differing milestone. MERGED PRs only, and only where a citing release has a
 // milestone to point at.
-func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
+func (f *Flags) applyPRMilestones(d *db.DB, findings []prFinding, milestones map[string]db.Milestone, o MilestoneOpts) error {
 	var todo []prFinding
 	for _, fdg := range findings {
 		switch {
@@ -266,9 +268,9 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		return err
 	}
 
-	cout.Printf("setting milestones on <yellow>%d</> PRs in %s%s\n", len(todo), f.repoTag(), issue.DryRunTag(f.DryRun))
+	cout.Printf("setting milestones on <yellow>%d</> PRs in %s%s\n", len(todo), f.RepoTag(), issue.DryRunTag(f.DryRun))
 	if !f.DryRun && !f.Yes {
-		ok, err := issue.Confirm(fmt.Sprintf("set milestones on <yellow>%d</> PRs in %s?", len(todo), f.repoTag()))
+		ok, err := issue.Confirm(fmt.Sprintf("set milestones on <yellow>%d</> PRs in %s?", len(todo), f.RepoTag()))
 		if err != nil {
 			return err
 		}
@@ -278,12 +280,12 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 		}
 	}
 
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 	applied, failed := 0, 0
 	for n, fdg := range todo {
 		version := normalizeMilestone(fdg.expected)
 		cout.Printf("  <gray>%d/%d</> <cyan>#%d</> <bold>%s</> <darkGray>%s</>\n",
-			n+1, len(todo), fdg.pr.Number, text.TruncateRunes(fdg.pr.Title, 90), f.prURL(fdg.pr.Number))
+			n+1, len(todo), fdg.pr.Number, text.TruncateRunes(fdg.pr.Title, 90), f.PRURL(fdg.pr.Number))
 		bullet, err := d.ChangelogTextFor(version, fdg.pr.Number)
 		if err != nil {
 			return err
@@ -324,7 +326,7 @@ func (f *FlagData) applyPRMilestones(d *db.DB, findings []prFinding, milestones 
 	return nil
 }
 
-func (f *FlagData) writeChangelogCheckCSV(path string, findings []prFinding) error {
+func (f *Flags) writeChangelogCheckCSV(path string, findings []prFinding) error {
 	out, err := os.Create(path) //nolint:gosec // G304: user-chosen output path is the point
 	if err != nil {
 		return fmt.Errorf("creating %s: %w", path, err)
@@ -332,14 +334,14 @@ func (f *FlagData) writeChangelogCheckCSV(path string, findings []prFinding) err
 	defer func() { _ = out.Close() }()
 
 	w := csv.NewWriter(out)
-	if err := w.Write([]string{csvColNumber, "bucket", "state", "current_milestone", "expected_milestone", "cited_in", csvColTitle, csvColURL}); err != nil {
+	if err := w.Write([]string{cli.CSVColNumber, "bucket", "state", "current_milestone", "expected_milestone", "cited_in", cli.CSVColTitle, cli.CSVColURL}); err != nil {
 		return fmt.Errorf("writing csv header: %w", err)
 	}
 	for i := range findings {
 		fdg := &findings[i]
 		row := []string{
 			strconv.Itoa(fdg.pr.Number), fdg.bucket, fdg.pr.State, fdg.pr.Milestone, fdg.expected,
-			joinVersions(fdg.versions), text.OneLine(fdg.pr.Title), f.prURL(fdg.pr.Number),
+			joinVersions(fdg.versions), text.OneLine(fdg.pr.Title), f.PRURL(fdg.pr.Number),
 		}
 		if err := w.Write(row); err != nil {
 			return fmt.Errorf("writing csv row: %w", err)

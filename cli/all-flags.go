@@ -1,3 +1,7 @@
+// Package cli is koi's shared core: the flag data every command reads and the
+// judge/apply/fetch plumbing the commands ride. The commands themselves live
+// in the subpackages — cli/koi (root-level), cli/close (the checks),
+// cli/milestone, cli/label — and main.go assembles the tree.
 package cli
 
 import (
@@ -20,9 +24,22 @@ import (
 // viper keys shared between flag registration, env binding, and the
 // ValidateParams PreRunE lists in all-cmds.go.
 const (
-	paramTokenGH = "token-gh"
-	paramRepo    = "repo"
+	ParamTokenGH = "token-gh"
+	ParamRepo    = "repo"
 )
+
+// ValidateParams returns a PreRunE ensuring the named viper keys are non-empty.
+func ValidateParams(params []string) func(cmd *cobra.Command, args []string) error {
+	return func(_ *cobra.Command, _ []string) error {
+		for _, p := range params {
+			if viper.GetString(p) != "" {
+				continue
+			}
+			return errors.New(p + " parameter can't be empty")
+		}
+		return nil
+	}
+}
 
 type FlagData struct {
 	GH FlagsGitHub `mapstructure:",squash"`
@@ -119,12 +136,12 @@ type FlagsApplyModes struct {
 	Max             int     `mapstructure:"max"`                      // cap on mutations per run
 }
 
-func configureFlags(root *cobra.Command) error {
+func ConfigureFlags(root *cobra.Command) error {
 	pflags := root.PersistentFlags()
 
 	// GitHub Flags (FlagsGitHub)
-	pflags.String(paramTokenGH, "", "github token (consider exporting to GITHUB_TOKEN instead)")
-	pflags.StringP(paramRepo, "r", "hashicorp/terraform-provider-azurerm", "the owner/name of the repository to triage")
+	pflags.String(ParamTokenGH, "", "github token (consider exporting to GITHUB_TOKEN instead)")
+	pflags.StringP(ParamRepo, "r", "hashicorp/terraform-provider-azurerm", "the owner/name of the repository to triage")
 
 	// AI Flags (FlagsAI)
 	pflags.Bool("ai", true, "use an AI CLI to judge the candidates each check finds")
@@ -145,9 +162,9 @@ func configureFlags(root *cobra.Command) error {
 	// Apply-mode Flags (FlagsApplyModes) — shared by the checks, milestone, and apply
 	pflags.Bool("apply", false, "act on the evidence with no AI: checks close everything they list, milestone sets every determined milestone")
 	pflags.Bool("apply-with-ai", false, "the AI scores each candidate, you confirm each one interactively")
-	pflags.Float64("apply-with-ai-auto", judgeThreshold, fmt.Sprintf(
-		"act on what the AI scores at or above this confidence (bare flag = %.2f, or --apply-with-ai-auto=0.85)", judgeThreshold))
-	pflags.Lookup("apply-with-ai-auto").NoOptDefVal = fmt.Sprintf("%g", judgeThreshold)
+	pflags.Float64("apply-with-ai-auto", JudgeThreshold, fmt.Sprintf(
+		"act on what the AI scores at or above this confidence (bare flag = %.2f, or --apply-with-ai-auto=0.85)", JudgeThreshold))
+	pflags.Lookup("apply-with-ai-auto").NoOptDefVal = fmt.Sprintf("%g", JudgeThreshold)
 	pflags.Int("max", 50, "maximum mutations (closes, milestone sets) to apply this run")
 
 	// Output Flags
@@ -157,8 +174,8 @@ func configureFlags(root *cobra.Command) error {
 
 	// binding map for viper/pflag -> env vars (first entry wins when multiple are set)
 	m := map[string][]string{
-		paramTokenGH:         {"GITHUB_TOKEN"},
-		paramRepo:            {"KOI_REPO"},
+		ParamTokenGH:         {"GITHUB_TOKEN"},
+		ParamRepo:            {"KOI_REPO"},
 		"ai":                 {"KOI_AI"},
 		"ai-cmd":             {"KOI_AI_CMD"},
 		"ai-model":           {"KOI_AI_MODEL"},
@@ -208,11 +225,11 @@ func configureFlags(root *cobra.Command) error {
 	return nil
 }
 
-// bindCommandFlags merges the executing command's flags into viper so
+// BindCommandFlags merges the executing command's flags into viper so
 // GetFlags sees them alongside the root flags configureFlags bound. Binding
 // happens per run and only for the command actually executing, which is what
 // lets same-named flags on different commands keep their own defaults.
-func bindCommandFlags(cmd *cobra.Command) error {
+func BindCommandFlags(cmd *cobra.Command) error {
 	if err := viper.BindPFlags(cmd.Flags()); err != nil {
 		return fmt.Errorf("binding %s flags: %w", cmd.Name(), err)
 	}
@@ -227,54 +244,6 @@ func bindCommandFlags(cmd *cobra.Command) error {
 // Per-command flag registration. These live here with their FlagsCommands
 // structs so every flag koi accepts is declared in this file; cmds.go only
 // builds the command tree.
-
-func addFetchFlags(cmd *cobra.Command) {
-	cmd.Flags().Bool("full", false, "force a full re-walk instead of an incremental sync")
-}
-
-func addReviewFlags(cmd *cobra.Command) {
-	f := cmd.Flags()
-	f.String("reason", "", "only review proposals with this reason code")
-	f.String("action", "close", "which proposals to review: close, keep, human, or all")
-	f.Float64("min-confidence", 0, "only review proposals at or above this confidence")
-	f.Int("limit", 0, "max proposals to review this session (0 = all)")
-	f.Bool("approve-all", false, "bulk-approve everything matching the filters (confirms first)")
-}
-
-func addReportFlags(cmd *cobra.Command) {
-	// --out is persistent so report subcommands (actions-taken) share it
-	cmd.PersistentFlags().String("out", "report", "directory to write the report files into")
-	cmd.Flags().Bool("with-ai", false, "AI-score every candidate (cached verdicts reused) and sort surest first")
-	cmd.Flags().Int("limit", 0, "cap candidates per check for a cheap test run (0 = all)")
-}
-
-func addApplyFlags(cmd *cobra.Command) {
-	cmd.Flags().String("reason", "", "only apply approved actions with this reason code")
-}
-
-func addReopenFlags(cmd *cobra.Command) {
-	cmd.Flags().String("comment", "", "comment to post when reopening")
-}
-
-func addMilestoneFlags(cmd *cobra.Command) {
-	f := cmd.PersistentFlags()
-	f.Bool("skip-scan", false, "audit the existing scan data without re-fetching")
-	f.Bool("rescan", false, "force a full re-walk instead of an incremental scan")
-	f.String("csv", "", "write the full audit findings to this csv file")
-	f.String("bucket", "", "list every finding in one bucket (missing|mismatch|open-released|no-milestone)")
-}
-
-func addLegacyFlags(cmd *cobra.Command) {
-	cmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
-}
-
-func addProviderSrcFlags(cmd *cobra.Command) {
-	// persistent so class subcommands share them; also settable via .koi. Used
-	// by every check that reads a provider checkout (errors, docs) and report.
-	f := cmd.PersistentFlags()
-	f.String("provider-src", "", "path to a local git clone of the provider to read source and docs from")
-	f.String("provider-ref", "origin/main", "git ref of that clone to treat as the current source")
-}
 
 // GetFlags returns the fully populated FlagData.
 // We must unmarshal from Viper instead of using globally bound pflags variables
@@ -352,20 +321,20 @@ func (f *FlagData) Decider() string {
 	return "unknown"
 }
 
-// repoTag is the triaged repo coloured for display: white owner / cyan name.
-func (f *FlagData) repoTag() string {
+// RepoTag is the triaged repo coloured for display: white owner / cyan name.
+func (f *FlagData) RepoTag() string {
 	if owner, name, err := f.RepoOwnerName(); err == nil {
 		return fmt.Sprintf("<white>%s</>/<cyan>%s</>", owner, name)
 	}
 	return f.GH.Repo
 }
 
-// issueURL builds the web url for an issue in the triaged repo.
-func (f *FlagData) issueURL(number int) string {
+// IssueURL builds the web url for an issue in the triaged repo.
+func (f *FlagData) IssueURL(number int) string {
 	return fmt.Sprintf("https://github.com/%s/issues/%d", f.GH.Repo, number)
 }
 
-// prURL builds the web url for a PR in the triaged repo.
-func (f *FlagData) prURL(number int) string {
+// PRURL builds the web url for a PR in the triaged repo.
+func (f *FlagData) PRURL(number int) string {
 	return fmt.Sprintf("https://github.com/%s/pull/%d", f.GH.Repo, number)
 }

@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -39,8 +41,8 @@ var staleClassRank = map[string]int{classStaleAsked: 1, classStaleSaid: 0}
 
 // StaleOpts configures the stale audit and its apply modes.
 type StaleOpts struct {
-	Link            string // asked | said ("" = both)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // asked | said ("" = both)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // staleFinding is one open issue where a maintainer had the last word over a
@@ -58,9 +60,9 @@ type staleFinding struct {
 // came, or a conclusion (by design, upstream, out of scope) nobody disputed.
 // The AI reads what the maintainer actually said — a commitment ("we'll fix
 // this") is the opposite of closeable — before blessing a close as not
-// planned. Question-labelled issues belong to koi questions and are not
+// planned. Question-labelled issues belong to koi close questions and are not
 // touched here.
-func (f *FlagData) Stale(link string) error {
+func (f *Flags) Stale(link string) error {
 	o := StaleOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -86,8 +88,8 @@ func (f *FlagData) Stale(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open issues end on a maintainer's unanswered last word:</>\n", len(findings), col.open)
 	for _, c := range []struct{ class, tag, desc string }{
-		{classStaleAsked, tagGreen, "the maintainer asked for something that never came"},
-		{classStaleSaid, tagOrange, "the maintainer stated a position nobody disputed"},
+		{classStaleAsked, cli.TagGreen, "the maintainer asked for something that never came"},
+		{classStaleSaid, cli.TagOrange, "the maintainer stated a position nobody disputed"},
 	} {
 		if n := col.counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-6s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
@@ -115,7 +117,7 @@ func (f *FlagData) Stale(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passStale, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b staleFinding) int {
@@ -142,7 +144,7 @@ func (f *FlagData) Stale(link string) error {
 	for n := range findings {
 		f.printStaleCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi stale --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close stale --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -159,7 +161,7 @@ type staleCollection struct {
 // maintainer's comment (bots aside) left unanswered for over a year. The last
 // word must not be the reporter's own — a maintainer following up on their own
 // issue is just the reporter talking.
-func (f *FlagData) collectStale(d *db.DB, link string) (*staleCollection, error) {
+func (f *Flags) collectStale(d *db.DB, link string) (*staleCollection, error) {
 	col := &staleCollection{counts: map[string]int{}, protected: map[string]int{}}
 	issues, err := d.OpenIssues()
 	if err != nil {
@@ -177,7 +179,7 @@ func (f *FlagData) collectStale(d *db.DB, link string) (*staleCollection, error)
 		if s == nil {
 			s = &db.Signals{IssueNumber: i.Number}
 		}
-		// question threads ending on a maintainer reply are koi questions'
+		// question threads ending on a maintainer reply are koi close questions'
 		// answered class — one close path per issue
 		if s.Kind == signalKindQuestion {
 			continue
@@ -238,7 +240,7 @@ func (f *FlagData) collectStale(d *db.DB, link string) (*staleCollection, error)
 // everything listed; --apply-with-ai[-auto] gates each close on the judge
 // reading what the maintainer actually said, and is the recommended path — a
 // "we'll fix this" last word must never robo-close.
-func (f *FlagData) applyStale(d *db.DB, findings []staleFinding, o StaleOpts, withAI bool) error {
+func (f *Flags) applyStale(d *db.DB, findings []staleFinding, o StaleOpts, withAI bool) error {
 	byNumber := map[int]*staleFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -250,17 +252,17 @@ func (f *FlagData) applyStale(d *db.DB, findings []staleFinding, o StaleOpts, wi
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneStale(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "issues ending on a maintainer's unanswered last word"
 	p.GateLabel = "concluded"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as not planned in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -270,7 +272,7 @@ func (f *FlagData) applyStale(d *db.DB, findings []staleFinding, o StaleOpts, wi
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passStale, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passStale, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -278,10 +280,10 @@ func (f *FlagData) applyStale(d *db.DB, findings []staleFinding, o StaleOpts, wi
 // closeOneStale handles one candidate: card, the stale-close comment citing
 // the maintainer's last word, and the close as not planned (or preview under
 // dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneStale(d *db.DB, repo gh.Repo, fdg *staleFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneStale(d *db.DB, repo gh.Repo, fdg *staleFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printStaleCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -316,7 +318,7 @@ func (f *FlagData) closeOneStale(d *db.DB, repo gh.Repo, fdg *staleFinding, v *i
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -367,7 +369,7 @@ func (f *FlagData) closeOneStale(d *db.DB, repo gh.Repo, fdg *staleFinding, v *i
 
 // renderStaleComment renders the close comment citing the maintainer's last
 // word with a deep link.
-func (f *FlagData) renderStaleComment(fdg *staleFinding) (string, error) {
+func (f *Flags) renderStaleComment(fdg *staleFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateStaleClose)
 	if err != nil {
 		return "", err
@@ -392,8 +394,8 @@ func (f *FlagData) renderStaleComment(fdg *staleFinding) (string, error) {
 // staleJudgeItems renders one judge block per finding: the issue, its class,
 // the maintainer's last word in full, and the thread digest so the AI can see
 // what led up to it — and above all what the last word actually was.
-func (f *FlagData) staleJudgeItems(d *db.DB, findings []staleFinding) (string, []issue.JudgeItem, error) {
-	promptText, err := f.preparePrompt(promptStale)
+func (f *Flags) staleJudgeItems(d *db.DB, findings []staleFinding) (string, []issue.JudgeItem, error) {
+	promptText, err := f.PreparePrompt(promptStale)
 	if err != nil {
 		return "", nil, err
 	}
@@ -411,7 +413,7 @@ func (f *FlagData) staleJudgeItems(d *db.DB, findings []staleFinding) (string, [
 		fmt.Fprintf(&b, "reported by @%s, opened %s, last activity %s\n",
 			fdg.issue.Author, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
 		fmt.Fprintf(&b, "CLASS: %s\n", strings.ToUpper(fdg.class))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		fmt.Fprintf(&b, "THE MAINTAINER'S LAST WORD, unanswered since, by %s (%s) on %s:\n%s\n",
 			fdg.last.Author, fdg.last.AuthorAssociation, fdg.last.CreatedAt.Format("2006-01-02"),
 			text.TruncateRunes(issue.CleanBody(fdg.last.Body), 1500))
@@ -419,7 +421,7 @@ func (f *FlagData) staleJudgeItems(d *db.DB, findings []staleFinding) (string, [
 			fmt.Fprintf(&b, "THREAD (%d of %d comments):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
@@ -429,10 +431,10 @@ func (f *FlagData) staleJudgeItems(d *db.DB, findings []staleFinding) (string, [
 
 // printStaleCard is one candidate: the issue and the maintainer's last word
 // with how long it has hung, and the AI's score when judged.
-func (f *FlagData) printStaleCard(fdg *staleFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printStaleCard(fdg *staleFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	now := time.Now()
 	verb := "said"
 	if fdg.class == classStaleAsked {
@@ -450,5 +452,5 @@ func (f *FlagData) printStaleCard(fdg *staleFinding, pos, total int, v *issue.Ve
 	cout.Printf("      %s <gray>%s %s ago, unanswered since</>%s<gray>:</>\n", who, verb, text.HumanAge(fdg.last.CreatedAt, now), at)
 	cout.Printf("      <gray>“</>%s<gray>”</> <darkGray>%s</>\n",
 		text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.last.Body)), 160), fdg.last.URL)
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }

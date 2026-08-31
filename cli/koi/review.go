@@ -1,4 +1,4 @@
-package cli
+package koi
 
 import (
 	"fmt"
@@ -13,7 +13,7 @@ import (
 
 // Review walks proposals one card at a time. Every card carries the full
 // decision context; a decision should take seconds, not clicks.
-func (f *FlagData) Review() error {
+func (f *Flags) Review() error {
 	o := f.Cmd.Review
 	if o.Action == "all" {
 		o.Action = ""
@@ -25,7 +25,7 @@ func (f *FlagData) Review() error {
 	}
 	defer func() { _ = d.Close() }()
 
-	if err := f.ensureAnalysed(d); err != nil {
+	if err := f.EnsureAnalysed(d); err != nil {
 		return err
 	}
 
@@ -179,7 +179,7 @@ func printReviewHelp() {
 }
 
 // editAction lets the reviewer change the proposed action/reason before deciding.
-func (f *FlagData) editAction(d *db.DB, card *issue.Card) error {
+func (f *Flags) editAction(d *db.DB, card *issue.Card) error {
 	reasons := []struct {
 		reason, stateReason string
 	}{
@@ -221,7 +221,7 @@ func (f *FlagData) editAction(d *db.DB, card *issue.Card) error {
 	}
 }
 
-func (f *FlagData) previewTemplate(card *issue.Card) {
+func (f *Flags) previewTemplate(card *issue.Card) {
 	if card.Action.Action != db.ActionClose {
 		cout.Printf("  <gray>no template: not a close proposal</>\n")
 		return
@@ -235,7 +235,7 @@ func (f *FlagData) previewTemplate(card *issue.Card) {
 }
 
 // approveAll bulk-approves everything matching the filters after a summary + confirm.
-func (f *FlagData) approveAll(d *db.DB, actions []*db.Action) error {
+func (f *Flags) approveAll(d *db.DB, actions []*db.Action) error {
 	counts := map[string]int{}
 	for _, a := range actions {
 		counts[a.Action+"/"+a.Reason]++

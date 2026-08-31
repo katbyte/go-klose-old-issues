@@ -1,10 +1,12 @@
-package cli
+package close
 
 import (
 	"errors"
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/lib/cout"
 	"github.com/katbyte/koi/lib/db"
@@ -34,8 +36,8 @@ func isRequestLabel(l string) bool { return requestLabels[strings.ToLower(l)] }
 
 // LegacyOpts configures the legacy audit and its apply modes.
 type LegacyOpts struct {
-	Majors          []int // only bugs reported against these majors (empty = every legacy major)
-	FlagsApplyModes       // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Majors              []int // only bugs reported against these majors (empty = every legacy major)
+	cli.FlagsApplyModes       // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // legacyFinding is one closeable legacy bug: the issue, its signals, and the
@@ -56,7 +58,7 @@ type legacyFinding struct {
 // is on old issues) and scores whether closing as stale is right; the apply
 // modes close with the legacy-bug comment. Enhancements are a different
 // problem and are not touched here.
-func (f *FlagData) Legacy() error {
+func (f *Flags) Legacy() error {
 	o := LegacyOpts{Majors: f.Cmd.LegacyMajors, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -85,7 +87,7 @@ func (f *FlagData) Legacy() error {
 		cout.Printf("  <gray>%d of them are unlabelled and carried as probable bugs — the AI confirms the kind, so plain --apply skips them</>\n", col.unknownKind)
 	}
 	if col.divertedAsks > 0 {
-		cout.Printf("  <gray>%d more are unlabelled but read as requests —</> <cyan>koi exists</> <gray>territory, not this check's</>\n", col.divertedAsks)
+		cout.Printf("  <gray>%d more are unlabelled but read as requests —</> <cyan>koi close exists</> <gray>territory, not this check's</>\n", col.divertedAsks)
 	}
 	var majors []string
 	for m := 1; m <= col.maxMajor; m++ {
@@ -102,7 +104,7 @@ func (f *FlagData) Legacy() error {
 		cout.Printf("  <fg=208>protected</>        %s\n", strings.Join(parts, " <gray>·</> "))
 	}
 	if col.diverted > 0 {
-		cout.Printf("  <gray>fixed-merged-pr  %d (koi fixed closes these)</>\n", col.diverted)
+		cout.Printf("  <gray>fixed-merged-pr  %d (koi close fixed closes these)</>\n", col.diverted)
 	}
 	if len(findings) == 0 {
 		return nil
@@ -125,7 +127,7 @@ func (f *FlagData) Legacy() error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passLegacy, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b legacyFinding) int {
@@ -152,7 +154,7 @@ func (f *FlagData) Legacy() error {
 	for n := range findings {
 		f.printLegacyCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi legacy --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close legacy --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -162,17 +164,17 @@ type legacyCollection struct {
 	findings     []legacyFinding
 	byMajor      map[int]int
 	protected    map[string]int // keep reason → count
-	diverted     int            // fixed-merged-pr, koi fixed territory
+	diverted     int            // fixed-merged-pr, koi close fixed territory
 	legacyBugs   int            // every open bug/crash on a legacy major
 	unknownKind  int            // of those, ones the rules could not identify
-	divertedAsks int            // unlabelled but request-shaped: koi exists territory
+	divertedAsks int            // unlabelled but request-shaped: koi close exists territory
 	maxMajor     int            // newest legacy major (current-2)
 	open         int            // open-issue total
 }
 
 // collectLegacy builds the legacy findings: open bug/crash reports on legacy
 // majors that the keep rules cleared for closing, optionally scoped to majors.
-func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, error) {
+func (f *Flags) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, error) {
 	cfg := f.RuleConfig()
 	col := legacyCollection{byMajor: map[int]int{}, protected: map[string]int{}, maxMajor: cfg.CurrentMajor - 2}
 
@@ -201,7 +203,7 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 				continue
 			}
 			// an unlabelled issue that READS as a request is not this check's
-			// problem: koi exists takes those on the same hypothesis, and a
+			// problem: koi close exists takes those on the same hypothesis, and a
 			// feature request closed as a stale bug is the wrong close
 			if existsAsk.MatchString(i.Title) || slices.ContainsFunc(i.Labels, isRequestLabel) {
 				col.divertedAsks++
@@ -224,7 +226,7 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 			col.protected[a.Reason]++
 			continue
 		case a.Reason == issue.ReasonFixedMergedPR:
-			col.diverted++ // koi fixed territory: a merged PR references it
+			col.diverted++ // koi close fixed territory: a merged PR references it
 			continue
 		case a.Reason != issue.ReasonLegacyBug:
 			continue
@@ -241,7 +243,7 @@ func (f *FlagData) collectLegacy(d *db.DB, onlyMajors []int) (legacyCollection, 
 // applyLegacy is both apply modes on the shared harness: plain --apply closes
 // every rules-cleared candidate; --apply-with-ai[-auto] gates each close on
 // the judge.
-func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts, withAI bool) error {
+func (f *Flags) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts, withAI bool) error {
 	if !withAI {
 		// nothing here confirms the hypothesis that an unlabelled issue is a
 		// bug, so those wait for an AI mode rather than being closed on a guess
@@ -271,9 +273,9 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts,
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneLegacy(d, repo, byNumber[n], v, pos, total, throttle, interactive)
@@ -281,8 +283,8 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts,
 	p.Noun = "legacy bugs"
 	p.GateLabel = "staleness"
 	p.AllMode = "<gray>closing everything the rules cleared</>"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> legacy bugs as not planned in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close legacy bugs the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> legacy bugs as not planned in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close legacy bugs the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -292,17 +294,17 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts,
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passLegacy, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passLegacy, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
 
 // closeOneLegacy handles one candidate: card, the legacy-bug comment, and the
 // close (or preview under dry-run, or the a/s ask when interactive).
-func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printLegacyCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -332,7 +334,7 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -372,31 +374,31 @@ func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v 
 
 // printLegacyCard is one candidate: the issue, its kind and version evidence,
 // engagement, and the AI's staleness score when judged.
-func (f *FlagData) printLegacyCard(fdg *legacyFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printLegacyCard(fdg *legacyFinding, pos, total int, v *issue.Verdict) {
 	i, s := fdg.issue, fdg.signals
-	kindTag, kind := tagOrange, s.Kind
+	kindTag, kind := cli.TagOrange, s.Kind
 	if s.Kind == signalKindCrash {
-		kindTag = tagRed
+		kindTag = cli.TagRed
 	}
 	if fdg.kindUnconfirmed {
-		kindTag, kind = tagYellow, "unlabelled, probably a bug"
+		kindTag, kind = cli.TagYellow, "unlabelled, probably a bug"
 	}
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
-		pos, total, i.Number, cout.StateTag(i.State), text.TruncateRunes(text.OneLine(i.Title), 90), f.issueURL(i.Number))
+		pos, total, i.Number, cout.StateTag(i.State), text.TruncateRunes(text.OneLine(i.Title), 90), f.IssueURL(i.Number))
 	cout.Printf("      <%s>%s</> <gray>on</> <lightMagenta>v%s</> <gray>(%s)</> <gray>· opened %s · last activity %s · 💬 %d · 👍 %d</>\n",
 		kindTag, kind, text.OrDefault(s.VersionFull, fmt.Sprintf("%d.x", s.VersionMajor)), s.VersionSource,
 		i.CreatedAt.Format("2006-01-02"), s.LastActivity.Format("2006-01-02"), i.CommentCount, i.ThumbsUp)
 	if s.VersionQuote != "" {
 		cout.Printf("      <gray>version evidence:</> %s\n", text.TruncateRunes(text.OneLine(s.VersionQuote), 100))
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }
 
 // legacyJudgeItems renders one judge block per candidate: the issue's body and
 // a digest of its comments — the comments are where "still happens on v5"
 // hides, so the AI reads them before blessing a close.
-func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string, []issue.JudgeItem, error) {
-	promptText, err := f.preparePrompt(promptLegacy)
+func (f *Flags) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string, []issue.JudgeItem, error) {
+	promptText, err := f.PreparePrompt(promptLegacy)
 	if err != nil {
 		return "", nil, err
 	}
@@ -420,14 +422,14 @@ func (f *FlagData) legacyJudgeItems(d *db.DB, findings []legacyFinding) (string,
 		}
 		fmt.Fprintf(&b, "kind: %s · opened %s · last activity %s\n",
 			kind, fdg.issue.CreatedAt.Format("2006-01-02"), fdg.signals.LastActivity.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 
 		picked := issue.DigestComments(comments, 8)
 		if len(picked) > 0 {
 			fmt.Fprintf(&b, "COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})

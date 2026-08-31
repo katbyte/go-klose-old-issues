@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"encoding/csv"
@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -100,7 +102,7 @@ type actionsData struct {
 // ActionsTaken writes actions-taken.html and actions-taken.csv: every issue koi
 // has closed (or tried to), the evidence that put it on the list, and the AI's
 // score, reasoning, and model for each one. Pure db history — it never fetches.
-func (f *FlagData) ActionsTaken() error {
+func (f *Flags) ActionsTaken() error {
 	out := f.Cmd.Report.Out
 	d, err := f.OpenDB()
 	if err != nil {
@@ -166,17 +168,17 @@ func (f *FlagData) ActionsTaken() error {
 
 // actionItem renders one action row: the issue it touched, the evidence that
 // listed it, and the AI verdict behind the decision.
-func (f *FlagData) actionItem(a *db.Action, titles map[int]string, verdicts map[string]map[int]*db.Verdict) actionItem {
+func (f *Flags) actionItem(a *db.Action, titles map[int]string, verdicts map[string]map[int]*db.Verdict) actionItem {
 	check := checkForAction(a)
 	item := actionItem{
-		Number: a.IssueNumber, URL: f.issueURL(a.IssueNumber),
+		Number: a.IssueNumber, URL: f.IssueURL(a.IssueNumber),
 		Title:       text.OneLine(titles[a.IssueNumber]),
 		Status:      a.Status,
 		StatusKind:  actionStatusKind(a.Status),
-		StateReason: orDash(a.StateReason),
+		StateReason: cli.OrDash(a.StateReason),
 		Reason:      a.Reason,
 		Check:       check,
-		Template:    orDash(a.Template),
+		Template:    cli.OrDash(a.Template),
 		DecidedBy:   a.DecidedBy,
 		Error:       a.Error,
 		appliedAt:   a.AppliedAt,
@@ -213,7 +215,7 @@ func (f *FlagData) actionItem(a *db.Action, titles map[int]string, verdicts map[
 
 // actionsData tallies the items and groups them into per-reason sections,
 // biggest first.
-func (f *FlagData) actionsData(items []actionItem) actionsData {
+func (f *Flags) actionsData(items []actionItem) actionsData {
 	data := actionsData{
 		Repo: f.GH.Repo, GeneratedAt: time.Now().Format("2006-01-02 15:04"), Total: len(items),
 	}
@@ -330,8 +332,8 @@ func writeActionsCSV(path string, items []actionItem) error {
 
 	w := csv.NewWriter(out)
 	if err := w.Write([]string{
-		csvColNumber, "status", "check", "reason", "state_reason", "template", "confidence",
-		"ai_model", "ai_reason", "evidence", "decided_by", "applied_at", "error", csvColTitle, csvColURL,
+		cli.CSVColNumber, "status", "check", "reason", "state_reason", "template", "confidence",
+		"ai_model", "ai_reason", "evidence", "decided_by", "applied_at", "error", cli.CSVColTitle, cli.CSVColURL,
 	}); err != nil {
 		return fmt.Errorf("writing csv header: %w", err)
 	}

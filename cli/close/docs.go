@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"context"
@@ -11,6 +11,8 @@ import (
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -66,16 +68,16 @@ type docsFinding struct {
 
 // DocsOpts configures the docs audit and its apply modes.
 type DocsOpts struct {
-	Src             string // local provider checkout to read
-	Ref             string // git ref treated as the current source
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Src                 string // local provider checkout to read
+	Ref                 string // git ref treated as the current source
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // Docs finds OPEN documentation issues whose page has been revised since the
 // report. Edits alone prove nothing — doc pages churn constantly — so the AI
 // reads the CURRENT page content against the issue's specific ask before
 // blessing a close; closes are completed, pointing at the updated page.
-func (f *FlagData) Docs() error {
+func (f *Flags) Docs() error {
 	o := DocsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -123,7 +125,7 @@ func (f *FlagData) Docs() error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b docsFinding) int {
@@ -150,7 +152,7 @@ func (f *FlagData) Docs() error {
 	for n := range findings {
 		f.printDocsCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi docs --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close docs --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
@@ -227,7 +229,7 @@ func resolveDocsPages(i *db.Issue, s *db.Signals, docs map[string]bool) []docsPa
 // pages with no edits since mean the complaint likely stands (skipped), pages
 // that are gone belong to the deprecated check, and pages revised since are
 // the candidates the judge reads.
-func (f *FlagData) collectDocs(d *db.DB, o DocsOpts) (*docsCollection, error) {
+func (f *Flags) collectDocs(d *db.DB, o DocsOpts) (*docsCollection, error) {
 	col := &docsCollection{protected: map[string]int{}}
 	issues, err := d.OpenIssues()
 	if err != nil {
@@ -314,7 +316,7 @@ func (f *FlagData) collectDocs(d *db.DB, o DocsOpts) (*docsCollection, error) {
 // everything listed (edits since the report prove nothing by themselves, so it
 // exists for pattern consistency); --apply-with-ai[-auto] gates each close on
 // the judge reading the current page and is the recommended path.
-func (f *FlagData) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withAI bool) error {
+func (f *Flags) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withAI bool) error {
 	byNumber := map[int]*docsFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -326,17 +328,17 @@ func (f *FlagData) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withA
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneDocs(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "documentation issues whose page moved on"
 	p.GateLabel = "addressed"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -346,7 +348,7 @@ func (f *FlagData) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withA
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocksBatch(d, passDocs, promptText, docsJudgeBatch, items, onReady, onBatch)
 		return jerr
 	})
 }
@@ -354,10 +356,10 @@ func (f *FlagData) applyDocs(d *db.DB, findings []docsFinding, o DocsOpts, withA
 // closeOneDocs handles one candidate: card, the docs-close comment citing the
 // most-edited page, and the close as completed (or preview under dry-run, or
 // the a/s ask when interactive).
-func (f *FlagData) closeOneDocs(d *db.DB, repo gh.Repo, fdg *docsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneDocs(d *db.DB, repo gh.Repo, fdg *docsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDocsCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -387,7 +389,7 @@ func (f *FlagData) closeOneDocs(d *db.DB, repo gh.Repo, fdg *docsFinding, v *iss
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -437,7 +439,7 @@ func (f *FlagData) closeOneDocs(d *db.DB, repo gh.Repo, fdg *docsFinding, v *iss
 }
 
 // renderDocsComment renders the close comment citing the most-edited page.
-func (f *FlagData) renderDocsComment(fdg *docsFinding) (string, error) {
+func (f *Flags) renderDocsComment(fdg *docsFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateDocsClose)
 	if err != nil {
 		return "", err
@@ -463,8 +465,8 @@ func (f *FlagData) renderDocsComment(fdg *docsFinding) (string, error) {
 // docsJudgeItems renders one judge block per finding: the issue's ask, the
 // thread digest, and the CURRENT content of the pages it concerns — reading
 // the page against the ask is the whole check.
-func (f *FlagData) docsJudgeItems(d *db.DB, findings []docsFinding, src, ref string) (string, []issue.JudgeItem, error) {
-	promptText, err := f.preparePrompt(promptDocs)
+func (f *Flags) docsJudgeItems(d *db.DB, findings []docsFinding, src, ref string) (string, []issue.JudgeItem, error) {
+	promptText, err := f.PreparePrompt(promptDocs)
 	if err != nil {
 		return "", nil, err
 	}
@@ -482,12 +484,12 @@ func (f *FlagData) docsJudgeItems(d *db.DB, findings []docsFinding, src, ref str
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		if picked := issue.DigestComments(comments, 8); len(picked) > 0 {
 			fmt.Fprintf(&b, "ISSUE COMMENTS (%d of %d):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		b.WriteString("DOC PAGES THE ISSUE CONCERNS:\n")
@@ -527,10 +529,10 @@ func (f *FlagData) docsJudgeItems(d *db.DB, findings []docsFinding, src, ref str
 
 // printDocsCard is one candidate: the issue and each page's movement since the
 // report, with the AI's score when judged.
-func (f *FlagData) printDocsCard(fdg *docsFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printDocsCard(fdg *docsFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	for _, p := range fdg.pages {
 		switch {
 		case !p.exists:
@@ -543,7 +545,7 @@ func (f *FlagData) printDocsCard(fdg *docsFinding, pos, total int, v *issue.Verd
 				p.lastEdit.Format("2006-01-02"), registryDocURL(p.kind, p.name))
 		}
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }
 
 // docsAskTokens pulls the terms an issue's ask is about — backticked tokens

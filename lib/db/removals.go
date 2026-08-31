@@ -15,7 +15,7 @@ const (
 
 // Removal is one removed or deprecated resource, data source, or property,
 // parsed from a major-version upgrade guide or a changelog DEPRECATIONS
-// bullet. koi deprecated scans open issues against this inventory.
+// bullet. koi close deprecated scans open issues against this inventory.
 type Removal struct {
 	Kind      string // resource | data-source | property
 	Resource  string // the azurerm_* name it belongs to
@@ -136,7 +136,7 @@ func (d *DB) ProviderDocs() (map[string]bool, error) {
 }
 
 // ChangelogLike returns every changelog entry whose text matches the LIKE
-// pattern — how koi exists finds the "New Resource"/"New Data Source" bullets.
+// pattern — how koi close exists finds the "New Resource"/"New Data Source" bullets.
 func (d *DB) ChangelogLike(pattern string) ([]ChangelogEntry, error) {
 	rows, err := d.Query("SELECT version, major, section, resource, text, pr_number FROM changelog WHERE text LIKE ?", pattern)
 	if err != nil {

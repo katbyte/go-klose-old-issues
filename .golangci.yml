@@ -66,9 +66,14 @@ linters:
     rules:
       # flag names ("repo", "build-type-id", ...) repeat across cobra/viper registration, env binding, and
       # validation lists by design; hoisting them into constants would just add indirection
-      - path: 'cli/(flags|cmds)\.go'
+      - path: 'cli/all-flags\.go|cli/(koi|close|milestone|label)/all-cmds\.go'
         linters:
           - goconst
+      # the package is named for its command (koi close); nothing in it calls the builtin
+      - path: 'cli/close/'
+        linters:
+          - predeclared
+        text: 'package name close'
       # table-driven tests repeat literal fixture values ("bug", "template", label names) by design;
       # constants would obscure what each case actually exercises
       - path: '_test\.go$'

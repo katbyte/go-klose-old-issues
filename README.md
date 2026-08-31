@@ -29,13 +29,19 @@ Each command asks one question about an open issue, from one kind of evidence:
 
 | command | the question | the evidence |
 |---|---|---|
-| `koi fixed` | a merged **PR** touches this — did it fix it? | code that shipped |
-| `koi resolved` | a linked **issue** was dealt with — does its outcome cover this one? | another ticket's fate |
-| `koi comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote |
-| `koi exists` | this **request** asks for something the provider already has — did it ship? | the docs + the changelog |
-| `koi legacy` | this **bug is old** (v1–v3) and nobody says it's still alive — close as stale? | version + silence |
-| `koi deprecated` | this references something that has been **removed** — is it moot now? | the upgrade guides |
+| `koi close fixed` | a merged **PR** touches this — did it fix it? | code that shipped |
+| `koi close resolved` | a linked **issue** was dealt with — does its outcome cover this one? | another ticket's fate |
+| `koi close duplicates` | this duplicates another **OPEN** issue — is it the same ask? | links + near-identical titles |
+| `koi close comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote |
+| `koi close questions` | this **question** was answered, or died unanswered long ago — close it out? | the thread's replies |
+| `koi close stale` | a **maintainer** had the last word a year+ ago and nobody answered — thread over? | the maintainer's own words |
+| `koi close exists` | this **request** asks for something the provider already has — did it ship? | the docs + the changelog |
+| `koi close legacy` | this **bug is old** (v1–v3) and nobody says it's still alive — close as stale? | version + silence |
+| `koi close errors` | the **error it quotes** no longer exists in the provider source — obsolete as written? | git grep, now and at the reported version |
+| `koi close docs` | its **doc page** has been revised since the report — addressed now? | the current page content |
+| `koi close deprecated` | this references something that has been **removed** — is it moot now? | the upgrade guides |
 | `koi milestone` | which release dealt with each issue/PR? (bookkeeping, not closing) | the changelog |
+| `koi label version` | its evidence names **affected versions** its labels don't record — label them? | reported versions + comment claims |
 
 Every check works the same way: evidence classes as subcommands (strongest first), an AI that judges the actual substance, and three apply modes — `--apply` acts on the evidence with no AI (combine with `--dry-run` to get a sense of the changes, `--apply-with-ai` shows each card with its score and asks you, `--apply-with-ai-auto[=t]` acts alone above a
 confidence threshold. Bare invocation is always a report; `--dry-run` previews any apply. The checks overlap on purpose: one issue can be seen by several, and whichever closes it first removes it from the others.
@@ -58,13 +64,19 @@ koi report --with-ai --limit 10   # AI-score a small slice per check first — c
 #   --apply              act on the evidence, no AI
 #   --apply-with-ai      card + score + (a)ccept (s)kip (p)review (o)pen (q)uit per issue
 #   --apply-with-ai-auto[=t]  unattended at or above a confidence
-koi fixed --apply-with-ai        # a merged PR references it — did it fix it?
-koi resolved --apply-with-ai     # it references a CLOSED issue — was that its answer?
-koi duplicates --apply-with-ai   # it duplicates another OPEN issue, linked or by title
-koi comments --apply-with-ai     # somebody in the thread says it can be closed
-koi exists --apply-with-ai       # the request already exists in the provider
-koi legacy --apply-with-ai       # old bug on v1–v3, nobody says it is still alive
-koi deprecated --apply-with-ai   # it leans on something that has been removed
+koi close fixed --apply-with-ai        # a merged PR references it — did it fix it?
+koi close resolved --apply-with-ai     # it references a CLOSED issue — was that its answer?
+koi close duplicates --apply-with-ai   # it duplicates another OPEN issue, linked or by title
+koi close comments --apply-with-ai     # somebody in the thread says it can be closed
+koi close questions --apply-with-ai    # the question was answered, or died unanswered
+koi close stale --apply-with-ai        # a maintainer's last word hung unanswered for a year+
+koi close exists --apply-with-ai       # the request already exists in the provider
+koi close legacy --apply-with-ai       # old bug on v1–v3, nobody says it is still alive
+koi close errors --apply-with-ai --provider-src ~/src/azurerm   # its quoted error is gone from the source
+koi close docs --apply-with-ai --provider-src ~/src/azurerm     # its doc page was revised since — addressed?
+koi close deprecated --apply-with-ai   # it leans on something that has been removed
+
+koi label version --apply-with-ai      # add the v/N.x labels the evidence supports (add-only)
 
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
 
@@ -74,17 +86,17 @@ koi milestone --skip-scan --apply-with-ai   # AI scores each issue↔evidence pa
 koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI scores at/above the threshold
 
 # every check takes its evidence classes as subcommands, strongest first:
-koi fixed mentioned-by --apply-with-ai      # one class only: comments cite the fix PR + shipped version
-koi duplicates similar --dry-run            # the unlinked half, preview only
-koi exists resource --apply-with-ai-auto=0.9  # only the asked-for resource now existing, above 0.90
-koi legacy --major 1 --apply --dry-run      # legacy scopes by major instead
-koi deprecated property --apply-with-ai     # removed properties, judged one at a time
+koi close fixed mentioned-by --apply-with-ai      # one class only: comments cite the fix PR + shipped version
+koi close duplicates similar --dry-run            # the unlinked half, preview only
+koi close exists resource --apply-with-ai-auto=0.9  # only the asked-for resource now existing, above 0.90
+koi close legacy --major 1 --apply --dry-run      # legacy scopes by major instead
+koi close deprecated property --apply-with-ai     # removed properties, judged one at a time
 
 koi cache                        # list the local db's caches and sizes
 koi cache clear ai               # drop AI verdicts (or issues|milestones|prs|texts|changelog|all)
 
-# the older rules-only path, still there for the close reasons no check covers
-# (stale-question, no-response, upstream-core):
+# the older rules-only path — superseded by the checks (questions covers
+# stale-question, stale covers no-response) and pending retirement:
 koi stats                        # the funnel: what can close, what keeps
 koi review                       # interactive card-by-card decisions over rules proposals
 koi review --reason legacy-bug --min-confidence 0.9 --approve-all   # bulk after spot-checking

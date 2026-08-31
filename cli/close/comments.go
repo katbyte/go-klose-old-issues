@@ -1,4 +1,4 @@
-package cli
+package close
 
 import (
 	"errors"
@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"text/template"
+
+	"github.com/katbyte/koi/cli"
 
 	"github.com/katbyte/koi/assets"
 	"github.com/katbyte/koi/lib/cout"
@@ -67,8 +69,8 @@ var commentsNegation = regexp.MustCompile(`(?:can'?t|can\s?not|cannot|shouldn'?t
 
 // CommentsOpts configures the closeable audit and its apply modes.
 type CommentsOpts struct {
-	Link            string // maintainer-says | community-says ("" = both)
-	FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
+	Link                string // maintainer-says | community-says ("" = both)
+	cli.FlagsApplyModes        // --apply / --apply-with-ai / --apply-with-ai-auto / --max
 }
 
 // commentsClaim is one comment asserting the issue can be closed.
@@ -97,9 +99,9 @@ type commentsFinding struct {
 func assocDisplay(assoc string) (tag, label string) {
 	switch assoc {
 	case "MEMBER", "OWNER", "COLLABORATOR":
-		return tagGreen, strings.ToLower(assoc)
+		return cli.TagGreen, strings.ToLower(assoc)
 	case "CONTRIBUTOR":
-		return tagLightBlue, "contributor"
+		return cli.TagLightBlue, "contributor"
 	case "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER":
 		return "white", "first-time"
 	default:
@@ -116,7 +118,7 @@ func maintainerAssoc(assoc string) bool {
 // like "this can be closed", "fixed in v3.27.0 by #18588", "no longer an
 // issue". The patterns surface the claims; the AI reads each claim in thread
 // context (negations, questions, later disputes) before blessing a close.
-func (f *FlagData) Comments(link string) error {
+func (f *Flags) Comments(link string) error {
 	o := CommentsOpts{Link: link, FlagsApplyModes: f.Modes}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
@@ -141,7 +143,7 @@ func (f *FlagData) Comments(link string) error {
 
 	cout.Printf("\n<bold>%d of %d open issues have a comment saying they can be closed:</>\n", len(findings), open)
 	for _, c := range []struct{ class, tag string }{
-		{classMaintainerSays, tagGreen}, {classCommunitySays, tagOrange},
+		{classMaintainerSays, cli.TagGreen}, {classCommunitySays, cli.TagOrange},
 	} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-16s</> <yellow>%d</>\n", c.tag, c.class, n)
@@ -168,7 +170,7 @@ func (f *FlagData) Comments(link string) error {
 		if jerr != nil {
 			return jerr
 		}
-		if verdicts, err = f.judgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
+		if verdicts, err = f.JudgeBlocks(d, passComments, promptText, items, nil, nil); err != nil {
 			return err
 		}
 		slices.SortStableFunc(findings, func(a, b commentsFinding) int {
@@ -195,12 +197,12 @@ func (f *FlagData) Comments(link string) error {
 	for n := range findings {
 		f.printCommentsCard(&findings[n], n+1, len(findings), verdicts[findings[n].issue.Number])
 	}
-	cout.Printf("\nnext: <cyan>koi comments --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
+	cout.Printf("\nnext: <cyan>koi close comments --apply --dry-run</> to preview the closes, <cyan>--apply-with-ai</> to confirm each, <cyan>--apply-with-ai-auto</> to trust the scores\n")
 	return nil
 }
 
 // collectComments scans every open issue's comments for closeable claims.
-func (f *FlagData) collectComments(d *db.DB, link string) (findings []commentsFinding, counts map[string]int, open int, err error) {
+func (f *Flags) collectComments(d *db.DB, link string) (findings []commentsFinding, counts map[string]int, open int, err error) {
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, nil, 0, err
@@ -308,7 +310,7 @@ func (f *FlagData) collectComments(d *db.DB, link string) (findings []commentsFi
 // applyComments is both apply modes on the shared harness: plain --apply
 // closes everything listed; --apply-with-ai[-auto] gates each close on the
 // judge.
-func (f *FlagData) applyComments(d *db.DB, findings []commentsFinding, o CommentsOpts, withAI bool) error {
+func (f *Flags) applyComments(d *db.DB, findings []commentsFinding, o CommentsOpts, withAI bool) error {
 	byNumber := map[int]*commentsFinding{}
 	numbers := make([]int, len(findings))
 	for i := range findings {
@@ -320,17 +322,17 @@ func (f *FlagData) applyComments(d *db.DB, findings []commentsFinding, o Comment
 	if err != nil {
 		return err
 	}
-	throttle := newThrottle()
+	throttle := cli.NewThrottle()
 
-	p := f.applyPass(o.FlagsApplyModes,
+	p := f.NewApplyPass(o.FlagsApplyModes,
 		func(n int) string { return byNumber[n].issue.Title },
 		func(n int, v *issue.Verdict, pos, total int, interactive bool) (int, error) {
 			return f.closeOneComments(d, repo, byNumber[n], v, pos, total, throttle, interactive)
 		})
 	p.Noun = "issues their threads call done"
 	p.GateLabel = "claim"
-	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.repoTag())
-	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.repoTag())
+	p.ConfirmAll = fmt.Sprintf("comment and close up to <yellow>%d</> issues as completed in %s?", len(findings), f.RepoTag())
+	p.ConfirmAI = fmt.Sprintf("comment and close issues the AI scores ≥ <green>%.2f</> (up to <yellow>%d</> candidates) in %s?", p.Threshold, len(findings), f.RepoTag())
 
 	if !withAI {
 		return p.ApplyAll(numbers)
@@ -340,17 +342,17 @@ func (f *FlagData) applyComments(d *db.DB, findings []commentsFinding, o Comment
 		if jerr != nil {
 			return jerr
 		}
-		_, jerr = f.judgeBlocks(d, passComments, promptText, items, onReady, onBatch)
+		_, jerr = f.JudgeBlocks(d, passComments, promptText, items, onReady, onBatch)
 		return jerr
 	})
 }
 
 // closeOneComments handles one candidate: card, the comment citing the claim,
 // and the close as completed (or preview under dry-run, or the a/s ask).
-func (f *FlagData) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
+func (f *Flags) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printCommentsCard(fdg, pos, total, v)
 
-	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+	if rejected, err := cli.RejectedInReview(d, fdg.issue.Number); err != nil {
 		return issue.ApplyFailed, err
 	} else if rejected {
 		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
@@ -380,7 +382,7 @@ func (f *FlagData) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding
 		cout.Errorf("      <red>fetching live state: %v</>\n", err)
 		return issue.ApplyFailed, nil
 	}
-	if live.State != restStateOpen {
+	if live.State != cli.RESTStateOpen {
 		cout.Printf("      <gray>already closed on github — skipped</>\n")
 		return issue.ApplySkipped, nil
 	}
@@ -433,7 +435,7 @@ func (f *FlagData) closeOneComments(d *db.DB, repo gh.Repo, fdg *commentsFinding
 var reClaimVersion = regexp.MustCompile(`v?(\d+\.\d+(?:\.\d+)?)`)
 
 // renderCommentsComment renders the close comment citing the best claim.
-func (f *FlagData) renderCommentsComment(fdg *commentsFinding) (string, error) {
+func (f *Flags) renderCommentsComment(fdg *commentsFinding) (string, error) {
 	tt, err := assets.CommentTemplate(templateCommentsClose)
 	if err != nil {
 		return "", err
@@ -468,7 +470,7 @@ func (f *FlagData) renderCommentsComment(fdg *commentsFinding) (string, error) {
 // commentsJudgeItems renders one judge block per finding: the issue's body,
 // every closeable claim with author standing and date, and a digest of the
 // rest of the thread so the AI can spot later disputes.
-func (f *FlagData) commentsJudgeItems(d *db.DB, findings []commentsFinding) (string, []issue.JudgeItem, error) {
+func (f *Flags) commentsJudgeItems(d *db.DB, findings []commentsFinding) (string, []issue.JudgeItem, error) {
 	promptText, err := assets.Prompt(promptComments)
 	if err != nil {
 		return "", nil, err
@@ -485,7 +487,7 @@ func (f *FlagData) commentsJudgeItems(d *db.DB, findings []commentsFinding) (str
 		var b strings.Builder
 		fmt.Fprintf(&b, "### Issue #%d: %s\n", fdg.issue.Number, text.OneLine(fdg.issue.Title))
 		fmt.Fprintf(&b, "opened %s, last activity %s\n", fdg.issue.CreatedAt.Format("2006-01-02"), fdg.issue.UpdatedAt.Format("2006-01-02"))
-		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), msIssueBodyRunes))
+		fmt.Fprintf(&b, "ISSUE BODY:\n%s\n", text.TruncateRunes(issue.CleanBody(fdg.issue.Body), cli.IssueBodyRunes))
 		b.WriteString("CLOSEABLE CLAIMS IN THE THREAD:\n")
 		for _, cl := range fdg.claims {
 			fmt.Fprintf(&b, "- [%s] %s (%s), \"%s\" pattern: %s\n",
@@ -499,7 +501,7 @@ func (f *FlagData) commentsJudgeItems(d *db.DB, findings []commentsFinding) (str
 			fmt.Fprintf(&b, "THREAD DIGEST (%d of %d comments — watch for disputes AFTER the claims):\n", len(picked), len(comments))
 			for _, c := range picked {
 				fmt.Fprintf(&b, "- [%s] %s (%s): %s\n", c.CreatedAt.Format("2006-01-02"), c.Author, c.AuthorAssociation,
-					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
+					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), cli.CommentRunes))
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
@@ -509,10 +511,10 @@ func (f *FlagData) commentsJudgeItems(d *db.DB, findings []commentsFinding) (str
 
 // printCommentsCard is one candidate: the issue, each claim with its author's
 // standing and a deep link, and the AI's score when judged.
-func (f *FlagData) printCommentsCard(fdg *commentsFinding, pos, total int, v *issue.Verdict) {
+func (f *Flags) printCommentsCard(fdg *commentsFinding, pos, total int, v *issue.Verdict) {
 	cout.Printf("\n  <gray>%d/%d</> <cyan>#%d</> %s <bold>%s</> <darkGray>%s</>\n",
 		pos, total, fdg.issue.Number, cout.StateTag(fdg.issue.State),
-		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.issueURL(fdg.issue.Number))
+		text.TruncateRunes(text.OneLine(fdg.issue.Title), 90), f.IssueURL(fdg.issue.Number))
 	shown := 0
 	for _, cl := range fdg.claims {
 		if shown == 4 {
@@ -532,5 +534,5 @@ func (f *FlagData) printCommentsCard(fdg *commentsFinding, pos, total int, v *is
 		cout.Printf("      %s <gray>%s ·</> <gray>“</>%s<gray>”</>%s <darkGray>%s</>\n",
 			who, cl.comment.CreatedAt.Format("2006-01-02"), cl.quote, pr, cl.comment.URL)
 	}
-	printMSVerdict(v)
+	cli.PrintVerdict(v)
 }

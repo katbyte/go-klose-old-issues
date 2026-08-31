@@ -12,12 +12,12 @@ import (
 	"github.com/katbyte/koi/lib/text"
 )
 
-// Apply-mode banner fragments.
-const (
-	modePreviewEveryClose = "<gray>previewing every close</>"
-	modeCloseEverything   = "<gray>closing everything listed</>"
-	modeConfirmEachClose  = "<gray>you confirm each close</>"
-)
+// Apply-mode banner fragments, worded around the pass's verb ("close" for
+// the checks, "label" for the labellers...).
+func modePreviewEvery(one string) string { return fmt.Sprintf("<gray>previewing every %s</>", one) }
+
+func modeEverything(verb string) string { return fmt.Sprintf("<gray>%s everything listed</>", verb) }
+func modeConfirmEach(one string) string { return fmt.Sprintf("<gray>you confirm each %s</>", one) }
 
 // DryRunTag marks a banner line when --dry-run is set.
 func DryRunTag(dryRun bool) string {
@@ -41,12 +41,18 @@ type JudgeFunc func(onReady func() (bool, error), onBatch func([]Judged) (bool, 
 // (the confidence gate, the counters, the confirms and the tally) lives in
 // ApplyAll/ApplyAI.
 type ApplyPass struct {
-	Noun       string // what the banner says is being closed ("duplicates", "legacy bugs", ...)
+	Noun       string // what the banner says is being acted on ("duplicates", "legacy bugs", ...)
 	GateLabel  string // what the gate tally calls its score ("match", "staleness", ...)
 	ConfirmAll string // plain --apply's confirm question
 	ConfirmAI  string // auto mode's confirm question
 	AllMode    string // optional override for plain apply's mode fragment
 	RepoTag    string
+
+	// the pass's verb forms, defaulting to the checks' close/closing/closed —
+	// the labellers set label/labelling/labelled.
+	One  string // "close": what one action is called
+	Verb string // "closing": the banner's present participle
+	Done string // "closed": the tally's past participle
 
 	DryRun    bool
 	Yes       bool
@@ -60,16 +66,32 @@ type ApplyPass struct {
 	Close    CloseFunc
 }
 
-// ApplyAll is plain --apply: close everything listed, no AI.
+// verbs fills the verb-form defaults in.
+func (p *ApplyPass) verbs() (one, verb, done string) {
+	one, verb, done = p.One, p.Verb, p.Done
+	if one == "" {
+		one = "close"
+	}
+	if verb == "" {
+		verb = "closing"
+	}
+	if done == "" {
+		done = "closed"
+	}
+	return one, verb, done
+}
+
+// ApplyAll is plain --apply: act on everything listed, no AI.
 func (p *ApplyPass) ApplyAll(numbers []int) error {
-	mode := modeCloseEverything
+	one, verb, _ := p.verbs()
+	mode := modeEverything(verb)
 	if p.AllMode != "" {
 		mode = p.AllMode
 	}
 	if p.DryRun {
-		mode = modePreviewEveryClose
+		mode = modePreviewEvery(one)
 	}
-	cout.Printf("closing <yellow>%d</> %s in %s <gray>·</> %s%s\n", len(numbers), p.Noun, p.RepoTag, mode, DryRunTag(p.DryRun))
+	cout.Printf("%s <yellow>%d</> %s in %s <gray>·</> %s%s\n", verb, len(numbers), p.Noun, p.RepoTag, mode, DryRunTag(p.DryRun))
 
 	if !p.DryRun && !p.Yes {
 		ok, err := Confirm(p.ConfirmAll)
@@ -99,12 +121,14 @@ func (p *ApplyPass) ApplyAll(numbers []int) error {
 			skipped++
 		}
 		if !p.DryRun && p.Max > 0 && closed >= p.Max {
-			cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", p.Max)
+			cout.Printf("<gray>--max reached: %d %s, skipping the rest</>\n", p.Max, p.doneWord())
 			break
 		}
 	}
-	return ApplySummary(p.DryRun, closed, skipped, 0, failed, previewed)
+	return p.summary(closed, skipped, 0, failed, previewed)
 }
+
+func (p *ApplyPass) doneWord() string { _, _, done := p.verbs(); return done }
 
 // ApplyAI is --apply-with-ai[-auto], pipelined on the shared judge: batch N's
 // candidates are reviewed and closed while batch N+1 is already off being
@@ -112,15 +136,16 @@ func (p *ApplyPass) ApplyAll(numbers []int) error {
 // overlaps judging.
 func (p *ApplyPass) ApplyAI(total int, judge JudgeFunc) error {
 	interactive := !p.Auto && !p.DryRun
+	one, verb, _ := p.verbs()
 
-	mode := modeConfirmEachClose
+	mode := modeConfirmEach(one)
 	switch {
 	case p.DryRun:
 		mode = fmt.Sprintf("<gray>previewing the ≥</> <green>%.2f</> <gray>gate</>", p.Threshold)
 	case p.Auto:
-		mode = fmt.Sprintf("<gray>auto-closing ≥</> <green>%.2f</>", p.Threshold)
+		mode = fmt.Sprintf("<gray>auto-%s ≥</> <green>%.2f</>", verb, p.Threshold)
 	}
-	cout.Printf("closing up to <yellow>%d</> %s in %s <gray>·</> %s%s\n", total, p.Noun, p.RepoTag, mode, DryRunTag(p.DryRun))
+	cout.Printf("%s up to <yellow>%d</> %s in %s <gray>·</> %s%s\n", verb, total, p.Noun, p.RepoTag, mode, DryRunTag(p.DryRun))
 
 	pos, closed, failed, previewed, humanSkipped, skipped, below, unanswered := 0, 0, 0, 0, 0, 0, 0, 0
 	process := func(ts []Judged) (bool, error) {
@@ -161,7 +186,7 @@ func (p *ApplyPass) ApplyAI(total int, judge JudgeFunc) error {
 					return true, nil
 				}
 				if !p.DryRun && p.Max > 0 && closed >= p.Max {
-					cout.Printf("<gray>--max reached: %d closed, skipping the rest</>\n", p.Max)
+					cout.Printf("<gray>--max reached: %d %s, skipping the rest</>\n", p.Max, p.doneWord())
 					return true, nil
 				}
 			}
@@ -185,23 +210,24 @@ func (p *ApplyPass) ApplyAI(total int, judge JudgeFunc) error {
 	if below+unanswered > 0 {
 		cout.Printf("\nAI %s gate: <fg=208>%d</> below %.2f · <yellow>%d</> unanswered\n", p.GateLabel, below, p.Threshold, unanswered)
 	}
-	return ApplySummary(p.DryRun, closed, skipped, humanSkipped, failed, previewed)
+	return p.summary(closed, skipped, humanSkipped, failed, previewed)
 }
 
-// ApplySummary is the closing tally for both apply modes.
-func ApplySummary(dryRun bool, closed, skipped, humanSkipped, failed, previewed int) error {
-	if dryRun {
-		cout.Printf("\n<yellow>dry-run:</> %d closes previewed, nothing changed\n", previewed)
-		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to close these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n")
+// summary is the tally for both apply modes, worded around the pass's verb.
+func (p *ApplyPass) summary(closed, skipped, humanSkipped, failed, previewed int) error {
+	one, _, done := p.verbs()
+	if p.DryRun {
+		cout.Printf("\n<yellow>dry-run:</> %d %ss previewed, nothing changed\n", previewed, one)
+		cout.Printf("<gray>drop</> <cyan>--dry-run</> <gray>to %s these, or switch to</> <cyan>--apply-with-ai</> <gray>to confirm each first</>\n", one)
 		return nil
 	}
-	line := fmt.Sprintf("\n<green>%d closed</> · %d already closed", closed, skipped)
+	line := fmt.Sprintf("\n<green>%d %s</> · %d skipped", closed, done, skipped)
 	if humanSkipped > 0 {
 		line += fmt.Sprintf(" · %d skipped by you", humanSkipped)
 	}
 	cout.Printf("%s · %d failed\n", line, failed)
 	if failed > 0 {
-		return fmt.Errorf("%d closes failed", failed)
+		return fmt.Errorf("%d %ss failed", failed, one)
 	}
 	return nil
 }

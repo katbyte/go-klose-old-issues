@@ -1,4 +1,4 @@
-package cli
+package koi
 
 import (
 	"fmt"
@@ -19,7 +19,7 @@ type cacheDomain struct {
 
 var cacheDomains = []cacheDomain{
 	{"ai", "AI verdicts from every check — cleared verdicts re-judge on the next run", []string{"ai_verdicts"}, nil},
-	{"issues", "fetched open issues, comments, crossrefs, and derived signals", []string{"issues", passComments, "crossrefs", "signals"}, []string{"fetch_cursor", "last_sync"}},
+	{"issues", "fetched open issues, comments, crossrefs, and derived signals", []string{"issues", "comments", "crossrefs", "signals"}, []string{"fetch_cursor", "last_sync"}},
 	{"milestones", "the milestone scan: all-issue light rows, fix links, and the milestone list", []string{"ms_issues", "ms_fixes", "milestones"}, []string{"ms_scan_cursor", "ms_last_scan"}},
 	{"prs", "changelog-cited PR details (changelog-check's cache)", []string{"ms_prs"}, nil},
 	{"texts", "full issue/PR titles + bodies fetched for the AI match check", []string{"texts"}, nil},
@@ -27,7 +27,7 @@ var cacheDomains = []cacheDomain{
 }
 
 // Cache lists the cache domains and their row counts, or clears one (or "all").
-func (f *FlagData) Cache(domain string) error {
+func (f *Flags) Cache(domain string) error {
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
