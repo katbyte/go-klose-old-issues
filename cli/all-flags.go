@@ -268,10 +268,11 @@ func addLegacyFlags(cmd *cobra.Command) {
 	cmd.Flags().IntSlice("major", nil, "only bugs reported against these majors, e.g. --major 2,3 (default: every legacy major)")
 }
 
-func addErrorsFlags(cmd *cobra.Command) {
-	// persistent so the class subcommands share them; also settable via .koi
+func addProviderSrcFlags(cmd *cobra.Command) {
+	// persistent so class subcommands share them; also settable via .koi. Used
+	// by every check that reads a provider checkout (errors, docs) and report.
 	f := cmd.PersistentFlags()
-	f.String("provider-src", "", "path to a local git clone of the provider whose source the quoted errors are searched in")
+	f.String("provider-src", "", "path to a local git clone of the provider to read source and docs from")
 	f.String("provider-ref", "origin/main", "git ref of that clone to treat as the current source")
 }
 

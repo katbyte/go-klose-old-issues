@@ -106,6 +106,21 @@ func (f *FlagData) fetchTexts(d *db.DB, want []int) error {
 	return nil
 }
 
+// keepSummary renders a check's keep-guard tallies as one line, e.g.
+// "15 protected (high-engagement 12 · open-pr 3)".
+func keepSummary(protected map[string]int) string {
+	total := 0
+	parts := make([]string, 0, len(protected))
+	for _, k := range text.SortedKeys(protected) {
+		total += protected[k]
+		parts = append(parts, fmt.Sprintf("%s %d", k, protected[k]))
+	}
+	if total == 0 {
+		return "0 protected"
+	}
+	return fmt.Sprintf("%d protected (%s)", total, strings.Join(parts, " · "))
+}
+
 // scoreTag colours a match confidence: green at or above the apply threshold,
 // orange in the murky middle, red for a clear non-match.
 func scoreTag(confidence float64) string {

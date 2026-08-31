@@ -116,7 +116,7 @@ func (f *FlagData) Errors(link string) error {
 		}
 	}
 	cout.Printf("  <gray>skipped: %d still in the source · %d never provider text at the reported version · %s</>\n",
-		col.stillPresent, col.neverFound, col.protectedSummary())
+		col.stillPresent, col.neverFound, keepSummary(col.protected))
 	if len(findings) == 0 {
 		return nil
 	}
@@ -178,20 +178,6 @@ type errorsCollection struct {
 	stillPresent int            // a fragment still exists at the current ref
 	neverFound   int            // reported version checkable, fragment never there — not provider text
 	protected    map[string]int // keep guards by reason (open PR, current-major claim...)
-}
-
-// protectedSummary renders the keep-guard tallies as one line ("" when none).
-func (c *errorsCollection) protectedSummary() string {
-	total := 0
-	parts := make([]string, 0, len(c.protected))
-	for _, k := range text.SortedKeys(c.protected) {
-		total += c.protected[k]
-		parts = append(parts, fmt.Sprintf("%s %d", k, c.protected[k]))
-	}
-	if total == 0 {
-		return "0 protected"
-	}
-	return fmt.Sprintf("%d protected (%s)", total, strings.Join(parts, " · "))
 }
 
 // collectErrors extracts fragments from every open bug/crash body and probes
@@ -646,14 +632,23 @@ type srcGrep struct {
 // label-derived values like "3.x" have no tag.
 var reErrVersion = regexp.MustCompile(`^\d+\.\d+(\.\d+)?$`)
 
-// newSrcGrep validates the checkout and ref and loads its tag list.
-func newSrcGrep(src, ref string) (*srcGrep, map[string]bool, error) {
+// verifyProviderSrc validates the checkout and ref the provider-source checks
+// (errors, docs) grep and read.
+func verifyProviderSrc(src, ref string) error {
 	if src == "" {
-		return nil, nil, errors.New("no provider checkout to search — set --provider-src (or provider-src in .koi) to a local clone of the provider")
+		return errors.New("no provider checkout to search — set --provider-src (or provider-src in .koi) to a local clone of the provider")
 	}
 	git := exec.CommandContext(context.Background(), "git", "-C", src, "rev-parse", "-q", "--verify", ref+"^{commit}") //nolint:gosec // G204: the checkout and ref are user-configured on purpose (--provider-src/-ref)
 	if out, err := git.CombinedOutput(); err != nil {
-		return nil, nil, fmt.Errorf("resolving --provider-ref %q in %s: %w: %s — pass a ref that exists there (e.g. HEAD)", ref, src, err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("resolving --provider-ref %q in %s: %w: %s — pass a ref that exists there (e.g. HEAD)", ref, src, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// newSrcGrep validates the checkout and ref and loads its tag list.
+func newSrcGrep(src, ref string) (*srcGrep, map[string]bool, error) {
+	if err := verifyProviderSrc(src, ref); err != nil {
+		return nil, nil, err
 	}
 	out, err := exec.CommandContext(context.Background(), "git", "-C", src, "tag", "-l").Output() //nolint:gosec // G204: the checkout is user-configured on purpose (--provider-src)
 	if err != nil {

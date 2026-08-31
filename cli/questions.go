@@ -104,7 +104,7 @@ func (f *FlagData) Questions(link string) error {
 			cout.Printf("  <%s>%-9s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
 		}
 	}
-	cout.Printf("  <gray>skipped: %d with recent activity · %s</>\n", col.active, col.protectedSummary())
+	cout.Printf("  <gray>skipped: %d with recent activity · %s</>\n", col.active, keepSummary(col.protected))
 	if len(findings) == 0 {
 		return nil
 	}
@@ -165,20 +165,6 @@ type questionsCollection struct {
 	questions int            // open question-labelled issues
 	active    int            // recent activity — the conversation may be live
 	protected map[string]int // keep guards by reason
-}
-
-// protectedSummary renders the keep-guard tallies as one line.
-func (c *questionsCollection) protectedSummary() string {
-	total := 0
-	parts := make([]string, 0, len(c.protected))
-	for _, k := range text.SortedKeys(c.protected) {
-		total += c.protected[k]
-		parts = append(parts, fmt.Sprintf("%s %d", k, c.protected[k]))
-	}
-	if total == 0 {
-		return "0 protected"
-	}
-	return fmt.Sprintf("%d protected (%s)", total, strings.Join(parts, " · "))
 }
 
 // collectQuestions walks the open question-labelled issues and classes each

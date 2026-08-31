@@ -205,7 +205,11 @@ func (f *FlagData) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, exists, legacy, errorsSec, deprecated}
+	docsSec, err := f.docsReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, exists, legacy, errorsSec, docsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -221,8 +225,8 @@ func (f *FlagData) Report() error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · exists %d · legacy %d · errors %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, exists.Total, legacy.Total, errorsSec.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -595,7 +599,7 @@ func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time
 	}
 	if col.questions > 0 {
 		s.Note = fmt.Sprintf("%d open question-labelled issues · %d with recent activity · %s",
-			col.questions, col.active, col.protectedSummary())
+			col.questions, col.active, keepSummary(col.protected))
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
@@ -830,7 +834,7 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 	}
 	if col.quoting > 0 {
 		s.Note = fmt.Sprintf("%d open bugs/crashes quote error output · %d still in the source · %d never provider text at the reported version · %s",
-			col.quoting, col.stillPresent, col.neverFound, col.protectedSummary())
+			col.quoting, col.stillPresent, col.neverFound, keepSummary(col.protected))
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
@@ -886,6 +890,77 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 					span(src, kindDim), span("“"+p.frag.Quote+"”", kindQuote),
 				})
 			}
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// docsReportSection builds the "its doc page moved on" section. Like the
+// errors section it needs the provider checkout; without one configured the
+// section stays empty and says how to enable it.
+func (f *FlagData) docsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passDocs,
+		Question: "this documentation issue's page has been revised since — addressed now?",
+		Description: "Open documentation issues whose doc page has been edited since the report. Edits alone prove " +
+			"nothing — doc pages churn constantly — so the AI reads the current page content against the issue's " +
+			"specific ask. Applying closes as completed pointing at the revised page.",
+		Command: "koi docs --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	eo := DocsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef}
+	if eo.Src == "" {
+		s.Note = "not scanned — point --provider-src (or provider-src in .koi) at a local clone of the provider to include this check"
+		cout.Printf("<yellow>docs check skipped: no --provider-src configured</>\n")
+		return s, nil
+	}
+	col, err := f.collectDocs(d, eo)
+	if err != nil {
+		return s, err
+	}
+	findings := col.findings
+	s.Total = len(findings)
+	if col.docs > 0 {
+		s.Note = fmt.Sprintf("%d open documentation issues · %d with pages untouched since the report · %d whose pages no longer exist · %d naming no known doc page · %s",
+			col.docs, col.untouched, col.removed, col.unresolved, keepSummary(col.protected))
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.docsJudgeItems(d, findings, eo.Src, eo.Ref)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passDocs, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *docsFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		for _, p := range fdg.pages {
+			row := []reportSpan{span(p.name, ""), span("("+p.kind+")", kindDim)}
+			switch {
+			case !p.exists:
+				row = append(row, span("page no longer exists", kindBad))
+			case p.commits == 0:
+				row = append(row, span("untouched since the report", kindDim))
+			default:
+				row = append(row,
+					span(fmt.Sprintf("edited %d times since the report", p.commits), kindOK),
+					span("last "+p.lastEdit.Format("2006-01-02"), kindDim),
+					linkSpan("current docs", registryDocURL(p.kind, p.name)))
+			}
+			item.Evidence = append(item.Evidence, row)
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

@@ -99,7 +99,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, exists, legacy, errors, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, exists, legacy, errors, docs, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
@@ -119,7 +119,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		},
 	}
 	addReportFlags(reportCmd)
-	addErrorsFlags(reportCmd) // the errors section greps the same provider checkout
+	addProviderSrcFlags(reportCmd) // the errors and docs sections read the same provider checkout
 	reportCmd.AddCommand(&cobra.Command{
 		Use:           "actions-taken",
 		Short:         "writes the ledger of everything koi has closed, with the AI decision behind each one",
@@ -437,7 +437,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		SilenceErrors: true,
 		RunE:          errRunE(""),
 	}
-	addErrorsFlags(errorsCmd)
+	addProviderSrcFlags(errorsCmd)
 	for _, sub := range []struct{ use, short string }{
 		{classErrVerified, "only issues whose error text existed at the reported version and is gone now (strongest evidence)"},
 		{classErrPanic, "only issues whose panicking provider function no longer exists"},
@@ -453,6 +453,21 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		})
 	}
 	root.AddCommand(errorsCmd)
+
+	docsCmd := &cobra.Command{
+		Use:           "docs",
+		Short:         "these documentation issues concern pages revised since the report — addressed now? AI-scored, closeable",
+		Long:          `Open documentation issues whose doc page has been revised since the report, read from a local clone of the provider (--provider-src) at --provider-ref. Pages resolve from registry/repository links in the body and the issue's resources; pages untouched since the report mean the complaint likely stands (skipped), pages that no longer exist belong to koi deprecated. Edits alone prove nothing — doc pages churn constantly — so the AI reads the CURRENT page content against the issue's specific ask: is the wrong statement corrected, the requested example or argument now documented, the confusion now explained. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the revised page with a registry link and closes as completed.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Docs()
+		},
+	}
+	addProviderSrcFlags(docsCmd)
+	root.AddCommand(docsCmd)
 
 	dupRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {
