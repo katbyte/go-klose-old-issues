@@ -742,8 +742,8 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 		{classErrUnverified, col.counts[classErrUnverified], kindWarn},
 	}
 	if col.quoting > 0 {
-		s.Note = fmt.Sprintf("%d open bugs/crashes quote error output · %d still in the source · %d never provider text at the reported version · %d protected by keep signals",
-			col.quoting, col.stillPresent, col.neverFound, col.protected)
+		s.Note = fmt.Sprintf("%d open bugs/crashes quote error output · %d still in the source · %d never provider text at the reported version · %s",
+			col.quoting, col.stillPresent, col.neverFound, col.protectedSummary())
 	}
 
 	findings, s.Truncated = limitFindings(findings, o.Limit)
@@ -791,8 +791,12 @@ func (f *FlagData) errorsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 			}
 			item.Evidence = append(item.Evidence, row)
 			if p.frag.Quote != "" {
+				src := "from:"
+				if p.frag.FromComment {
+					src = "from a comment:"
+				}
 				item.Evidence = append(item.Evidence, []reportSpan{
-					span("from:", kindDim), span("“"+p.frag.Quote+"”", kindQuote),
+					span(src, kindDim), span("“"+p.frag.Quote+"”", kindQuote),
 				})
 			}
 		}

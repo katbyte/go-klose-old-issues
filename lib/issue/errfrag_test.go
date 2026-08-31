@@ -72,6 +72,29 @@ func TestExtractErrorFragments(t *testing.T) {
 			body: "It would be great if azurerm_thing supported widgets, thanks!",
 			want: nil,
 		},
+		"old-style verb message without colon": {
+			body: `* azurerm_public_ip.test: Error creating Public IP "test-pip": network.PublicIPAddressesClient failed`,
+			// the Error prefix stays in on purpose — it dates the output to the
+			// old code, which spelt it out where modern messages do not
+			want: []issue.ErrorFragment{
+				{Kind: issue.ErrFragError, Text: "Error creating Public IP"},
+			},
+		},
+		"prose about errors is not a message": {
+			body: "I keep getting an error when creating the VM, the error handling here seems off",
+			want: nil,
+		},
+		"box continuation lines joined": {
+			body: strings.Join([]string{
+				"│ Error: waiting for creation of Linux Virtual",
+				"│ Machine Scale Set instance rollout",
+				"│",
+				"│ with azurerm_linux_virtual_machine_scale_set.main,",
+			}, "\n"),
+			want: []issue.ErrorFragment{
+				{Kind: issue.ErrFragError, Text: "waiting for creation of Linux Virtual Machine Scale Set instance rollout"},
+			},
+		},
 		"foreign text dropped, slash wording survives": {
 			body: "Error: Provider produced inconsistent result after apply\nError: waiting on create/update future for SQL Server: context deadline exceeded",
 			want: []issue.ErrorFragment{
@@ -96,5 +119,21 @@ func TestExtractErrorFragments(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestExtractErrorFragmentsFromComments(t *testing.T) {
+	t.Parallel()
+
+	got := issue.ExtractErrorFragments(
+		"No error output in the body, sorry!",
+		"here you go:\nError: expanding default node pool for the cluster: bad time",
+		"Error: expanding default node pool for the cluster: bad time", // duplicate collapses
+	)
+	if len(got) != 1 {
+		t.Fatalf("got %d fragments %+v, want 1", len(got), got)
+	}
+	if got[0].Kind != issue.ErrFragError || got[0].Text != "expanding default node pool for the cluster" || !got[0].FromComment {
+		t.Errorf("got %+v, want an error fragment from a comment", got[0])
 	}
 }

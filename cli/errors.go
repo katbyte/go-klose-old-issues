@@ -115,8 +115,8 @@ func (f *FlagData) Errors(link string) error {
 			cout.Printf("  <%s>%-12s</> <yellow>%d</>  <gray>%s</>\n", c.tag, c.class, n, c.desc)
 		}
 	}
-	cout.Printf("  <gray>skipped: %d still in the source · %d never provider text at the reported version · %d protected by keep signals</>\n",
-		col.stillPresent, col.neverFound, col.protected)
+	cout.Printf("  <gray>skipped: %d still in the source · %d never provider text at the reported version · %s</>\n",
+		col.stillPresent, col.neverFound, col.protectedSummary())
 	if len(findings) == 0 {
 		return nil
 	}
@@ -173,11 +173,25 @@ func (f *FlagData) Errors(link string) error {
 type errorsCollection struct {
 	findings     []errorsFinding
 	counts       map[string]int
-	open         int // open issues in the db
-	quoting      int // open bugs/crashes with searchable error output
-	stillPresent int // a fragment still exists at the current ref
-	neverFound   int // reported version checkable, fragment never there — not provider text
-	protected    int // keep rules protect the issue (recent claim, open PR...)
+	open         int            // open issues in the db
+	quoting      int            // open bugs/crashes with searchable error output
+	stillPresent int            // a fragment still exists at the current ref
+	neverFound   int            // reported version checkable, fragment never there — not provider text
+	protected    map[string]int // keep guards by reason (open PR, current-major claim...)
+}
+
+// protectedSummary renders the keep-guard tallies as one line ("" when none).
+func (c *errorsCollection) protectedSummary() string {
+	total := 0
+	parts := make([]string, 0, len(c.protected))
+	for _, k := range text.SortedKeys(c.protected) {
+		total += c.protected[k]
+		parts = append(parts, fmt.Sprintf("%s %d", k, c.protected[k]))
+	}
+	if total == 0 {
+		return "0 protected"
+	}
+	return fmt.Sprintf("%d protected (%s)", total, strings.Join(parts, " · "))
 }
 
 // collectErrors extracts fragments from every open bug/crash body and probes
@@ -186,7 +200,7 @@ type errorsCollection struct {
 // survivors against the tag of the version each issue reported, which sorts
 // provider-origin text (verified) from Azure API noise (never found).
 func (f *FlagData) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, error) {
-	col := &errorsCollection{counts: map[string]int{}}
+	col := &errorsCollection{counts: map[string]int{}, protected: map[string]int{}}
 	issues, err := d.OpenIssues()
 	if err != nil {
 		return nil, err
@@ -200,7 +214,6 @@ func (f *FlagData) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, err
 	if err != nil {
 		return nil, err
 	}
-	cfg := f.RuleConfig()
 
 	type target struct {
 		issue   *db.Issue
@@ -225,13 +238,38 @@ func (f *FlagData) collectErrors(d *db.DB, o ErrorsOpts) (*errorsCollection, err
 		default:
 			continue
 		}
-		frags := issue.ExtractErrorFragments(i.Body)
+		// the error output often lands in a comment (maintainers ask for it),
+		// so comments feed the extraction too — the body wins the slots
+		comments, cerr := d.CommentsFor(i.Number)
+		if cerr != nil {
+			return nil, cerr
+		}
+		commentBodies := make([]string, 0, len(comments))
+		for _, c := range comments {
+			commentBodies = append(commentBodies, c.Body)
+		}
+		frags := issue.ExtractErrorFragments(i.Body, commentBodies...)
 		if len(frags) == 0 {
 			continue
 		}
 		col.quoting++
-		if a := issue.Propose(i, s, cfg); a != nil && a.Action == db.ActionKeep {
-			col.protected++
+		// keep guards, scoped to this check: only the CURRENT major protects.
+		// The previous major is no longer maintained (kt 2026-08-31), so unlike
+		// the shared rules engine its reports and claims do not shield an issue
+		// whose error text is gone — the judge still weighs recent claims.
+		vCur := fmt.Sprintf("v%d", f.CurrentMajor)
+		switch {
+		case s.OpenLinkedPRs > 0:
+			col.protected["open-pr"]++
+			continue
+		case i.ThumbsUp >= f.KeepReactions:
+			col.protected["high-engagement"]++
+			continue
+		case s.NewestClaimMajor >= f.CurrentMajor:
+			col.protected["claims-"+vCur]++
+			continue
+		case s.VersionMajor >= f.CurrentMajor:
+			col.protected["reports-"+vCur]++
 			continue
 		}
 		// signals lose the exact version when a v/N.x label wins precedence;
@@ -551,7 +589,11 @@ func (f *FlagData) errorsJudgeItems(d *db.DB, findings []errorsFinding, ref stri
 			}
 			fmt.Fprintf(&b, "- %s `%s`: %s\n", p.frag.Kind, p.frag.Text, status)
 			if p.frag.Quote != "" {
-				fmt.Fprintf(&b, "  FROM ISSUE LINE: %s\n", p.frag.Quote)
+				src := "FROM ISSUE LINE"
+				if p.frag.FromComment {
+					src = "FROM A COMMENT"
+				}
+				fmt.Fprintf(&b, "  %s: %s\n", src, p.frag.Quote)
 			}
 		}
 		items = append(items, issue.JudgeItem{Number: fdg.issue.Number, Block: b.String()})
@@ -582,7 +624,11 @@ func (f *FlagData) printErrorsCard(fdg *errorsFinding, pos, total int, ref strin
 		}
 		cout.Printf("      <gray>%s</> <lightCyan>%s</> %s\n", kind, p.frag.Text, status)
 		if p.frag.Quote != "" {
-			cout.Printf("        <gray>from:</> %s\n", text.TruncateRunes(p.frag.Quote, 110))
+			src := "from:"
+			if p.frag.FromComment {
+				src = "from a comment:"
+			}
+			cout.Printf("        <gray>%s</> %s\n", src, text.TruncateRunes(p.frag.Quote, 110))
 		}
 	}
 	printMSVerdict(v)
