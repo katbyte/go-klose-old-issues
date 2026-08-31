@@ -22,7 +22,10 @@ import (
 
 // evidenceKeyAI is where every check parks the judge's reasoning on the action
 // row it writes, so a close can always be explained after the fact.
-const evidenceKeyAI = "ai"
+const (
+	evidenceKeyAI    = "ai"
+	evidenceKeyClass = "class"
+)
 
 // actionsTakenStatuses are the statuses that mean koi acted on GitHub (or tried
 // to). proposed/approved/rejected are decisions, not actions.

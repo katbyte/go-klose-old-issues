@@ -571,8 +571,8 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 		IssueNumber: fdg.issue.Number, Action: db.ActionClose, Reason: reasonDuplicateOpen,
 		StateReason: issue.StateDuplicate, Template: templateDuplicateOpen,
 		Evidence: map[string]string{
-			"duplicate-of": fmt.Sprintf("#%d", fdg.best.issue.Number),
-			"class":        fdg.best.class,
+			"duplicate-of":   fmt.Sprintf("#%d", fdg.best.issue.Number),
+			evidenceKeyClass: fdg.best.class,
 		},
 		Source:         passDuplicates,
 		IssueUpdatedAt: fdg.issue.UpdatedAt,

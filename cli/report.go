@@ -201,7 +201,11 @@ func (f *FlagData) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []reportSection{fixed, resolved, duplicates, comments, exists, legacy, errorsSec, deprecated}
+	questions, err := f.questionsReportSection(d, o, now)
+	if err != nil {
+		return err
+	}
+	data.Sections = []reportSection{fixed, resolved, duplicates, comments, questions, exists, legacy, errorsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -217,8 +221,8 @@ func (f *FlagData) Report() error {
 	if err := writeReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · exists %d · legacy %d · errors %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, exists.Total, legacy.Total, errorsSec.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · duplicates %d · comments %d · questions %d · exists %d · legacy %d · errors %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, exists.Total, legacy.Total, errorsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -561,6 +565,89 @@ func (f *FlagData) commentsReportSection(d *db.DB, o FlagsReport, now time.Time)
 				row = append(row, linkSpan("view comment", cl.comment.URL))
 			}
 			item.Evidence = append(item.Evidence, row)
+		}
+		attachVerdict(&item, verdicts[fdg.issue.Number])
+		s.Items = append(s.Items, item)
+	}
+	return s, nil
+}
+
+// questionsReportSection builds the "this question is done with" section.
+func (f *FlagData) questionsReportSection(d *db.DB, o FlagsReport, now time.Time) (reportSection, error) {
+	s := reportSection{
+		Slug:     passQuestions,
+		Question: "this question was answered, or died unanswered long ago — close it out?",
+		Description: "Open question-labelled issues that look done with: answered (a substantive reply exists — the newest, " +
+			"maintainers preferred, is the candidate answer — and the thread has settled) or dead (no substantive reply and " +
+			"over a year of silence). Answered closes as completed citing the answer; dead closes as not planned pointing " +
+			"at the community forum.",
+		Command: "koi questions [answered|dead] --apply / --apply-with-ai / --apply-with-ai-auto",
+	}
+	col, err := f.collectQuestions(d, "")
+	if err != nil {
+		return s, err
+	}
+	findings := col.findings
+	s.Total = len(findings)
+	s.Classes = []reportClass{
+		{classQAnswered, col.counts[classQAnswered], kindOK},
+		{classQDead, col.counts[classQDead], kindWarn},
+	}
+	if col.questions > 0 {
+		s.Note = fmt.Sprintf("%d open question-labelled issues · %d with recent activity · %s",
+			col.questions, col.active, col.protectedSummary())
+	}
+
+	findings, s.Truncated = limitFindings(findings, o.Limit)
+	var verdicts map[int]*issue.Verdict
+	if o.WithAI && len(findings) > 0 {
+		promptText, items, jerr := f.questionsJudgeItems(d, findings)
+		if jerr != nil {
+			return s, jerr
+		}
+		if verdicts, err = f.judgeBlocks(d, passQuestions, promptText, items, nil, nil); err != nil {
+			return s, err
+		}
+		sortByVerdict(findings, func(x *questionsFinding) int { return x.issue.Number }, verdicts)
+	}
+
+	for i := range findings {
+		fdg := &findings[i]
+		item := reportItem{
+			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
+			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
+				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
+				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
+		}
+		if fdg.answer != nil {
+			authorKind := kindMid
+			assocName := ""
+			switch _, label := assocDisplay(fdg.answer.AuthorAssociation); {
+			case fdg.answer.IsMaintainer():
+				authorKind, assocName = kindOK, "("+label+") "
+			case label != "":
+				authorKind, assocName = "", "("+label+") "
+			}
+			row := []reportSpan{
+				span("candidate answer by", kindDim),
+				span("@"+fdg.answer.Author, authorKind),
+				span(assocName+text.HumanAge(fdg.answer.CreatedAt, now)+" ago:", kindDim),
+				span("“"+text.TruncateRunes(text.OneLine(issue.CleanBody(fdg.answer.Body)), 160)+"”", kindQuote),
+			}
+			if fdg.answer.URL != "" {
+				row = append(row, linkSpan("view comment", fdg.answer.URL))
+			}
+			item.Evidence = append(item.Evidence, row)
+			if fdg.replies > 1 {
+				item.Evidence = append(item.Evidence, []reportSpan{
+					span(fmt.Sprintf("%d substantive replies in the thread", fdg.replies), kindDim),
+				})
+			}
+		} else {
+			item.Evidence = append(item.Evidence, []reportSpan{
+				span("no substantive replies at all", kindWarn),
+				span("quiet for "+text.HumanAge(fdg.issue.UpdatedAt, now), kindDim),
+			})
 		}
 		attachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

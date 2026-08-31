@@ -99,7 +99,7 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 
 	reportCmd := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, exists, legacy, errors, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, exists, legacy, errors, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
@@ -390,6 +390,36 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 		})
 	}
 	root.AddCommand(existsCmd)
+
+	qRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return GetFlags().Questions(link)
+		}
+	}
+	questionsCmd := &cobra.Command{
+		Use:           "questions",
+		Short:         "these questions were answered, or died unanswered long ago — close them out? AI-scored, closeable",
+		Long:          `Open question-labelled issues that look done with, classed by what the thread holds: answered (a substantive non-asker reply exists — the newest, maintainers preferred, is the candidate answer — and the thread has been quiet for months) or dead (no substantive reply and over a year of silence); subcommands scope to one class. The AI reads each thread before blessing a close: does the candidate answer actually resolve the ask, did anyone push back after it, is this really a bug report wearing a question label. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; answered closes as completed citing the answer with a deep link, dead closes as not planned pointing at the community forum. Supersedes the old rules-path stale-question proposals.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+		SilenceErrors: true,
+		RunE:          qRunE(""),
+	}
+	for _, sub := range []struct{ use, short string }{
+		{classQAnswered, "only questions with a reply that looks like the answer (strongest evidence)"},
+		{classQDead, "only questions nobody ever answered, dead for over a year"},
+	} {
+		questionsCmd.AddCommand(&cobra.Command{
+			Use:           sub.use,
+			Short:         sub.short,
+			Args:          cobra.NoArgs,
+			PreRunE:       ValidateParams([]string{paramTokenGH, paramRepo, "db"}),
+			SilenceErrors: true,
+			RunE:          qRunE(sub.use),
+		})
+	}
+	root.AddCommand(questionsCmd)
 
 	errRunE := func(link string) func(cmd *cobra.Command, _ []string) error {
 		return func(cmd *cobra.Command, _ []string) error {

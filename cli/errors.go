@@ -491,7 +491,7 @@ func (f *FlagData) closeOneErrors(d *db.DB, repo gh.Repo, fdg *errorsFinding, v 
 		StateReason: issue.StateNotPlanned, Template: templateErrorsClose,
 		Evidence: map[string]string{
 			"fragment": fdg.best.frag.Text, "kind": fdg.best.frag.Kind,
-			"class": fdg.class, "ref": ref, "tag": fdg.tag,
+			evidenceKeyClass: fdg.class, "ref": ref, "tag": fdg.tag,
 		},
 		Source:         passErrors,
 		IssueUpdatedAt: fdg.issue.UpdatedAt,
