@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +20,10 @@ import (
 )
 
 const endpoint = "https://api.github.com/graphql"
+
+// ErrNotFound marks a 404 — a permanently missing file, not a transient
+// failure, so callers can skip retries. Test with errors.Is.
+var ErrNotFound = errors.New("not found")
 
 // requestThrottle keeps a gap between GraphQL requests: firing pages back-to-back
 // trips GitHub's secondary rate limit (a 403 with a "wait a few minutes" body)
@@ -531,6 +536,9 @@ func (c *Client) RawFile(owner, name, branch, path string) (string, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("reading %s: %w", path, err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return "", fmt.Errorf("downloading %s: %w", path, ErrNotFound)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("downloading %s returned %d", path, resp.StatusCode)

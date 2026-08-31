@@ -180,17 +180,25 @@ func (f *FlagData) collectFixed(d *db.DB, link string) (findings []fixedFinding,
 				fdg.class = classFixedBy
 			}
 		}
-		// the comment cites the strongest, earliest-shipped reference
-		for _, pr := range prs {
-			vs := prVersions[pr.RefNumber]
-			better := (pr.WillClose && !fdg.best.WillClose) ||
-				(pr.WillClose == fdg.best.WillClose && fdg.version == "" && len(vs) > 0)
-			if better {
-				fdg.best = pr
-			}
-		}
+		// the comment cites the strongest, earliest-shipped reference: closing
+		// beats mentioning, then a shipped reference beats an unshipped one,
+		// then the earliest release wins (prVersions slices sort ascending)
 		if vs := prVersions[fdg.best.RefNumber]; len(vs) > 0 {
 			fdg.version = vs[0]
+		}
+		for _, pr := range prs[1:] {
+			vs := prVersions[pr.RefNumber]
+			stronger := pr.WillClose && !fdg.best.WillClose
+			earlier := pr.WillClose == fdg.best.WillClose && len(vs) > 0 &&
+				(fdg.version == "" || issue.VersionLess(vs[0], fdg.version))
+			if !stronger && !earlier {
+				continue
+			}
+			fdg.best = pr
+			fdg.version = ""
+			if len(vs) > 0 {
+				fdg.version = vs[0]
+			}
 		}
 		for _, fx := range msFixes[i.Number] {
 			if fx.Link == db.LinkClosedBy {
@@ -249,6 +257,13 @@ func (f *FlagData) applyFixed(d *db.DB, findings []fixedFinding, prVersions map[
 // a preview under dry-run, or the a/s ask when interactive).
 func (f *FlagData) closeOneFixed(d *db.DB, repo gh.Repo, fdg *fixedFinding, v *issue.Verdict, pos, total int, prVersions map[int][]string, throttle func(), ask bool) (int, error) {
 	f.printFixedCard(fdg, pos, total, prVersions, v)
+
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
 
 	comment, err := f.renderFixedComment(fdg)
 	if err != nil {

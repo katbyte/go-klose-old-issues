@@ -219,6 +219,19 @@ func newThrottle() func() {
 	}
 }
 
+// rejectedInReview reports whether a human already rejected an action for
+// this issue in koi review. The checks re-derive candidates from evidence on
+// every run, so without this guard a rejected candidate would be re-proposed
+// and closed on the next apply — with review promising "won't be proposed
+// again".
+func rejectedInReview(d *db.DB, number int) (bool, error) {
+	a, err := d.GetAction(number)
+	if err != nil {
+		return false, err
+	}
+	return a != nil && a.Status == db.StatusRejected, nil
+}
+
 // applyPass wires the flag-level knobs shared by every check into the
 // harness (lib/issue's ApplyPass); the caller fills the per-pass wording
 // (Noun, GateLabel, ConfirmAll, ConfirmAI).

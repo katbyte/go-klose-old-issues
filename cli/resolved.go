@@ -300,6 +300,13 @@ func (f *FlagData) applyResolved(d *db.DB, findings []resolvedFinding, o Resolve
 func (f *FlagData) closeOneResolved(d *db.DB, repo gh.Repo, fdg *resolvedFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printResolvedCard(fdg, pos, total, v)
 
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
+
 	// every close here says "this duplicates the linked issue" — github's
 	// duplicate state is exactly that, and the comment carries the resolution
 	stateReason := issue.StateDuplicate

@@ -115,10 +115,21 @@ type existsEvidence struct {
 	kind     string // resource | data-source | property
 	name     string // azurerm_* or the property token
 	resource string // owning resource for properties
+	onKind   string // docs-page kind listing a property's owner ("" = resource)
+	preAsk   bool   // arrived before the request was filed — already available
 	version  string // release it arrived in
 	pr       int    // changelog PR
 	bullet   string // the changelog bullet text
 	quote    string // the issue prose line the property matched ("" for resources)
+}
+
+// ownerKind is the docs-page kind that lists a property's owning resource — a
+// data-source-only owner (azurerm_client_config) must not link /docs/resources/.
+func (e *existsEvidence) ownerKind() string {
+	if e.onKind != "" {
+		return e.onKind
+	}
+	return db.DocKindResource
 }
 
 // existsFinding is one open enhancement whose ask appears to exist now.
@@ -390,11 +401,15 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 				for _, kind := range kinds {
 					key := kind + "|" + r
 					a, arrived := arrivals[key]
-					if !docs[key] || !arrived || a.pr <= i.Number {
+					if !docs[key] || !arrived {
 						continue
 					}
+					// an arrival predating the ask means the request was filed
+					// for something already available — the citation is still
+					// known, so keep it dated instead of "arrival not dated"
 					fdg.evidence = append(fdg.evidence, existsEvidence{
 						kind: kind, name: r, version: a.version, pr: a.pr, bullet: a.bullet,
+						preAsk: a.pr <= i.Number,
 					})
 					fdg.class = classExistsResource
 					evidenced = true
@@ -416,6 +431,15 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 			}
 		}
 
+		// ownerDocKind is the docs page a property's owner actually lives on —
+		// a data-source-only owner must not be linked as a resource
+		ownerDocKind := func(r string) string {
+			if !docs[db.DocKindResource+"|"+r] && docs[db.DocKindDataSource+"|"+r] {
+				return db.DocKindDataSource
+			}
+			return db.DocKindResource
+		}
+
 		// property class: a post-ask feature bullet whose property token the
 		// issue's prose asks about
 		propSeen := map[string]bool{}
@@ -432,7 +456,7 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 					quote := matchLine(t.prose, regexp.MustCompile(`\b`+regexp.QuoteMeta(tok)+`\b`))
 					propSeen[tok] = true
 					fdg.evidence = append(fdg.evidence, existsEvidence{
-						kind: db.RemovalKindProperty, name: tok, resource: r,
+						kind: db.RemovalKindProperty, name: tok, resource: r, onKind: ownerDocKind(r),
 						version: e.Version, pr: e.PRNumber,
 						bullet: text.TruncateRunes(text.OneLine(e.Text), 200), quote: quote,
 					})
@@ -459,11 +483,13 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 				continue
 			}
 			var matched []string
+			argKind := map[string]string{}
 			for _, kind := range []string{db.DocKindResource, db.DocKindDataSource} {
 				for arg := range docArgs[kind+"|"+r] {
 					if !propSeen[arg] && !tooGeneric(arg) && existsArgAsked(arg, titleWords) {
 						propSeen[arg] = true
 						matched = append(matched, arg)
+						argKind[arg] = kind
 					}
 				}
 			}
@@ -473,19 +499,20 @@ func (f *FlagData) collectExists(d *db.DB, link string) (findings []existsFindin
 					break
 				}
 				ev := existsEvidence{
-					kind: db.RemovalKindProperty, name: arg, resource: r,
+					kind: db.RemovalKindProperty, name: arg, resource: r, onKind: argKind[arg],
 					bullet: "listed in the documentation for " + r + " today (arrival not dated)",
 					quote:  text.TruncateRunes(text.OneLine(i.Title), 120),
 				}
-				// earliest post-ask bullet naming it: the closest thing the
-				// changelog has to when the argument arrived, rather than a
-				// later tweak to it
+				// earliest bullet naming it: the closest thing the changelog
+				// has to when the argument arrived, rather than a later tweak
+				// to it — an arrival predating the ask stays dated, flagged
 				for _, e := range featureBullets[r] {
-					if e.PRNumber <= i.Number || !strings.Contains(e.Text, "`"+arg+"`") {
+					if !strings.Contains(e.Text, "`"+arg+"`") {
 						continue
 					}
 					if ev.pr == 0 || e.PRNumber < ev.pr {
 						ev.version, ev.pr = e.Version, e.PRNumber
+						ev.preAsk = e.PRNumber <= i.Number
 						ev.bullet = text.TruncateRunes(text.OneLine(e.Text), 200)
 					}
 				}
@@ -599,6 +626,13 @@ func (f *FlagData) applyExists(d *db.DB, findings []existsFinding, o ExistsOpts,
 func (f *FlagData) closeOneExists(d *db.DB, repo gh.Repo, fdg *existsFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printExistsCard(fdg, pos, total, v)
 
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
+
 	comment, err := f.renderExistsComment(fdg)
 	if err != nil {
 		return issue.ApplyFailed, err
@@ -696,7 +730,7 @@ func (f *FlagData) renderExistsComment(fdg *existsFinding) (string, error) {
 		Version: best.version, PR: best.pr, CurrentMajor: f.CurrentMajor,
 	}
 	if data.IsProperty {
-		data.DocsURL = registryDocURL(db.DocKindResource, best.resource)
+		data.DocsURL = registryDocURL(best.ownerKind(), best.resource)
 	} else {
 		data.DocsURL = registryDocURL(best.kind, best.name)
 	}
@@ -737,13 +771,18 @@ func (f *FlagData) existsJudgeItems(d *db.DB, findings []existsFinding) (string,
 					text.TruncateRunes(text.OneLine(issue.CleanBody(c.Body)), commentRunesFor))
 			}
 		}
-		b.WriteString("WHAT SHIPPED AFTER THE ASK THAT APPEARS TO DELIVER IT:\n")
+		b.WriteString("WHAT SHIPPED THAT APPEARS TO DELIVER IT:\n")
 		for _, e := range fdg.evidence {
 			switch {
+			case e.kind == db.RemovalKindProperty && e.version != "" && e.preAsk:
+				fmt.Fprintf(&b, "- property `%s` on `%s` was ALREADY available when the request was filed (arrived in v%s, PR #%d): %s\n", e.name, e.resource, e.version, e.pr, e.bullet)
 			case e.kind == db.RemovalKindProperty && e.version != "":
 				fmt.Fprintf(&b, "- property `%s` on `%s`, shipped in v%s (PR #%d): %s\n", e.name, e.resource, e.version, e.pr, e.bullet)
 			case e.kind == db.RemovalKindProperty:
-				fmt.Fprintf(&b, "- property `%s` on `%s` is in the documentation TODAY (arrival not dated — it may have existed when the request was filed): %s\n", e.name, e.resource, registryDocURL(db.DocKindResource, e.resource))
+				fmt.Fprintf(&b, "- property `%s` on `%s` is in the documentation TODAY (arrival not dated — it may have existed when the request was filed): %s\n", e.name, e.resource, registryDocURL(e.ownerKind(), e.resource))
+			case e.version != "" && e.preAsk:
+				fmt.Fprintf(&b, "- %s `%s` ALREADY existed when the request was filed (arrived in v%s, PR #%d): %s\n  DOCS: %s\n",
+					strings.ReplaceAll(e.kind, "-", " "), e.name, e.version, e.pr, e.bullet, registryDocURL(e.kind, e.name))
 			case e.version != "":
 				fmt.Fprintf(&b, "- %s `%s` now EXISTS (arrived in v%s, PR #%d): %s\n  DOCS: %s\n",
 					strings.ReplaceAll(e.kind, "-", " "), e.name, e.version, e.pr, e.bullet, registryDocURL(e.kind, e.name))
@@ -776,13 +815,16 @@ func (f *FlagData) printExistsCard(fdg *existsFinding, pos, total int, v *issue.
 		case e.kind == db.RemovalKindProperty && e.version != "":
 			fmt.Fprintf(&b, "<lightBlue>%s</> <gray>on</> %s <green>shipped in</> <lightMagenta>v%s</> <gray>via</> PR <lightCyan>#%d</>", e.name, e.resource, e.version, e.pr)
 		case e.kind == db.RemovalKindProperty:
-			fmt.Fprintf(&b, "<lightBlue>%s</> <gray>on</> %s <green>in the docs today</> <darkGray>%s</>", e.name, e.resource, registryDocURL(db.DocKindResource, e.resource))
+			fmt.Fprintf(&b, "<lightBlue>%s</> <gray>on</> %s <green>in the docs today</> <darkGray>%s</>", e.name, e.resource, registryDocURL(e.ownerKind(), e.resource))
 		case e.version != "":
 			fmt.Fprintf(&b, "<green>%s</> <gray>(%s)</> <green>now exists</> <gray>— arrived in</> <lightMagenta>v%s</> <gray>via</> PR <lightCyan>#%d</> <darkGray>%s</>",
 				e.name, strings.ReplaceAll(e.kind, "-", " "), e.version, e.pr, registryDocURL(e.kind, e.name))
 		default:
 			fmt.Fprintf(&b, "<green>%s</> <gray>(%s)</> <green>in the docs today</> <gray>— arrival not dated</> <darkGray>%s</>",
 				e.name, strings.ReplaceAll(e.kind, "-", " "), registryDocURL(e.kind, e.name))
+		}
+		if e.preAsk {
+			b.WriteString(" <gray>(predates the request)</>")
 		}
 		cout.Printf("      %s\n", b.String())
 		cout.Printf("        <gray>changelog:</> %s\n", text.TruncateRunes(e.bullet, 110))

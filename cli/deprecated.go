@@ -375,6 +375,13 @@ func (f *FlagData) applyDeprecated(d *db.DB, findings []deprecatedFinding, o Dep
 func (f *FlagData) closeOneDeprecated(d *db.DB, repo gh.Repo, fdg *deprecatedFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDeprecatedCard(fdg, pos, total, v)
 
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
+
 	comment, err := f.renderDeprecatedComment(fdg)
 	if err != nil {
 		return issue.ApplyFailed, err

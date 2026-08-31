@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,4 +63,23 @@ func OrDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+// VersionLess compares dotted numeric versions numerically: "4.9.0" < "4.81.0".
+// Non-numeric segments compare as 0; missing segments compare as 0.
+func VersionLess(a, b string) bool {
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) || i < len(bs); i++ {
+		av, bv := 0, 0
+		if i < len(as) {
+			av, _ = strconv.Atoi(as[i])
+		}
+		if i < len(bs) {
+			bv, _ = strconv.Atoi(bs[i])
+		}
+		if av != bv {
+			return av < bv
+		}
+	}
+	return false
 }

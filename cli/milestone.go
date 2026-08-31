@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	metaMSScanCursor = "ms_scan_cursor"
-	metaMSLastScan   = "ms_last_scan"
+	metaMSScanCursor  = "ms_scan_cursor"
+	metaMSLastScan    = "ms_last_scan"
+	metaMSScanStarted = "ms_scan_started" // when the (possibly resumed) full walk began
 
 	// typePullRequest is GraphQL's __typename for PRs on issue-or-PR fields.
 	typePullRequest = "PullRequest"
@@ -91,6 +92,9 @@ func (f *FlagData) milestoneScan(d *db.DB, rescan bool) error {
 		if err := d.DeleteMeta(metaMSLastScan); err != nil {
 			return err
 		}
+		if err := d.DeleteMeta(metaMSScanStarted); err != nil {
+			return err
+		}
 	}
 
 	cursor, err := d.GetMeta(metaMSScanCursor)
@@ -102,12 +106,29 @@ func (f *FlagData) milestoneScan(d *db.DB, rescan bool) error {
 		return err
 	}
 
+	// the completion stamp must be the time the full walk STARTED — a resumed
+	// walk never re-fetches the pages the interrupted run already saved, so a
+	// change landing between the original start and the resume is only caught
+	// by the next incremental scan if the stamp doesn't move past it
+	stamp := started
 	switch {
 	case lastScan == "" || cursor != "":
 		if cursor != "" {
 			cout.Printf("<yellow>resuming</> interrupted scan of all issues in <white>%s</>/<cyan>%s</>...\n", owner, name)
+			orig, gerr := d.GetMeta(metaMSScanStarted)
+			if gerr != nil {
+				return gerr
+			}
+			// no recorded start (scan interrupted before this key existed)
+			// falls back to the resume's start — the old, slightly-lossy stamp
+			if t, terr := time.Parse(time.RFC3339, orig); terr == nil {
+				stamp = t
+			}
 		} else {
 			cout.Printf("scanning ALL issues (open and closed, light fields) in <white>%s</>/<cyan>%s</>...\n", owner, name)
+			if err := d.SetMeta(metaMSScanStarted, started.Format(time.RFC3339)); err != nil {
+				return err
+			}
 		}
 		if err := f.msFullScan(d, client, owner, name, cursor); err != nil {
 			return err
@@ -124,7 +145,10 @@ func (f *FlagData) milestoneScan(d *db.DB, rescan bool) error {
 		}
 	}
 
-	if err := d.SetMeta(metaMSLastScan, started.Format(time.RFC3339)); err != nil {
+	if err := d.SetMeta(metaMSLastScan, stamp.Format(time.RFC3339)); err != nil {
+		return err
+	}
+	if err := d.DeleteMeta(metaMSScanStarted); err != nil {
 		return err
 	}
 	return d.DeleteMeta(metaMSScanCursor)

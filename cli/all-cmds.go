@@ -108,8 +108,11 @@ closes in throttled waves. Nothing touches GitHub without an approved action.`,
 			cmd.SilenceUsage = true
 			f := GetFlags()
 			// the report is what someone reviews and acts from, so its open set
-			// must be true — reconcile by default unless explicitly turned off
-			if !cmd.Flags().Changed("auto-reconcile") {
+			// must be true — reconcile by default unless explicitly turned off.
+			// Changed() only sees the CLI flag; viper.IsSet covers the env var
+			// and .koi config (it ignores unset flag defaults), so a false from
+			// any of the three sources is honoured
+			if !cmd.Flags().Changed("auto-reconcile") && !viper.IsSet("auto-reconcile") {
 				f.AutoReconcile = true
 			}
 			return f.Report()

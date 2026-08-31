@@ -617,7 +617,7 @@ func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 					row = append(row, span("shipped in v"+e.version, kindVer), linkSpan(fmt.Sprintf("PR #%d", e.pr), f.prHTMLURL(e.pr)))
 				} else {
 					row = append(row, span("in the docs today", kindOK),
-						linkSpan("docs", registryDocURL(db.DocKindResource, e.resource)))
+						linkSpan("docs", registryDocURL(e.ownerKind(), e.resource)))
 				}
 			} else {
 				row = []reportSpan{
@@ -630,6 +630,9 @@ func (f *FlagData) existsReportSection(d *db.DB, o FlagsReport, now time.Time) (
 					row = append(row, span("— arrival not dated", kindDim))
 				}
 				row = append(row, linkSpan("docs", registryDocURL(e.kind, e.name)))
+			}
+			if e.preAsk {
+				row = append(row, span("(predates the request)", kindDim))
 			}
 			item.Evidence = append(item.Evidence, row,
 				[]reportSpan{span("changelog:", kindDim), span("“"+e.bullet+"”", kindQuote)})

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/katbyte/koi/lib/db"
+	"github.com/katbyte/koi/lib/text"
 )
 
 var (
@@ -74,20 +75,7 @@ func truncate(s string, n int) string {
 }
 
 // VersionLess compares dotted numeric versions numerically: "4.9.0" < "4.81.0".
-// Non-numeric segments compare as 0; missing segments compare as 0.
+// It lives in lib/text so lib/db can share it without an import cycle.
 func VersionLess(a, b string) bool {
-	as, bs := strings.Split(a, "."), strings.Split(b, ".")
-	for i := 0; i < len(as) || i < len(bs); i++ {
-		av, bv := 0, 0
-		if i < len(as) {
-			av, _ = strconv.Atoi(as[i])
-		}
-		if i < len(bs) {
-			bv, _ = strconv.Atoi(bs[i])
-		}
-		if av != bv {
-			return av < bv
-		}
-	}
-	return false
+	return text.VersionLess(a, b)
 }

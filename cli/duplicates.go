@@ -64,6 +64,7 @@ type duplicateTarget struct {
 	class      string
 	similarity float64  // title overlap, for the similar class
 	shared     []string // the distinctive words both titles use
+	via        int      // the linked target whose own close chained here (0 = cited directly)
 }
 
 // duplicateFinding is one open issue that appears to duplicate an older one.
@@ -324,7 +325,18 @@ func (f *FlagData) collectDuplicates(d *db.DB, link string) (findings []duplicat
 			}
 			return a.issue.Number - b.issue.Number
 		})
-		ts = slices.CompactFunc(ts, func(a, b duplicateTarget) bool { return a.issue.Number == b.issue.Number })
+		// keep only the strongest entry per target — CompactFunc would miss
+		// non-adjacent repeats, and a pair that is both cross-linked and
+		// title-similar would appear twice, contradicting itself in the judge
+		// block ("referenced from the issue above" AND "NOT linked to it")
+		seenTargets := map[int]bool{}
+		ts = slices.DeleteFunc(ts, func(t duplicateTarget) bool {
+			if seenTargets[t.issue.Number] {
+				return true
+			}
+			seenTargets[t.issue.Number] = true
+			return false
+		})
 
 		fdg := duplicateFinding{issue: i, targets: ts, class: ts[0].class, best: ts[0]}
 		if link != "" && fdg.class != link {
@@ -344,6 +356,7 @@ func (f *FlagData) collectDuplicates(d *db.DB, link string) (findings []duplicat
 		closingTo[findings[i].issue.Number] = findings[i].best.issue.Number
 	}
 	for i := range findings {
+		direct := findings[i].best.issue.Number
 		seen := map[int]bool{findings[i].issue.Number: true}
 		end := findings[i].best
 		for {
@@ -357,6 +370,15 @@ func (f *FlagData) collectDuplicates(d *db.DB, link string) (findings []duplicat
 				break // a cycle: leave it, the live guard catches the rest
 			}
 			end = duplicateTarget{issue: target, class: end.class, similarity: end.similarity, shared: end.shared}
+		}
+		if end.issue.Number != direct {
+			// the comment will cite the chain end, so the judge must score
+			// this issue against it too — not just the directly-linked target
+			end.via = direct
+			cited := end
+			if !slices.ContainsFunc(findings[i].targets, func(t duplicateTarget) bool { return t.issue.Number == cited.issue.Number }) {
+				findings[i].targets = append([]duplicateTarget{cited}, findings[i].targets...)
+			}
 		}
 		findings[i].best = end
 	}
@@ -484,6 +506,13 @@ func (f *FlagData) applyDuplicates(d *db.DB, findings []duplicateFinding, o Dupl
 func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printDuplicatesCard(fdg, pos, total, v)
 
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
+
 	comment, err := f.renderDuplicatesComment(fdg)
 	if err != nil {
 		return issue.ApplyFailed, err
@@ -550,6 +579,11 @@ func (f *FlagData) closeOneDuplicate(d *db.DB, repo gh.Repo, fdg *duplicateFindi
 	}
 	if fdg.best.similarity > 0 {
 		a.Evidence["title-match"] = fmt.Sprintf("%.0f%%", fdg.best.similarity*100)
+	}
+	// class and title-match describe the directly-linked pair; the citation
+	// reached best by following that target's own duplicate close
+	if fdg.best.via != 0 {
+		a.Evidence["chained-via"] = fmt.Sprintf("#%d", fdg.best.via)
 	}
 	if v != nil {
 		a.Confidence = v.Confidence
@@ -658,7 +692,10 @@ func (f *FlagData) duplicatesJudgeItems(d *db.DB, findings []duplicateFinding) (
 		for n := range fdg.targets {
 			t := &fdg.targets[n]
 			how := "referenced from the issue above"
-			if t.class == classDupSimilar {
+			switch {
+			case t.via != 0:
+				how = fmt.Sprintf("the open end of the duplicate chain: #%d, which the issue above links, is itself being closed as a duplicate of this one — the close comment would point HERE", t.via)
+			case t.class == classDupSimilar:
 				how = fmt.Sprintf("NOT linked to it, %.0f%% title overlap (%s)", t.similarity*100, strings.Join(t.shared, ", "))
 			}
 			side := "older"

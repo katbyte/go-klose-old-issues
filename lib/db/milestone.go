@@ -2,8 +2,11 @@ package db
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/katbyte/koi/lib/text"
 )
 
 // Milestone is a repo milestone (title format: "v4.81.0").
@@ -245,7 +248,10 @@ func (d *DB) SetMSPRMilestone(number int, title string) error {
 	return err
 }
 
-// ChangelogVersionsByPR returns version(s) per changelog PR number.
+// ChangelogVersionsByPR returns version(s) per changelog PR number, earliest
+// release first — callers cite [0] as "shipped in vX", and SQLite guarantees
+// no row order without one imposed here (lexical text order would put 3.10.0
+// before 3.2.0 anyway).
 func (d *DB) ChangelogVersionsByPR() (map[int][]string, error) {
 	rows, err := d.Query("SELECT DISTINCT pr_number, version FROM changelog WHERE pr_number > 0")
 	if err != nil {
@@ -262,7 +268,13 @@ func (d *DB) ChangelogVersionsByPR() (map[int][]string, error) {
 		}
 		versions[pr] = append(versions[pr], version)
 	}
-	return versions, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for _, vs := range versions {
+		sort.Slice(vs, func(i, j int) bool { return text.VersionLess(vs[i], vs[j]) })
+	}
+	return versions, nil
 }
 
 // Text is the cached full text of an issue or PR, for the AI match check.

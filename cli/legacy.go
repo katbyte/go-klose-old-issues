@@ -302,6 +302,13 @@ func (f *FlagData) applyLegacy(d *db.DB, findings []legacyFinding, o LegacyOpts,
 func (f *FlagData) closeOneLegacy(d *db.DB, repo gh.Repo, fdg *legacyFinding, v *issue.Verdict, pos, total int, throttle func(), ask bool) (int, error) {
 	f.printLegacyCard(fdg, pos, total, v)
 
+	if rejected, err := rejectedInReview(d, fdg.issue.Number); err != nil {
+		return issue.ApplyFailed, err
+	} else if rejected {
+		cout.Printf("      <gray>a human rejected this close in review — skipped</>\n")
+		return issue.ApplySkipped, nil
+	}
+
 	comment, err := issue.RenderCloseComment(fdg.issue, fdg.signals, fdg.action, f.CurrentMajor)
 	if err != nil {
 		return issue.ApplyFailed, err

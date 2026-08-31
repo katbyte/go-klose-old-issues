@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -345,29 +346,40 @@ func (f *FlagData) fetchRemainingComments(d *db.DB, client *gh.Client, owner, na
 	return nil
 }
 
-// changelogFiles are the per-major changelog files in the azurerm repo.
 // rawFileRetry downloads a raw file with a few retries — raw.githubusercontent
-// throttles bursts, and a transient failure here must not look like a 404.
+// throttles bursts, and a transient failure here must not look like a 404. A
+// real 404 is permanent, so it fails immediately instead of burning retries.
 func rawFileRetry(client *gh.Client, owner, name, file string) (string, error) {
 	var content string
 	var err error
-	for attempt := 1; attempt <= 3; attempt++ {
+	for attempt := 1; ; attempt++ {
 		content, err = client.RawFile(owner, name, "main", file)
 		if err == nil {
 			return content, nil
 		}
+		if errors.Is(err, gh.ErrNotFound) || attempt == 3 {
+			return "", err
+		}
 		clog.Log.Debugf("changelog %s attempt %d: %v", file, attempt, err)
 		time.Sleep(3 * time.Second)
 	}
-	return "", err
 }
 
-var changelogFiles = []string{"CHANGELOG.md", "CHANGELOG-v4.md", "CHANGELOG-v3.md", "CHANGELOG-v2.md", "CHANGELOG-v1.md", "CHANGELOG-v0.md"}
+// changelogFiles are the per-major changelog files in the azurerm repo: the
+// live CHANGELOG.md plus an archived CHANGELOG-vN.md per shipped major below
+// the current one — derived so a major bump fetches the newly archived file.
+func changelogFiles(currentMajor int) []string {
+	files := []string{"CHANGELOG.md"}
+	for major := currentMajor - 1; major >= 0; major-- {
+		files = append(files, fmt.Sprintf("CHANGELOG-v%d.md", major))
+	}
+	return files
+}
 
 func (f *FlagData) fetchChangelogs(d *db.DB, client *gh.Client, owner, name string) error {
 	var entries []db.ChangelogEntry
 	failed := 0
-	for _, file := range changelogFiles {
+	for _, file := range changelogFiles(f.CurrentMajor) {
 		content, err := rawFileRetry(client, owner, name, file)
 		if err != nil {
 			// a 404 is normal (repos without split changelogs have fewer files) but
@@ -400,15 +412,23 @@ func (f *FlagData) fetchChangelogs(d *db.DB, client *gh.Client, owner, name stri
 }
 
 // removalGuideMajors are the majors whose upgrade guides use the parseable
-// removed-sections format (the 3.0 guide predates it and carries little).
-var removalGuideMajors = []int{4, 5}
+// removed-sections format: 4.0 onwards through the current major (the 3.0
+// guide predates it and carries little) — derived so a major bump fetches the
+// new guide.
+func removalGuideMajors(currentMajor int) []int {
+	var majors []int
+	for major := 4; major <= currentMajor; major++ {
+		majors = append(majors, major)
+	}
+	return majors
+}
 
 // fetchRemovals rebuilds the removed/deprecated inventory from the upgrade
 // guides plus the changelog's DEPRECATIONS bullets. A failed guide download
 // keeps the existing table — a transient failure must not empty it.
 func (f *FlagData) fetchRemovals(d *db.DB, client *gh.Client, owner, name string) error {
 	var removals []db.Removal
-	for _, major := range removalGuideMajors {
+	for _, major := range removalGuideMajors(f.CurrentMajor) {
 		file := fmt.Sprintf("website/docs/guides/%d.0-upgrade-guide.html.markdown", major)
 		content, err := rawFileRetry(client, owner, name, file)
 		if err != nil {
