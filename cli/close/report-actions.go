@@ -40,6 +40,7 @@ var actionsTakenStatuses = []string{db.StatusApplied, db.StatusFailed, db.Status
 var checkByReason = map[string]string{
 	issue.ReasonLegacyBug:     passLegacy,
 	issue.ReasonFixedMergedPR: passFixed,
+	reasonChangelogFixed:      passFixed,
 	reasonComments:            passComments,
 	reasonDeprecated:          passDeprecated,
 	reasonExists:              passExists,

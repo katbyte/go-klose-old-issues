@@ -144,6 +144,7 @@ const (
 	TagOrange    = "fg=208"
 	TagRed       = "red"
 	TagLightBlue = "lightBlue"
+	TagGray      = "gray"
 )
 
 // PrintVerdict prints the AI's score and reason for a judged finding.

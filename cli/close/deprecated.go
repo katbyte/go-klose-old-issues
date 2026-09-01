@@ -122,7 +122,7 @@ func (f *Flags) Deprecated(link string) error {
 		{classRemovedResource, cli.TagRed},
 		{classRemovedProperty, cli.TagOrange},
 		{classDeprecatedResource, cli.TagYellow},
-		{classDeprecatedProperty, "gray"},
+		{classDeprecatedProperty, cli.TagGray},
 	} {
 		if n := counts[c.class]; n > 0 {
 			cout.Printf("  <%s>%-20s</> <yellow>%d</>\n", c.tag, c.class, n)

@@ -48,8 +48,7 @@ Each check asks one question about an open issue, from one kind of evidence:
 
 | check | the question | the evidence | classes |
 |---|---|---|---|
-| `koi close fixed` | a merged **PR** touches this — did it fix it? | code that shipped | fixed-by · mentioned-by |
-| `koi close changelog` | its resource gained **changelog fixes** after the report — was one this bug? | BUG FIXES bullets nobody linked | matched · resource-only |
+| `koi close fixed` | a **shipped fix** appears to cover this — a PR references it, or an uncited changelog fix matches | merged PRs + BUG FIXES bullets nobody linked | fixed-by · mentioned-by · matched · resource-only |
 | `koi close resolved` | a **sibling issue** covers this one — linked or near-identical, closed or open? | crossrefs + near-identical titles + the sibling's fate | completed · duplicate · not-planned · open · similar |
 | `koi close comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote (incl. the reporter's own "my mistake") | maintainer-says · community-says |
 | `koi close questions` | this **question** was answered, or died unanswered long ago — close it out? | the thread's replies | answered · dead |
@@ -89,8 +88,7 @@ koi milestone report   # milestone-<stamp>.html: the audit's findings by bucket
 #   --apply              act on the evidence, no AI
 #   --apply-with-ai      card + score + (a)ccept (s)kip (p)review (o)pen (q)uit per issue
 #   --apply-with-ai-auto[=t]  unattended at or above a confidence
-koi close fixed --apply-with-ai        # a merged PR references it — did it fix it?
-koi close changelog --apply-with-ai    # a post-report changelog fix on its resource, uncited
+koi close fixed --apply-with-ai        # a PR references it, or an uncited changelog fix matches
 koi close resolved --apply-with-ai     # a sibling issue covers it: linked or near-identical, closed or open
 koi close comments --apply-with-ai     # somebody in the thread says it can be closed
 koi close questions --apply-with-ai    # the question was answered, or died unanswered

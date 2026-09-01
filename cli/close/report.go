@@ -66,10 +66,6 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	chlog, err := f.changelogReportSection(d, o, now)
-	if err != nil {
-		return err
-	}
 	resolved, err := f.resolvedReportSection(d, o, now)
 	if err != nil {
 		return err
@@ -106,7 +102,7 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []cli.ReportSection{fixed, chlog, resolved, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
+	data.Sections = []cli.ReportSection{fixed, resolved, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -122,8 +118,8 @@ func (f *Flags) Report() error {
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · changelog %d · resolved %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, chlog.Total, resolved.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -139,21 +135,28 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 	s := cli.ReportSection{
 		Slug:     passFixed,
 		Name:     "close " + passFixed,
-		Question: "a merged PR touches this open issue — did it fix it?",
-		Description: "Every open issue referenced by a merged same-repository pull request: the issue looks fixed but nobody closed it. " +
-			"fixed-by means the PR declared it closes the issue with a closing keyword; mentioned-by is a bare mention. " +
-			"Applying closes with a comment citing the fix PR and its shipped release, closed as completed.",
-		Command: "koi close fixed [fixed-by|mentioned-by] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Question: "a shipped fix appears to cover this open issue — did it?",
+		Description: "Every open issue a shipped code change appears to fix: a merged same-repository PR references it " +
+			"(fixed-by = closing keyword, mentioned-by = bare mention), or — for bug reports — an uncited BUG FIXES " +
+			"changelog bullet on its resource postdates both the report and the version it reported against (matched = " +
+			"the fix description shares the report's own property or symptom, resource-only = leads). All the fix " +
+			"evidence for an issue is judged together. Applying closes as completed citing the PR and shipped release, " +
+			"or the bullet and its release.",
+		Command: "koi close fixed [fixed-by|mentioned-by|matched|resource-only] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
-	findings, counts, prVersions, _, err := f.collectFixed(d, "")
+	col, err := f.collectFixed(d, "")
 	if err != nil {
 		return s, err
 	}
+	findings, prVersions := col.findings, col.prVersions
 	s.Total = len(findings)
 	s.Classes = []cli.ReportClass{
-		{Name: classFixedBy, Count: counts[classFixedBy], Kind: cli.KindOK},
-		{Name: classMentionedBy, Count: counts[classMentionedBy], Kind: cli.KindWarn},
+		{Name: classFixedBy, Count: col.counts[classFixedBy], Kind: cli.KindOK},
+		{Name: classMentionedBy, Count: col.counts[classMentionedBy], Kind: cli.KindWarn},
+		{Name: classClMatched, Count: col.counts[classClMatched], Kind: cli.KindMid},
+		{Name: classClResourceOnly, Count: col.counts[classClResourceOnly], Kind: cli.KindDim},
 	}
+	s.Note = fmt.Sprintf("bullet sweep: %d open bug reports scanned · %d skipped with every candidate fix predating the reported version", col.bugs, col.predated)
 
 	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
 	var verdicts map[int]*issue.Verdict
@@ -193,85 +196,37 @@ func (f *Flags) fixedReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (
 			row = append(row, cli.Span("· "+text.OneLine(pr.Title), cli.KindDim))
 			item.Evidence = append(item.Evidence, row)
 		}
+		if len(fdg.bullets) > 0 {
+			rep := "version unknown"
+			switch {
+			case fdg.reported != "":
+				rep = "v" + fdg.reported
+			case fdg.major > 0:
+				rep = fmt.Sprintf("v%d.x", fdg.major)
+			}
+			item.Evidence = append(item.Evidence, []cli.ReportSpan{
+				cli.Span("reported against", cli.KindDim), cli.Span(rep, cli.KindVer),
+				cli.Span("· uncited fixes shipped since:", cli.KindDim),
+			})
+			for _, bl := range fdg.bullets {
+				kind := cli.KindDim
+				if bl.score >= changelogMatchedScore {
+					kind = cli.KindOK
+				}
+				row := []cli.ReportSpan{
+					cli.Span("v"+bl.entry.Version, kind),
+					cli.Span(text.OneLine(bl.entry.Text), cli.KindQuote),
+				}
+				if bl.entry.PRNumber != 0 {
+					row = append(row, cli.LinkSpan(fmt.Sprintf("PR #%d", bl.entry.PRNumber), f.prHTMLURL(bl.entry.PRNumber)))
+				}
+				item.Evidence = append(item.Evidence, row)
+			}
+		}
 		if fdg.reopenedBy != 0 {
 			item.Evidence = append(item.Evidence, []cli.ReportSpan{
 				cli.Span(fmt.Sprintf("closed by PR #%d and then reopened — the fix may not have stuck", fdg.reopenedBy), cli.KindBad),
 			})
-		}
-		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
-		s.Items = append(s.Items, item)
-	}
-	return s, nil
-}
-
-// changelogReportSection builds the "post-report changelog fixes" check section.
-func (f *Flags) changelogReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
-	s := cli.ReportSection{
-		Slug:     passChangelog,
-		Name:     "close " + passChangelog,
-		Question: "this bug's resource gained changelog fixes after the report — was one of them this bug?",
-		Description: "Open bug and crash reports whose resources received BUG FIXES changelog bullets after the report, " +
-			"with no PR ever citing the issue — the fixes koi close fixed cannot see. Bullets must postdate both the " +
-			"report and the version it reported against. matched means a bullet names the report's own property or " +
-			"symptom; resource-only fixes merely touched the resource. Applying closes as completed citing the bullet.",
-		Command: "koi close changelog [matched|resource-only] --apply / --apply-with-ai / --apply-with-ai-auto",
-	}
-	col, err := f.collectChangelog(d, "")
-	if err != nil {
-		return s, err
-	}
-	findings := col.findings
-	s.Total = len(findings)
-	s.Classes = []cli.ReportClass{
-		{Name: classClMatched, Count: col.counts[classClMatched], Kind: cli.KindOK},
-		{Name: classClResourceOnly, Count: col.counts[classClResourceOnly], Kind: cli.KindWarn},
-	}
-	s.Note = fmt.Sprintf("%d open bug reports scanned · %d skipped with every candidate fix predating the reported version", col.bugs, col.predated)
-
-	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
-	var verdicts map[int]*issue.Verdict
-	if o.WithAI && len(findings) > 0 {
-		promptText, items, jerr := f.changelogJudgeItems(d, findings)
-		if jerr != nil {
-			return s, jerr
-		}
-		if verdicts, err = f.JudgeBlocks(d, passChangelog, promptText, items, nil, nil); err != nil {
-			return s, err
-		}
-		cli.SortByVerdict(findings, func(x *changelogFinding) int { return x.issue.Number }, verdicts)
-	}
-
-	for i := range findings {
-		fdg := &findings[i]
-		item := cli.ReportItem{
-			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
-			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
-				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
-				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
-		}
-		rep := "version unknown"
-		switch {
-		case fdg.reported != "":
-			rep = "v" + fdg.reported
-		case fdg.major > 0:
-			rep = fmt.Sprintf("v%d.x", fdg.major)
-		}
-		item.Evidence = append(item.Evidence, []cli.ReportSpan{
-			cli.Span("reported against", cli.KindDim), cli.Span(rep, cli.KindVer),
-		})
-		for _, bl := range fdg.bullets {
-			kind := cli.KindWarn
-			if bl.score >= changelogMatchedScore {
-				kind = cli.KindOK
-			}
-			row := []cli.ReportSpan{
-				cli.Span("v"+bl.entry.Version, kind),
-				cli.Span(text.OneLine(bl.entry.Text), cli.KindQuote),
-			}
-			if bl.entry.PRNumber != 0 {
-				row = append(row, cli.LinkSpan(fmt.Sprintf("PR #%d", bl.entry.PRNumber), f.prHTMLURL(bl.entry.PRNumber)))
-			}
-			item.Evidence = append(item.Evidence, row)
 		}
 		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)
