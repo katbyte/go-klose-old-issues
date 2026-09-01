@@ -76,11 +76,11 @@ koi fetch              # everything non-AI in one step: open issues + comments +
                        # scan -> issues.db, rules run automatically (resumable; later runs sync
                        # incrementally — the only required setup step)
 
-koi report --provider-src ~/src/azurerm   # close-<yyyymmdd-hhmm>.html: every close candidate each
-                       # check sees, with its evidence, linked. The provider checkout is required —
+koi close report --provider-src ~/src/azurerm   # close-<yyyymmdd-hhmm>.html: every close candidate
+                       # each check sees, with its evidence, linked. The provider checkout is required —
                        # the errors and docs checks read it, and a report missing checks would
                        # be acted on as if complete (put provider-src in .koi to skip the flag)
-koi report --with-ai --limit 10   # AI-score a small slice per check first — cheap end-to-end test
+koi close report --with-ai --limit 10   # AI-score a small slice per check first — cheap end-to-end test
 koi label report       # label-<stamp>.html: every label candidate (version, question)
 koi milestone report   # milestone-<stamp>.html: the audit's findings by bucket
 

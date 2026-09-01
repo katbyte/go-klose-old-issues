@@ -28,7 +28,8 @@ All checks share the tri-mode applies: --apply acts on the evidence alone,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
 	c.AddCommand(fixedCmd(), resolvedCmd(), commentsCmd(), questionsCmd(),
-		staleCmd(), existsCmd(), legacyCmd(), errorsCmd(), docsCmd(), deprecatedCmd())
+		staleCmd(), existsCmd(), legacyCmd(), errorsCmd(), docsCmd(), deprecatedCmd(),
+		reportCommand())
 	return c
 }
 
@@ -274,9 +275,10 @@ func docsCmd() *cobra.Command {
 	return c
 }
 
-// ReportCommand returns the top-level report command: the HTML page of every
-// close candidate the checks see, plus the actions-taken ledger.
-func ReportCommand() *cobra.Command {
+// reportCommand returns koi close report: the HTML page of every close
+// candidate the checks see, plus the actions-taken ledger. Like label and
+// milestone, the report lives under its command group.
+func reportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
 		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, comments, questions, stale, exists, legacy, errors, docs, deprecated)",

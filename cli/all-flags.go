@@ -108,7 +108,7 @@ type FlagsReview struct {
 	ApproveAll    bool    `mapstructure:"approve-all"`
 }
 
-// FlagsReport configures koi report and its subcommands.
+// FlagsReport configures koi close report and its subcommands.
 type FlagsReport struct {
 	Out    string `mapstructure:"out"`     // directory to write the report files into
 	WithAI bool   `mapstructure:"with-ai"` // AI-score every candidate and sort surest first

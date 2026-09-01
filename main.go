@@ -19,7 +19,7 @@ func main() {
 		clog.Log.Error(c.Sprintf("<red>koi: building cmd</> %v", err))
 		os.Exit(1)
 	}
-	cmd.AddCommand(close.Command(), close.ReportCommand(), close.ImportCommand(),
+	cmd.AddCommand(close.Command(), close.ImportCommand(),
 		milestone.Command(), label.Command())
 
 	if err := cmd.Execute(); err != nil {
