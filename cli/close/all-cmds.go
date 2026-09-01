@@ -29,7 +29,7 @@ All checks share the tri-mode applies: --apply acts on the evidence alone,
 	}
 	c.AddCommand(fixedCmd(), resolvedCmd(), commentsCmd(), questionsCmd(),
 		staleCmd(), existsCmd(), legacyCmd(), errorsCmd(), docsCmd(), deprecatedCmd(),
-		reportCommand())
+		reviewCmd(), reportCommand())
 	return c
 }
 
@@ -275,6 +275,34 @@ func docsCmd() *cobra.Command {
 	return c
 }
 
+// reviewCmd returns koi close review: the second look at everything koi
+// closed — did anyone dispute it since?
+func reviewCmd() *cobra.Command {
+	c := &cobra.Command{
+		Use:           "review",
+		Short:         "did anyone dispute a close? scans every issue koi closed for new comments and AI-scores whether to reopen",
+		Long:          `Reads, from the local db, every comment left on a closed issue AFTER its close — the incremental sync refetches closed issues on new activity, so the comments are already here (fetch keeps them fresh) — and has the AI judge whether the new comments genuinely dispute the close: the author saying it is not fixed, a fresh reproduction on a current version, a maintainer calling the close premature. Thanks, release-bot notes, and different problems score low. The base list is the applied close actions (the ledger koi close report actions-taken shows); --exhaustive adds every closed issue the closer commented on at close time with no action row — closes done by hand (--closer sets whose comment counts). Bare is a report sorted surest-disputed first; --last narrows to comments left in a recent window (e.g. --last 10w, --last 2m); --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto reopens at or above the threshold. Reopens post no comment — the dispute is already on the thread — and mark the action reopened, like koi reopen.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       checkPreRun(),
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return flags().CloseReview()
+		},
+	}
+	c.Flags().String("last", "", "only consider comments left in this window — <n>d/w/m/y, e.g. 10w or 2m (default: everything since each close)")
+	addReviewSweepFlags(c)
+	return c
+}
+
+// addReviewSweepFlags registers the flags the review sweep takes — on koi
+// close review, and on koi close report (whose review-<stamp>.html runs the
+// same sweep).
+func addReviewSweepFlags(cmd *cobra.Command) {
+	cmd.Flags().Bool("exhaustive", false, "also review closed issues with no action row where the closer commented at close time (closes done by hand)")
+	cmd.Flags().String("closer", "katbyte", "whose comment at close time marks a by-hand close for --exhaustive")
+}
+
 // reportCommand returns koi close report: the HTML page of every close
 // candidate the checks see, plus the actions-taken ledger. Like label and
 // milestone, the report lives under its command group.
@@ -282,7 +310,7 @@ func reportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
 		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
-		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
+		Long:          `Writes three stamped files per run. close-<stamp>.html: every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked; the top of the page describes each check and jumps to its section. closed-<stamp>.html (+.csv): the ledger of everything koi has closed, with the AI decision behind each one. review-<stamp>.html: the close review — closed issues whose new comments may dispute the close (--exhaustive adds by-hand closes), and every close since reopened. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),
 		SilenceErrors: true,
@@ -301,11 +329,12 @@ func reportCommand() *cobra.Command {
 		},
 	}
 	addReportFlags(c)
+	addReviewSweepFlags(c)
 	addProviderSrcFlags(c) // the errors and docs sections read the same provider checkout
 	c.AddCommand(&cobra.Command{
 		Use:           "actions-taken",
 		Short:         "writes the ledger of everything koi has closed, with the AI decision behind each one",
-		Long:          `Writes actions-taken.html and actions-taken.csv: every issue koi has acted on — closed, failed, skipped as stale, or reopened — grouped by why it was closed. Each entry carries the evidence the check recorded, who decided it, and the AI's score, reasoning, and model. Reads the local db only; nothing is fetched and nothing on GitHub is touched.`,
+		Long:          `Writes closed-<stamp>.html and .csv: every issue koi has acted on — closed, failed, skipped as stale, or reopened — grouped by why it was closed. Each entry carries the evidence the check recorded, who decided it, and the AI's score, reasoning, and model. Reads the local db only; nothing is fetched and nothing on GitHub is touched. koi close report writes the same files on every run.`,
 		Aliases:       []string{"actions"},
 		Args:          cobra.NoArgs,
 		PreRunE:       cli.ValidateParams([]string{"db"}),

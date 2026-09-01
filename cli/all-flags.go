@@ -83,14 +83,19 @@ type FlagsAI struct {
 // viper key and fill every field carrying it — harmless for the same reason.
 // Unlike the root flags none of these are bound to env vars.
 type FlagsCommands struct {
-	FetchFull     bool           `mapstructure:"full"`
-	Review        FlagsReview    `mapstructure:",squash"`
-	Report        FlagsReport    `mapstructure:",squash"`
-	ApplyReason   string         `mapstructure:"reason"` // koi apply: only this reason code
-	ReopenComment string         `mapstructure:"comment"`
-	MS            FlagsMilestone `mapstructure:",squash"`
-	LegacyMajors  []int          `mapstructure:"major"`
-	Errors        FlagsErrors    `mapstructure:",squash"`
+	FetchFull     bool        `mapstructure:"full"`
+	Review        FlagsReview `mapstructure:",squash"`
+	Report        FlagsReport `mapstructure:",squash"`
+	ApplyReason   string      `mapstructure:"reason"` // koi apply: only this reason code
+	ReopenComment string      `mapstructure:"comment"`
+	// koi close review: comment window (e.g. 10w, 2m), the manual-close sweep,
+	// and whose comment marks a by-hand close
+	ReviewLast       string         `mapstructure:"last"`
+	ReviewExhaustive bool           `mapstructure:"exhaustive"`
+	ReviewCloser     string         `mapstructure:"closer"`
+	MS               FlagsMilestone `mapstructure:",squash"`
+	LegacyMajors     []int          `mapstructure:"major"`
+	Errors           FlagsErrors    `mapstructure:",squash"`
 }
 
 // FlagsErrors points the errors check at a provider checkout to search.

@@ -100,59 +100,24 @@ type actionsData struct {
 	Sections      []actionSection
 }
 
-// ActionsTaken writes actions-taken.html and actions-taken.csv: every issue koi
-// has closed (or tried to), the evidence that put it on the list, and the AI's
-// score, reasoning, and model for each one. Pure db history — it never fetches.
+// ActionsTaken writes closed-<stamp>.html and .csv: every issue koi has
+// closed (or tried to), the evidence that put it on the list, and the AI's
+// score, reasoning, and model for each one. Pure db history — it never
+// fetches. koi close report writes the same files on every run.
 func (f *Flags) ActionsTaken() error {
-	out := f.Cmd.Report.Out
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = d.Close() }()
 
-	actions, err := d.Actions(db.ActionFilter{})
+	htmlPath, csvPath, data, err := f.writeActionsTaken(d, f.Cmd.Report.Out, time.Now())
 	if err != nil {
 		return err
 	}
-	taken := make([]*db.Action, 0, len(actions))
-	for _, a := range actions {
-		if slices.Contains(actionsTakenStatuses, a.Status) {
-			taken = append(taken, a)
-		}
-	}
-	if len(taken) == 0 {
+	if htmlPath == "" {
 		cout.Printf("no actions taken yet — nothing has been closed from this db\n")
 		return nil
-	}
-
-	titles, err := d.IssueTitles()
-	if err != nil {
-		return err
-	}
-	verdicts, err := d.Verdicts()
-	if err != nil {
-		return err
-	}
-
-	items := make([]actionItem, 0, len(taken))
-	for _, a := range taken {
-		items = append(items, f.actionItem(a, titles, verdicts))
-	}
-	// newest first: the last wave is what a human wants to eyeball
-	slices.SortStableFunc(items, func(a, b actionItem) int { return b.appliedAt.Compare(a.appliedAt) })
-
-	data := f.actionsData(items)
-
-	if err := os.MkdirAll(out, 0o750); err != nil {
-		return fmt.Errorf("creating %s: %w", out, err)
-	}
-	htmlPath, csvPath := filepath.Join(out, "actions-taken.html"), filepath.Join(out, "actions-taken.csv")
-	if err := writeActionsHTML(htmlPath, &data); err != nil {
-		return err
-	}
-	if err := writeActionsCSV(csvPath, items); err != nil {
-		return err
 	}
 
 	counts := map[string]int{}
@@ -165,6 +130,55 @@ func (f *Flags) ActionsTaken() error {
 		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
 	}
 	return nil
+}
+
+// writeActionsTaken renders the closed ledger to closed-<stamp>.html/.csv in
+// out, returning empty paths when nothing has been closed yet.
+func (f *Flags) writeActionsTaken(d *db.DB, out string, now time.Time) (htmlPath, csvPath string, data *actionsData, err error) {
+	actions, err := d.Actions(db.ActionFilter{})
+	if err != nil {
+		return "", "", nil, err
+	}
+	taken := make([]*db.Action, 0, len(actions))
+	for _, a := range actions {
+		if slices.Contains(actionsTakenStatuses, a.Status) {
+			taken = append(taken, a)
+		}
+	}
+	if len(taken) == 0 {
+		return "", "", nil, nil
+	}
+
+	titles, err := d.IssueTitles()
+	if err != nil {
+		return "", "", nil, err
+	}
+	verdicts, err := d.Verdicts()
+	if err != nil {
+		return "", "", nil, err
+	}
+
+	items := make([]actionItem, 0, len(taken))
+	for _, a := range taken {
+		items = append(items, f.actionItem(a, titles, verdicts))
+	}
+	// newest first: the last wave is what a human wants to eyeball
+	slices.SortStableFunc(items, func(a, b actionItem) int { return b.appliedAt.Compare(a.appliedAt) })
+
+	d2 := f.actionsData(items, now)
+
+	if err := os.MkdirAll(out, 0o750); err != nil {
+		return "", "", nil, fmt.Errorf("creating %s: %w", out, err)
+	}
+	htmlPath = filepath.Join(out, cli.ReportFileName("closed", now))
+	csvPath = strings.TrimSuffix(htmlPath, ".html") + ".csv"
+	if err := writeActionsHTML(htmlPath, &d2); err != nil {
+		return "", "", nil, err
+	}
+	if err := writeActionsCSV(csvPath, items); err != nil {
+		return "", "", nil, err
+	}
+	return htmlPath, csvPath, &d2, nil
 }
 
 // actionItem renders one action row: the issue it touched, the evidence that
@@ -216,9 +230,9 @@ func (f *Flags) actionItem(a *db.Action, titles map[int]string, verdicts map[str
 
 // actionsData tallies the items and groups them into per-reason sections,
 // biggest first.
-func (f *Flags) actionsData(items []actionItem) actionsData {
+func (f *Flags) actionsData(items []actionItem, now time.Time) actionsData {
 	data := actionsData{
-		Repo: f.GH.Repo, GeneratedAt: time.Now().Format("2006-01-02 15:04"), Total: len(items),
+		Repo: f.GH.Repo, GeneratedAt: now.Format("2006-01-02 15:04"), Total: len(items),
 	}
 
 	var sum float64

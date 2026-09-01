@@ -329,10 +329,15 @@ func (f *FlagData) reconcileOpenSet(d *db.DB, client *gh.Client, owner, name str
 // exceeds what the bulk fetch returned — old, busy issues, exactly the ones where
 // the comments carry the decisive context.
 func (f *FlagData) fetchRemainingComments(d *db.DB, client *gh.Client, owner, name string) error {
+	// closed issues koi acted on stay included: the incremental sync refetches
+	// them on new activity but only carries the FIRST 50 comments, and on a
+	// long thread the post-close comments — what koi close review reads — live
+	// past that page
 	rows, err := d.Query(`
 		SELECT i.number, i.comment_count, COUNT(c.id)
 		FROM issues i LEFT JOIN comments c ON c.issue_number = i.number
 		WHERE i.state = 'OPEN'
+		   OR i.number IN (SELECT issue_number FROM actions WHERE action = 'close' AND status = 'applied')
 		GROUP BY i.number HAVING i.comment_count > COUNT(c.id)`)
 	if err != nil {
 		return fmt.Errorf("finding issues with missing comments: %w", err)

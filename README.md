@@ -80,6 +80,9 @@ koi close report --provider-src ~/src/azurerm   # close-<yyyymmdd-hhmm>.html: ev
                        # each check sees, with its evidence, linked. The provider checkout is required —
                        # the errors and docs checks read it, and a report missing checks would
                        # be acted on as if complete (put provider-src in .koi to skip the flag)
+                       # every run also writes closed-<stamp>.html/.csv (the ledger of everything
+                       # koi closed, with the AI decision behind each one) and review-<stamp>.html
+                       # (closes whose new comments may dispute them + closes since reopened)
 koi close report --with-ai --limit 10   # AI-score a small slice per check first — cheap end-to-end test
 koi label report       # label-<stamp>.html: every label candidate (version, question)
 koi milestone report   # milestone-<stamp>.html: the audit's findings by bucket
@@ -103,6 +106,11 @@ koi close deprecated --apply-with-ai   # it leans on something that has been rem
 koi label version --apply-with-ai      # add the v/N.x labels the evidence supports (add-only)
 koi label question --apply-with-ai     # add the question label to issues that read as asks (add-only)
 
+koi close review --last 10w            # the second look: comments left on closed issues AFTER the
+                                       # close (here: in the last 10 weeks; all from the local db —
+                                       # the sync keeps closed issues fresh) AI-scored for whether
+                                       # they dispute it; --apply-with-ai reopens the disputed;
+                                       # --exhaustive adds by-hand closes (closer commented, no action row)
 koi reopen 1234 --comment "reopening, closed in error"   # mistake recovery
 
 koi milestone                    # scan ALL issues (open+closed, light fields) + audit release milestones

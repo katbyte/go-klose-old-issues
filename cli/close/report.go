@@ -120,12 +120,34 @@ func (f *Flags) Report() error {
 	}
 	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · resolved %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
 		htmlPath, data.Total, fixed.Total, resolved.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
+
+	// the companions: the ledger of everything closed, and the review of it
+	closedHTML, closedCSV, actData, err := f.writeActionsTaken(d, o.Out, now)
+	if err != nil {
+		return err
+	}
+	if closedHTML != "" {
+		cout.Printf("wrote <cyan>%s</> and <cyan>%s</> — <yellow>%d</> actions taken\n", closedHTML, closedCSV, actData.Total)
+	}
+	reviewHTML, reviewData, err := f.writeReviewReport(d, o, now)
+	if err != nil {
+		return err
+	}
+	if reviewHTML != "" {
+		cout.Printf("wrote <cyan>%s</> — <yellow>%d</> disputed · <yellow>%d</> reopened\n",
+			reviewHTML, reviewData.Sections[0].Total, reviewData.Sections[1].Total)
+	}
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
-	// a file:// url so the terminal makes the path clickable
-	if abs, aerr := filepath.Abs(htmlPath); aerr == nil {
-		cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
+	// file:// urls so the terminal makes every page clickable
+	for _, p := range []string{htmlPath, closedHTML, reviewHTML} {
+		if p == "" {
+			continue
+		}
+		if abs, aerr := filepath.Abs(p); aerr == nil {
+			cout.Printf("<gray>open:</> <cyan>file://%s</>\n", abs)
+		}
 	}
 	return nil
 }

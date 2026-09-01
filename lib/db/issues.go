@@ -227,6 +227,26 @@ func (d *DB) OpenIssues() ([]*Issue, error) {
 	return issues, rows.Err()
 }
 
+// ClosedIssues returns all closed issues in the db ordered oldest first —
+// issues fetched while open that have since closed (the sync keeps them).
+func (d *DB) ClosedIssues() ([]*Issue, error) {
+	rows, err := d.Query("SELECT " + issueCols + " FROM issues WHERE state = 'CLOSED' ORDER BY number ASC")
+	if err != nil {
+		return nil, fmt.Errorf("querying closed issues: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var issues []*Issue
+	for rows.Next() {
+		i, err := scanIssue(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning issue: %w", err)
+		}
+		issues = append(issues, i)
+	}
+	return issues, rows.Err()
+}
+
 // CommentsFor returns an issue's comments ordered oldest first.
 func (d *DB) CommentsFor(number int) ([]Comment, error) {
 	rows, err := d.Query(
