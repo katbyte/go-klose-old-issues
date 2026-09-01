@@ -18,7 +18,7 @@ func checkPreRun() func(*cobra.Command, []string) error {
 func Command() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "close",
-		Short: "the checks: close issues the evidence says are done (fixed, changelog, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
+		Short: "the checks: close issues the evidence says are done (fixed, changelog, resolved, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
 		Long: `Each check finds open issues one kind of evidence says are done with, has the
 AI judge every candidate, and closes them with a comment citing the evidence.
 All checks share the tri-mode applies: --apply acts on the evidence alone,
@@ -27,7 +27,7 @@ All checks share the tri-mode applies: --apply acts on the evidence alone,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	c.AddCommand(fixedCmd(), changelogCmd(), resolvedCmd(), duplicatesCmd(), commentsCmd(), questionsCmd(),
+	c.AddCommand(fixedCmd(), changelogCmd(), resolvedCmd(), commentsCmd(), questionsCmd(),
 		staleCmd(), existsCmd(), legacyCmd(), errorsCmd(), docsCmd(), deprecatedCmd())
 	return c
 }
@@ -101,17 +101,20 @@ func resolvedCmd() *cobra.Command {
 	}
 	c := &cobra.Command{
 		Use:           "resolved",
-		Short:         "a linked issue was dealt with — does its outcome cover these open ones? AI-scored, closeable",
-		Long:          `Every open issue that cross-references a closed issue in the same repository. Targets class by how they were closed: completed (resolved, with the fixing PR and release when known), duplicate, then not-planned; subcommands scope to one class. The AI compares the substance of both issues before blessing a close. --apply closes everything listed, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closes comment as a duplicate pointing at the linked issue and its resolution, closed as completed when the target was resolved and not planned otherwise.`,
+		Aliases:       []string{"duplicates", "dupes"},
+		Short:         "a sibling issue covers these open ones — linked or near-identical, closed or open. AI-scored, closeable",
+		Long:          `Every open issue that another issue in the same repository answers, whether that sibling is closed or still open. Closed targets class by how they were closed: completed (resolved, with the fixing PR and release when known), duplicate, then not-planned — linked by a crossref, or found by near-identical titles (the similar class, matched against the entire closed corpus from the milestone scan). Open targets (the open class, once its own duplicates check) close towards the issue carrying more of the discussion, weighted towards the older one; issues with an open PR linked are never listed there. Subcommands scope to one class; similar spans both target states. The AI compares the substance of both issues before blessing a close. --apply closes everything listed, --apply-with-ai asks per issue, --apply-with-ai-auto closes at or above the threshold; closed-target closes comment pointing at the sibling and its resolution (completed when it was resolved, not planned otherwise), open-target closes point at the surviving issue and close as duplicate.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),
 		SilenceErrors: true,
 		RunE:          runE(""),
 	}
 	subs(c, runE, []struct{ use, link, short string }{
-		{classCompleted, classCompleted, "only issues whose linked issue was resolved (strongest evidence)"},
-		{classDuplicate, classDuplicate, "only issues whose linked issue was itself closed as a duplicate"},
-		{classNotPlanned, classNotPlanned, "only issues whose linked issue was closed as not planned (weakest evidence)"},
+		{classCompleted, classCompleted, "only issues whose linked closed issue was resolved (strongest evidence)"},
+		{classDuplicate, classDuplicate, "only issues whose linked closed issue was itself closed as a duplicate"},
+		{classNotPlanned, classNotPlanned, "only issues whose linked closed issue was closed as not planned"},
+		{linkOpen, linkOpen, "only issues duplicating another OPEN issue (the old duplicates check)"},
+		{classDupSimilar, classDupSimilar, "only pairs nobody linked, matched on near-identical titles — closed and open targets"},
 	})
 	return c
 }
@@ -292,36 +295,12 @@ func docsCmd() *cobra.Command {
 	return c
 }
 
-func duplicatesCmd() *cobra.Command {
-	runE := func(link string) func(cmd *cobra.Command, _ []string) error {
-		return func(cmd *cobra.Command, _ []string) error {
-			cmd.SilenceUsage = true
-			return flags().Duplicates(link)
-		}
-	}
-	c := &cobra.Command{
-		Use:           "duplicates",
-		Aliases:       []string{"dupes"},
-		Short:         "these open issues appear to duplicate an older open issue. AI-scored, closeable",
-		Long:          `Open issues that duplicate another OPEN issue: this one references it, or nobody ever linked them and the two titles say the same thing. The older issue always survives, since it holds the history, the reactions and the maintainer discussion; the AI compares both issues in full and judges whether they are really the same ask. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments pointing at the surviving issue and closes as a duplicate. Issues with an open PR linked to them are never listed. For duplicates of issues that are already CLOSED, use koi close resolved.`,
-		Args:          cobra.NoArgs,
-		PreRunE:       checkPreRun(),
-		SilenceErrors: true,
-		RunE:          runE(""),
-	}
-	subs(c, runE, []struct{ use, link, short string }{
-		{classDupLinked, classDupLinked, "only issues that reference the older issue (strongest evidence)"},
-		{classDupSimilar, classDupSimilar, "only issues nobody linked, matched on near-identical titles"},
-	})
-	return c
-}
-
 // ReportCommand returns the top-level report command: the HTML page of every
 // close candidate the checks see, plus the actions-taken ledger.
 func ReportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, changelog, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, changelog, resolved, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),

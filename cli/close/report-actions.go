@@ -43,7 +43,7 @@ var checkByReason = map[string]string{
 	reasonComments:            passComments,
 	reasonDeprecated:          passDeprecated,
 	reasonExists:              passExists,
-	reasonDuplicateOpen:       passDuplicates,
+	reasonDuplicateOpen:       sourceDuplicates,
 	reasonDuplicateResolved:   passResolved,
 }
 

@@ -19,10 +19,14 @@ const (
 	// quality. Passes with even bigger blocks lower Judge.BatchSize further.
 	judgeBatchSize = 10
 	// judgePrefetch is how many batches are kept in flight ahead of the one
-	// being reviewed. One is enough when reading each card takes longer than a
-	// batch; two keeps a fast reviewer off the AI's critical path, at the cost
-	// of throwing away that much judgement if the run is quit early.
-	judgePrefetch = 2
+	// being reviewed. The AI CLI runs prefetched batches genuinely in
+	// parallel, so this is the concurrency: a reviewer skimming cards faster
+	// than one batch judges needs several in flight to stay off the AI's
+	// critical path (kt hit this on the 377-candidate resolved wave — batch
+	// boundaries stalled at depth 2). The cost is throwing away this much
+	// judgement if the run is quit early — verdicts are cached, so even that
+	// is only lost when the prompt or issues change before the next run.
+	judgePrefetch = 4
 	// maxConsecFails is how many batches may fail in a row before a run gives
 	// up on the AI.
 	maxConsecFails = 3
@@ -181,6 +185,9 @@ func (j *Judge) Blocks(pass, promptText string, items []JudgeItem,
 		select {
 		case res = <-ch:
 		default:
+			// say so up front — a silent freeze here reads as the background
+			// judging never having started, when it just isn't finished yet
+			cout.Printf(" <gray>still judging, waiting...</>")
 			started := time.Now()
 			res = <-ch
 			timing = fmt.Sprintf("<gray>(waited %s on the AI)</>", time.Since(started).Round(time.Second))

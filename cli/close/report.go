@@ -90,10 +90,6 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	duplicates, err := f.duplicatesReportSection(d, o, now)
-	if err != nil {
-		return err
-	}
 	errorsSec, err := f.errorsReportSection(d, o, now)
 	if err != nil {
 		return err
@@ -110,7 +106,7 @@ func (f *Flags) Report() error {
 	if err != nil {
 		return err
 	}
-	data.Sections = []cli.ReportSection{fixed, chlog, resolved, duplicates, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
+	data.Sections = []cli.ReportSection{fixed, chlog, resolved, comments, questions, stale, exists, legacy, errorsSec, docsSec, deprecated}
 	for _, s := range data.Sections {
 		data.Total += s.Total
 	}
@@ -126,8 +122,8 @@ func (f *Flags) Report() error {
 	if err := cli.WriteReportHTML(htmlPath, &data); err != nil {
 		return err
 	}
-	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · changelog %d · resolved %d · duplicates %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
-		htmlPath, data.Total, fixed.Total, chlog.Total, resolved.Total, duplicates.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
+	cout.Printf("\nwrote <cyan>%s</> — <yellow>%d</> close candidates <gray>(fixed %d · changelog %d · resolved %d · comments %d · questions %d · stale %d · exists %d · legacy %d · errors %d · docs %d · deprecated %d)</>\n",
+		htmlPath, data.Total, fixed.Total, chlog.Total, resolved.Total, comments.Total, questions.Total, stale.Total, exists.Total, legacy.Total, errorsSec.Total, docsSec.Total, deprecated.Total)
 	if !o.WithAI {
 		cout.Printf("<gray>rerun with</> <cyan>--with-ai</> <gray>to score every candidate, or</> <cyan>--limit 10</> <gray>to test cheaply</>\n")
 	}
@@ -288,11 +284,13 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 	s := cli.ReportSection{
 		Slug:     passResolved,
 		Name:     "close " + passResolved,
-		Question: "a linked issue was dealt with — does its outcome cover this open one?",
-		Description: "Every open issue that cross-references a CLOSED issue in the same repository: likely duplicates of something already dealt with. " +
-			"Classes by how the linked issue was closed: completed (with the fixing PR and release when the changelog records them), duplicate, then not planned. " +
-			"Applying closes as a duplicate pointing at the linked issue and its resolution.",
-		Command: "koi close resolved [completed|duplicate|not-planned] --apply / --apply-with-ai / --apply-with-ai-auto",
+		Question: "a sibling issue covers this one — linked or near-identical, closed or open?",
+		Description: "Every open issue another issue answers. Closed targets class by how they were closed — completed " +
+			"(with the fixing PR and release when the changelog records them), duplicate, then not planned — linked by " +
+			"a crossref, or found by near-identical titles against the entire closed corpus (similar). Open targets " +
+			"(open-linked, open-similar) close towards the issue carrying more of the discussion, weighted towards the " +
+			"older one. Applying closes pointing at the sibling and its resolution.",
+		Command: "koi close resolved [completed|duplicate|not-planned|open|similar] --apply / --apply-with-ai / --apply-with-ai-auto",
 	}
 	findings, counts, _, err := f.collectResolved(d, "")
 	if err != nil {
@@ -303,6 +301,8 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		{Name: classCompleted, Count: counts[classCompleted], Kind: cli.KindOK},
 		{Name: classDuplicate, Count: counts[classDuplicate], Kind: cli.KindMid},
 		{Name: classNotPlanned, Count: counts[classNotPlanned], Kind: cli.KindWarn},
+		{Name: linkOpen, Count: counts[linkOpen], Kind: cli.KindMid},
+		{Name: classDupSimilar, Count: counts[classDupSimilar], Kind: cli.KindMid},
 	}
 
 	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
@@ -329,10 +329,26 @@ func (f *Flags) resolvedReportSection(d *db.DB, o cli.FlagsReport, now time.Time
 		}
 		for n := range fdg.targets {
 			t := &fdg.targets[n]
+			if t.open {
+				how, kind := "referenced from this issue — target still OPEN", cli.KindOK
+				if t.similarity > 0 {
+					how, kind = fmt.Sprintf("%.0f%% title match, nothing links them — target still OPEN", t.similarity*100), cli.KindMid
+				}
+				item.Evidence = append(item.Evidence, []cli.ReportSpan{
+					cli.LinkSpan(fmt.Sprintf("#%d", t.ref.RefNumber), f.issHTMLURL(t.ref.RefNumber)),
+					cli.Span(how, kind),
+					cli.Span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.target.CreatedAt, now), t.target.CommentCount, t.target.ThumbsUp), cli.KindDim),
+				}, []cli.ReportSpan{cli.Span("“"+text.OneLine(t.ref.Title)+"”", cli.KindQuote)})
+				continue
+			}
 			class := resolvedClass(t.stateReason)
 			row := make([]cli.ReportSpan, 0, 6)
+			found := cli.Span("links", cli.KindDim)
+			if t.similarity > 0 {
+				found = cli.Span(fmt.Sprintf("%.0f%% title match, nothing links them —", t.similarity*100), cli.KindMid)
+			}
 			row = append(row,
-				cli.Span("links", cli.KindDim),
+				found,
 				cli.LinkSpan(fmt.Sprintf("#%d", t.ref.RefNumber), f.issHTMLURL(t.ref.RefNumber)),
 				cli.Span("closed "+strings.ReplaceAll(class, "-", " "), classKind[class]))
 			if t.closedAt != "" {
@@ -791,67 +807,6 @@ func (f *Flags) existsReportSection(d *db.DB, o cli.FlagsReport, now time.Time) 
 			if e.quote != "" {
 				item.Evidence = append(item.Evidence, []cli.ReportSpan{cli.Span("the ask:", cli.KindDim), cli.Span("“"+e.quote+"”", cli.KindQuote)})
 			}
-		}
-		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
-		s.Items = append(s.Items, item)
-	}
-	return s, nil
-}
-
-// duplicatesReportSection builds the "this is another open issue" section.
-func (f *Flags) duplicatesReportSection(d *db.DB, o cli.FlagsReport, now time.Time) (cli.ReportSection, error) {
-	s := cli.ReportSection{
-		Slug:     passDuplicates,
-		Name:     "close " + passDuplicates,
-		Question: "this looks like an older open issue — is it the same one?",
-		Description: "Open issues that duplicate another OPEN issue: this one references it, or nobody linked them and " +
-			"the titles say the same thing. The issue with more engagement survives, weighted towards the older one; " +
-			"applying closes this one as a duplicate pointing at it. Duplicates of already-closed issues belong to " +
-			"the resolved check.",
-		Command: "koi close duplicates [linked|similar] --apply / --apply-with-ai / --apply-with-ai-auto",
-	}
-	findings, counts, _, err := f.collectDuplicates(d, "")
-	if err != nil {
-		return s, err
-	}
-	s.Total = len(findings)
-	s.Classes = []cli.ReportClass{
-		{Name: classDupLinked, Count: counts[classDupLinked], Kind: cli.KindOK},
-		{Name: classDupSimilar, Count: counts[classDupSimilar], Kind: cli.KindMid},
-	}
-
-	findings, s.Truncated = cli.LimitFindings(findings, o.Limit)
-	var verdicts map[int]*issue.Verdict
-	if o.WithAI && len(findings) > 0 {
-		promptText, items, jerr := f.duplicatesJudgeItems(d, findings)
-		if jerr != nil {
-			return s, jerr
-		}
-		if verdicts, err = f.JudgeBlocks(d, passDuplicates, promptText, items, nil, nil); err != nil {
-			return s, err
-		}
-		cli.SortByVerdict(findings, func(x *duplicateFinding) int { return x.issue.Number }, verdicts)
-	}
-
-	for i := range findings {
-		fdg := &findings[i]
-		item := cli.ReportItem{
-			Number: fdg.issue.Number, URL: fdg.issue.URL, Title: text.OneLine(fdg.issue.Title),
-			Meta: fmt.Sprintf("opened %s ago · last activity %s ago · 💬 %d · 👍 %d",
-				text.HumanAge(fdg.issue.CreatedAt, now), text.HumanAge(fdg.issue.UpdatedAt, now),
-				fdg.issue.CommentCount, fdg.issue.ThumbsUp),
-		}
-		for n := range fdg.targets {
-			t := &fdg.targets[n]
-			how, kind := "referenced from this issue", cli.KindOK
-			if t.class == classDupSimilar {
-				how, kind = fmt.Sprintf("%.0f%% title match, nothing links them", t.similarity*100), cli.KindMid
-			}
-			item.Evidence = append(item.Evidence, []cli.ReportSpan{
-				cli.LinkSpan(fmt.Sprintf("#%d", t.issue.Number), t.issue.URL),
-				cli.Span(how, kind),
-				cli.Span(fmt.Sprintf("opened %s ago · 💬 %d · 👍 %d", text.HumanAge(t.issue.CreatedAt, now), t.issue.CommentCount, t.issue.ThumbsUp), cli.KindDim),
-			}, []cli.ReportSpan{cli.Span("“"+text.OneLine(t.issue.Title)+"”", cli.KindQuote)})
 		}
 		cli.AttachVerdict(&item, verdicts[fdg.issue.Number])
 		s.Items = append(s.Items, item)

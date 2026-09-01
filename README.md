@@ -50,8 +50,7 @@ Each check asks one question about an open issue, from one kind of evidence:
 |---|---|---|---|
 | `koi close fixed` | a merged **PR** touches this — did it fix it? | code that shipped | fixed-by · mentioned-by |
 | `koi close changelog` | its resource gained **changelog fixes** after the report — was one this bug? | BUG FIXES bullets nobody linked | matched · resource-only |
-| `koi close resolved` | a linked **issue** was dealt with — does its outcome cover this one? | another ticket's fate | completed · duplicate · not-planned |
-| `koi close duplicates` | this duplicates another **OPEN** issue — is it the same ask? | links + near-identical titles | linked · similar |
+| `koi close resolved` | a **sibling issue** covers this one — linked or near-identical, closed or open? | crossrefs + near-identical titles + the sibling's fate | completed · duplicate · not-planned · open · similar |
 | `koi close comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote (incl. the reporter's own "my mistake") | maintainer-says · community-says |
 | `koi close questions` | this **question** was answered, or died unanswered long ago — close it out? | the thread's replies | answered · dead |
 | `koi close stale` | a **maintainer** had the last word and nobody ever answered — thread over? | the maintainer's own words + the waiting-response label | waiting · asked · said |
@@ -92,8 +91,7 @@ koi milestone report   # milestone-<stamp>.html: the audit's findings by bucket
 #   --apply-with-ai-auto[=t]  unattended at or above a confidence
 koi close fixed --apply-with-ai        # a merged PR references it — did it fix it?
 koi close changelog --apply-with-ai    # a post-report changelog fix on its resource, uncited
-koi close resolved --apply-with-ai     # it references a CLOSED issue — was that its answer?
-koi close duplicates --apply-with-ai   # it duplicates another OPEN issue, linked or by title
+koi close resolved --apply-with-ai     # a sibling issue covers it: linked or near-identical, closed or open
 koi close comments --apply-with-ai     # somebody in the thread says it can be closed
 koi close questions --apply-with-ai    # the question was answered, or died unanswered
 koi close stale --apply-with-ai        # a maintainer's last word hung unanswered (waiting-response
@@ -117,7 +115,7 @@ koi milestone --skip-scan --apply-with-ai-auto=0.85 # auto-apply pairings the AI
 # every check takes its evidence classes as subcommands, strongest first:
 koi close stale waiting --apply-with-ai           # only waiting-response issues the reporter abandoned
 koi close fixed mentioned-by --apply-with-ai      # one class only: comments cite the fix PR + shipped version
-koi close duplicates similar --dry-run            # the unlinked half, preview only
+koi close resolved similar --dry-run              # pairs nobody linked (closed + open targets), preview only
 koi close exists resource --apply-with-ai-auto=0.9  # only the asked-for resource now existing, above 0.90
 koi close legacy --major 1 --apply --dry-run      # legacy scopes by major instead
 koi close deprecated property --apply-with-ai     # removed properties, judged one at a time
