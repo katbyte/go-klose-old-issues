@@ -49,6 +49,7 @@ Each check asks one question about an open issue, from one kind of evidence:
 | check | the question | the evidence | classes |
 |---|---|---|---|
 | `koi close fixed` | a merged **PR** touches this — did it fix it? | code that shipped | fixed-by · mentioned-by |
+| `koi close changelog` | its resource gained **changelog fixes** after the report — was one this bug? | BUG FIXES bullets nobody linked | matched · resource-only |
 | `koi close resolved` | a linked **issue** was dealt with — does its outcome cover this one? | another ticket's fate | completed · duplicate · not-planned |
 | `koi close duplicates` | this duplicates another **OPEN** issue — is it the same ask? | links + near-identical titles | linked · similar |
 | `koi close comments` | somebody in the **thread** says it can be closed — were they right? | what people wrote (incl. the reporter's own "my mistake") | maintainer-says · community-says |
@@ -90,6 +91,7 @@ koi milestone report   # milestone-<stamp>.html: the audit's findings by bucket
 #   --apply-with-ai      card + score + (a)ccept (s)kip (p)review (o)pen (q)uit per issue
 #   --apply-with-ai-auto[=t]  unattended at or above a confidence
 koi close fixed --apply-with-ai        # a merged PR references it — did it fix it?
+koi close changelog --apply-with-ai    # a post-report changelog fix on its resource, uncited
 koi close resolved --apply-with-ai     # it references a CLOSED issue — was that its answer?
 koi close duplicates --apply-with-ai   # it duplicates another OPEN issue, linked or by title
 koi close comments --apply-with-ai     # somebody in the thread says it can be closed

@@ -18,7 +18,7 @@ func checkPreRun() func(*cobra.Command, []string) error {
 func Command() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "close",
-		Short: "the checks: close issues the evidence says are done (fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
+		Short: "the checks: close issues the evidence says are done (fixed, changelog, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
 		Long: `Each check finds open issues one kind of evidence says are done with, has the
 AI judge every candidate, and closes them with a comment citing the evidence.
 All checks share the tri-mode applies: --apply acts on the evidence alone,
@@ -27,7 +27,7 @@ All checks share the tri-mode applies: --apply acts on the evidence alone,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error { return cmd.Help() },
 	}
-	c.AddCommand(fixedCmd(), resolvedCmd(), duplicatesCmd(), commentsCmd(), questionsCmd(),
+	c.AddCommand(fixedCmd(), changelogCmd(), resolvedCmd(), duplicatesCmd(), commentsCmd(), questionsCmd(),
 		staleCmd(), existsCmd(), legacyCmd(), errorsCmd(), docsCmd(), deprecatedCmd())
 	return c
 }
@@ -65,6 +65,29 @@ func fixedCmd() *cobra.Command {
 	subs(c, runE, []struct{ use, link, short string }{
 		{"fixed-by", classFixedBy, "only issues a merged PR references with a closing keyword (strongest evidence)"},
 		{"mentioned-by", classMentionedBy, "only issues a merged PR merely mentions (the AI earns its keep here)"},
+	})
+	return c
+}
+
+func changelogCmd() *cobra.Command {
+	runE := func(link string) func(cmd *cobra.Command, _ []string) error {
+		return func(cmd *cobra.Command, _ []string) error {
+			cmd.SilenceUsage = true
+			return flags().Changelog(link)
+		}
+	}
+	c := &cobra.Command{
+		Use:           "changelog",
+		Short:         "these bugs' resources gained post-report changelog fixes nobody linked back — fixed uncited? AI-scored, closeable",
+		Long:          `Open bug and crash reports whose resources received BUG FIXES changelog bullets after the report, where no pull request ever cited the issue — the fixes koi close fixed cannot see because nobody linked them. Bullets must postdate the report (the shared issue/PR number space orders them) and the release must postdate the version the issue reported against — a fix the reporter already ran cannot be the answer. Classes by substance: matched (a bullet names the report's own property or symptom) then resource-only (later fixes touched the resource, nothing lines up textually); subcommands scope to one class. The AI compares the bug against each fix description — same property, same symptom, same operation — before blessing a close; a still-broken claim after the fix release scores low. --apply closes everything listed, --apply-with-ai asks per issue with the score advising, --apply-with-ai-auto closes at or above the threshold; every close comments citing the bullet and its release and closes as completed.`,
+		Args:          cobra.NoArgs,
+		PreRunE:       checkPreRun(),
+		SilenceErrors: true,
+		RunE:          runE(""),
+	}
+	subs(c, runE, []struct{ use, link, short string }{
+		{classClMatched, classClMatched, "only bugs where a fix description shares the report's own property or symptom (strongest evidence)"},
+		{classClResourceOnly, classClResourceOnly, "only bugs whose resources merely gained later fixes — leads for the AI to read"},
 	})
 	return c
 }
@@ -298,7 +321,7 @@ func duplicatesCmd() *cobra.Command {
 func ReportCommand() *cobra.Command {
 	c := &cobra.Command{
 		Use:           "report",
-		Short:         "writes an HTML report of every close candidate the checks see (fixed, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
+		Short:         "writes an HTML report of every close candidate the checks see (fixed, changelog, resolved, duplicates, comments, questions, stale, exists, legacy, errors, docs, deprecated)",
 		Long:          `One page listing every close candidate each check sees, grouped by check with the evidence for why it is listed — the referencing PRs with their shipped releases, the linked closed issues with how each was dealt with, the reported legacy version — everything linked. The top of the page describes each check and jumps to its section. --with-ai scores every candidate with the check's own judge (cached verdicts are reused) and sorts surest first; --limit N caps each check for a cheap test run.`,
 		Args:          cobra.NoArgs,
 		PreRunE:       checkPreRun(),
