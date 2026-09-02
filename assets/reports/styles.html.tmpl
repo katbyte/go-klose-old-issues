@@ -1,13 +1,28 @@
 {{ define "styles" }}
+<script>document.documentElement.dataset.theme = localStorage.getItem('koi-theme') || 'dark';</script>
 <style>
   :root { --bg:#f6f7f9; --card:#fff; --ink:#1f2328; --dim:#59636e; --line:#d1d9e0;
-          --ok:#1a7f37; --mid:#9a6700; --warn:#bc4c00; --bad:#cf222e; --ver:#8250df; --accent:#0969da; }
+          --ok:#1a7f37; --mid:#9a6700; --warn:#bc4c00; --bad:#cf222e; --ver:#8250df; --accent:#0969da;
+          --trunc-bg:#fff8c5; --trunc-line:#d4a72c66; }
+  :root[data-theme="dark"] { --bg:#0d1117; --card:#161b22; --ink:#e6edf3; --dim:#8d96a0; --line:#30363d;
+          --ok:#3fb950; --mid:#d29922; --warn:#db6d28; --bad:#f85149; --ver:#a371f7; --accent:#4493f8;
+          --trunc-bg:#3b2e12; --trunc-line:#9e6a03; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.5 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
          background:var(--bg); color:var(--ink); }
-  header { padding:24px 32px; background:var(--card); border-bottom:1px solid var(--line); }
+  header { padding:24px 32px; background:var(--card); border-bottom:1px solid var(--line);
+           display:flex; align-items:center; justify-content:space-between; gap:16px; }
   header h1 { margin:0 0 4px; font-size:20px; }
   header p  { margin:0; color:var(--dim); }
+
+  /* dark-mode toggle: the koi swims to the moon */
+  .theme { position:relative; flex:none; width:64px; height:30px; border-radius:999px;
+           border:1px solid var(--line); background:var(--bg); cursor:pointer; padding:0; }
+  .theme span { position:absolute; top:50%; transform:translateY(-50%); pointer-events:none; }
+  .theme .sun  { left:7px;  font-size:13px; }
+  .theme .moon { right:7px; font-size:13px; }
+  .theme .koi  { left:5px; font-size:18px; transition:transform .25s ease; }
+  :root[data-theme="dark"] .theme .koi { transform:translate(30px, -50%); }
   main { max-width:1100px; margin:0 auto; padding:24px 32px 80px; }
   a { color:var(--accent); text-decoration:none; }
   a:hover { text-decoration:underline; }
@@ -35,7 +50,7 @@
   section .note { margin:0 0 6px; color:var(--dim); font-size:13px; }
   section .cmd { margin:0 0 12px; font-size:13px; color:var(--dim); }
   section .cmd code { background:var(--card); border:1px solid var(--line); border-radius:4px; padding:1px 6px; }
-  .trunc { background:#fff8c5; border:1px solid #d4a72c66; border-radius:6px; padding:6px 12px;
+  .trunc { background:var(--trunc-bg); border:1px solid var(--trunc-line); border-radius:6px; padding:6px 12px;
            font-size:13px; margin-bottom:12px; display:inline-block; }
 
   .items { background:var(--card); border:1px solid var(--line); border-radius:8px; }
@@ -56,6 +71,13 @@
   .quote { color:var(--dim); font-style:italic; }
   .top { display:block; margin-top:8px; font-size:13px; }
 </style>
+{{ end }}
+
+{{ define "theme-toggle" }}
+<button class="theme" type="button" aria-label="toggle dark mode" title="toggle dark mode"
+        onclick="var h=document.documentElement,t=h.dataset.theme==='dark'?'light':'dark';h.dataset.theme=t;localStorage.setItem('koi-theme',t)">
+  <span class="sun">☀️</span><span class="moon">🌙</span><span class="koi">🎏</span>
+</button>
 {{ end }}
 
 {{ define "actions-styles" }}

@@ -38,19 +38,25 @@ func (f *Flags) issHTMLURL(n int) string {
 // the checks' apply modes are the review flow now.
 func (f *Flags) Report() error {
 	o := f.Cmd.Report
+	if o.WithAI {
+		if !f.AI.Enabled {
+			return errors.New("--with-ai needs the AI (--ai=false is set)")
+		}
+		if err := f.RequireAI(); err != nil {
+			return err
+		}
+	}
+	// the errors and docs checks read a provider checkout; a report missing
+	// two checks would be acted on as if it were complete, so fail up front —
+	// before the auto-fetch and the expensive scans — rather than silently
+	// under-report
+	if err := verifyProviderSrc(f.Cmd.Errors.ProviderSrc, f.Cmd.Errors.ProviderRef); err != nil {
+		return fmt.Errorf("the errors and docs checks need a provider checkout: %w", err)
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err
 		}
-	}
-	if o.WithAI && !f.AI.Enabled {
-		return errors.New("--with-ai needs the AI (--ai=false is set)")
-	}
-	// the errors and docs checks read a provider checkout; a report missing
-	// two checks would be acted on as if it were complete, so fail up front —
-	// before the expensive scans — rather than silently under-report
-	if err := verifyProviderSrc(f.Cmd.Errors.ProviderSrc, f.Cmd.Errors.ProviderRef); err != nil {
-		return fmt.Errorf("the errors and docs checks need a provider checkout: %w", err)
 	}
 
 	d, err := f.OpenDB()

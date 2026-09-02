@@ -305,6 +305,19 @@ func (f *FlagData) RequireAI() error {
 	return nil
 }
 
+// RequireAIEarly is RequireAI hoisted ahead of the auto-fetch: every check
+// calls it first so a missing CLI or model fails in milliseconds instead of
+// after minutes of fetching. The run is going to judge unless the mode is
+// plain --apply (evidence only) or --ai=false report mode (lists unscored);
+// judging itself still calls RequireAI.
+func (f *FlagData) RequireAIEarly() error {
+	m := f.Modes
+	if m.ApplyWithAI || m.ApplyWithAIAuto || (!m.Apply && f.AI.Enabled) {
+		return f.RequireAI()
+	}
+	return nil
+}
+
 // NewAI returns the configured AI CLI wrapper.
 func (f *FlagData) NewAI() ai.AI {
 	return ai.New(f.AI.Cmd, f.AI.Model, time.Duration(f.AI.TimeoutMinutes)*time.Minute)

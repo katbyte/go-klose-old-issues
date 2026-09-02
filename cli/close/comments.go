@@ -126,6 +126,9 @@ func maintainerAssoc(assoc string) bool {
 // context (negations, questions, later disputes) before blessing a close.
 func (f *Flags) Comments(link string) error {
 	o := CommentsOpts{Link: link, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

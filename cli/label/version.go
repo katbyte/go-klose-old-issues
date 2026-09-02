@@ -92,6 +92,9 @@ func bareMentions(c *db.Comment, maxMajor int, claimed map[string]bool) map[int]
 // whether each quote is genuinely an affected-version claim before anything
 // is applied.
 func (f *Flags) Version() error {
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err
@@ -415,13 +418,18 @@ func (f *Flags) printVersionCard(fdg *versionFinding, pos, total int, v *issue.V
 // with one section per label family.
 func (f *Flags) Report() error {
 	o := f.Cmd.Report
+	if o.WithAI {
+		if !f.AI.Enabled {
+			return errors.New("--with-ai needs the AI (--ai=false is set)")
+		}
+		if err := f.RequireAI(); err != nil {
+			return err
+		}
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err
 		}
-	}
-	if o.WithAI && !f.AI.Enabled {
-		return errors.New("--with-ai needs the AI (--ai=false is set)")
 	}
 
 	d, err := f.OpenDB()

@@ -35,6 +35,13 @@ type MilestoneOpts struct {
 // the changelog (which links every bullet to its PR number).
 func (f *Flags) Milestone(link string) error {
 	o := MilestoneOpts{FlagsMilestone: f.Cmd.MS, FlagsApplyModes: f.Modes, Link: link}
+	// only the --apply-with-ai modes judge here (the listing and plain --apply
+	// never do), so fail a missing AI config before the scan, not after it
+	if o.ApplyWithAI || o.ApplyWithAIAuto {
+		if err := f.RequireAI(); err != nil {
+			return err
+		}
+	}
 	d, err := f.OpenDB()
 	if err != nil {
 		return err
@@ -887,8 +894,13 @@ func msClassKind(class string) string {
 // actionable buckets (missing, mismatch) with the ms-match judge.
 func (f *Flags) Report() error {
 	o := f.Cmd.Report
-	if o.WithAI && !f.AI.Enabled {
-		return errors.New("--with-ai needs the AI (--ai=false is set)")
+	if o.WithAI {
+		if !f.AI.Enabled {
+			return errors.New("--with-ai needs the AI (--ai=false is set)")
+		}
+		if err := f.RequireAI(); err != nil {
+			return err
+		}
 	}
 
 	d, err := f.OpenDB()

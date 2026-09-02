@@ -166,6 +166,9 @@ func questionBodyEvidence(prose string) []questionEvidence {
 // genuine usage question from a bug report or feature request merely phrased
 // as one before anything is applied.
 func (f *Flags) Question() error {
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

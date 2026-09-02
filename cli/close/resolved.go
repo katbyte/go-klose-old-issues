@@ -80,6 +80,9 @@ type resolvedFinding struct {
 // both issues before blessing a close; closes comment as a duplicate pointing
 // at the linked issue and its resolution.
 func (f *Flags) Resolved(link string) error {
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

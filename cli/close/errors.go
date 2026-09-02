@@ -85,6 +85,9 @@ type errorsFinding struct {
 // close as not planned inviting a re-test on the current provider.
 func (f *Flags) Errors(link string) error {
 	o := ErrorsOpts{Link: link, Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

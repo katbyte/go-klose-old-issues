@@ -144,6 +144,9 @@ type fixedCollection struct {
 // completed citing the PR and shipped release, or the bullet and its release.
 func (f *Flags) Fixed(link string) error {
 	o := FixedOpts{Link: link, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	// stay fresh by default: the incremental fetch is cheap and stale crossref
 	// or issue state here means judging (or closing!) on old information
 	if !f.NoAutoFetch {

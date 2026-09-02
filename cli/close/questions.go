@@ -75,6 +75,9 @@ func questionsBot(author string) bool {
 // completed citing the answer; dead closes as not planned.
 func (f *Flags) Questions(link string) error {
 	o := QuestionsOpts{Link: link, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

@@ -9,8 +9,11 @@
 </head>
 <body>
 <header id="top">
-  <h1>🎏 koi actions taken — {{ .Repo }}</h1>
-  <p>{{ .Total }} issues acted on{{ if .Span }} between {{ .Span }}{{ end }} · generated {{ .GeneratedAt }}</p>
+  <div>
+    <h1>🎏 koi actions taken — {{ .Repo }}</h1>
+    <p>{{ .Total }} issues acted on{{ if .Span }} between {{ .Span }}{{ end }} · generated {{ .GeneratedAt }}</p>
+  </div>
+  {{ template "theme-toggle" . }}
 </header>
 <main>
   <div class="tally">

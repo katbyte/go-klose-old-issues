@@ -60,6 +60,9 @@ type legacyFinding struct {
 // problem and are not touched here.
 func (f *Flags) Legacy() error {
 	o := LegacyOpts{Majors: f.Cmd.LegacyMajors, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

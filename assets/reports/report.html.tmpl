@@ -8,8 +8,11 @@
 </head>
 <body>
 <header id="top">
-  <h1>🎏 koi — {{ .Repo }}</h1>
-  <p>{{ .Total }} {{ .Noun }} across {{ len .Sections }} section{{ if gt (len .Sections) 1 }}s{{ end }} · generated {{ .GeneratedAt }}{{ if .WithAI }} · scored, surest first{{ end }}</p>
+  <div>
+    <h1>🎏 koi — {{ .Repo }}</h1>
+    <p>{{ .Total }} {{ .Noun }} across {{ len .Sections }} section{{ if gt (len .Sections) 1 }}s{{ end }} · generated {{ .GeneratedAt }}{{ if .WithAI }} · scored, surest first{{ end }}</p>
+  </div>
+  {{ template "theme-toggle" . }}
 </header>
 <main>
   <div class="toc">

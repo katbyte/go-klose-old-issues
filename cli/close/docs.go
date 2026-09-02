@@ -79,6 +79,9 @@ type DocsOpts struct {
 // blessing a close; closes are completed, pointing at the updated page.
 func (f *Flags) Docs() error {
 	o := DocsOpts{Src: f.Cmd.Errors.ProviderSrc, Ref: f.Cmd.Errors.ProviderRef, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

@@ -71,6 +71,9 @@ type staleFinding struct {
 // touched here.
 func (f *Flags) Stale(link string) error {
 	o := StaleOpts{Link: link, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

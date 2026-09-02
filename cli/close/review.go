@@ -105,6 +105,9 @@ func (f *Flags) CloseReview() error {
 		windowNote = fmt.Sprintf(" <gray>(comments in the last %s)</>", f.Cmd.ReviewLast)
 	}
 
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err

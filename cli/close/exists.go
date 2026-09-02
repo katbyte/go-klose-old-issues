@@ -154,6 +154,9 @@ type existsFinding struct {
 // request; the apply modes close as completed with the good news.
 func (f *Flags) Exists(link string) error {
 	o := ExistsOpts{Link: link, FlagsApplyModes: f.Modes}
+	if err := f.RequireAIEarly(); err != nil {
+		return err
+	}
 	if !f.NoAutoFetch {
 		if err := f.AutoFetch(); err != nil {
 			return err
